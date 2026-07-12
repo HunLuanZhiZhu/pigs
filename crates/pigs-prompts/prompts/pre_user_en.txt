@@ -1,0 +1,6 @@
+PRE phase instructions above.
+
+--- Turn supplements ---
+{failure_paths}
+
+Follow the PRE phase instructions. End with PIGEND alone on a line only if fully done.

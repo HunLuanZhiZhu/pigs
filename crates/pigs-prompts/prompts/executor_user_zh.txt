@@ -1,0 +1,8 @@
+EXECUTOR 相位指令见上。
+
+--- PRE 计划 / GOAL ---
+{pre_output}
+
+{post_feedback}
+
+在完成所需工具调用后，产出最佳答复草稿。

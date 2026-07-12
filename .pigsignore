@@ -1,0 +1,45 @@
+# Pigs Agent ignore patterns
+# Same format as .gitignore — used by grep_search, glob_search, list_files
+
+# Build artifacts
+target/
+dist/
+build/
+*.o
+*.a
+*.so
+*.dll
+*.exe
+
+# Dependencies
+node_modules/
+.venv/
+venv/
+__pycache__/
+
+# Logs and temp
+*.log
+*.tmp
+*.swp
+*~
+
+# Secrets
+.env
+.env.*
+*.pem
+*.key
+secrets.*
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Package locks (optional — uncomment if noisy)
+# package-lock.json
+# yarn.lock
+# Cargo.lock

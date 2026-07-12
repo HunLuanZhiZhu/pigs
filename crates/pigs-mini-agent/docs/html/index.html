@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>总览 · Pigs Mini Agent</title>
+  <meta name="description" content="Pigs Mini Agent 教学文档 —— 用不到 3000 行 Rust 理解 AI Agent 核心原理" />
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <button class="menu-toggle" aria-label="打开导航" type="button">
+    <span></span><span></span><span></span>
+  </button>
+
+  <div class="layout">
+    <!-- ===== 侧边栏 ===== -->
+    <aside class="sidebar">
+      <div class="sidebar-brand">
+        <div class="brand-mark">Teaching Codex</div>
+        <div class="brand-title">Pigs Mini Agent</div>
+        <div class="brand-sub">Rust AI Agent · 教学版</div>
+      </div>
+      <nav class="nav">
+        <div class="nav-label">目录</div>
+        <a href="index.html"><span class="nav-num">00</span> 总览</a>
+        <a href="01-message.html"><span class="nav-num">01</span> 消息模型</a>
+        <a href="02-tool.html"><span class="nav-num">02</span> 工具系统</a>
+        <a href="03-prompt.html"><span class="nav-num">03</span> 系统提示词</a>
+        <a href="04-llm.html"><span class="nav-num">04</span> LLM 客户端</a>
+        <a href="05-tools.html"><span class="nav-num">05</span> 内置工具</a>
+        <a href="06-agent.html" class="nav-core"><span class="nav-num">06</span> Agent 循环</a>
+        <a href="07-error.html"><span class="nav-num">07</span> 错误处理</a>
+      </nav>
+      <div class="sidebar-footer">
+        <a href="../../README.md">← README</a>
+        &nbsp;·&nbsp;
+        <a href="../../../Cargo.toml">crate</a>
+      </div>
+    </aside>
+
+    <!-- ===== 主内容 ===== -->
+    <main class="main">
+      <article class="content">
+        <div class="page-eyebrow reveal">Chapter 00</div>
+        <h1 class="page-title reveal reveal-d1">总览</h1>
+        <div class="page-lead reveal reveal-d2">
+          把 Claude Code 或 Cursor 剥到底，核心就是一个套着大模型的
+          <code>while</code> 循环，加七八个让它能动手的工具。
+          <cite>—— CoreCoder README</cite>
+        </div>
+
+        <!-- 统计 -->
+        <div class="stat-bar reveal reveal-d3">
+          <div class="stat">
+            <span class="stat-val">~3k</span>
+            <span class="stat-label">行 Rust</span>
+          </div>
+          <div class="stat">
+            <span class="stat-val">4</span>
+            <span class="stat-label">内置工具</span>
+          </div>
+          <div class="stat">
+            <span class="stat-val">7</span>
+            <span class="stat-label">教学章节</span>
+          </div>
+          <div class="stat">
+            <span class="stat-val">0</span>
+            <span class="stat-label">pigs-* 依赖</span>
+          </div>
+        </div>
+
+        <!-- 这是什么 -->
+        <h2 class="reveal reveal-d3"><span class="h-num">01</span> 这是什么？</h2>
+        <p class="reveal reveal-d4">
+          <code>pigs-mini-agent</code> 是一个<strong>自包含的、教学导向的</strong>通用 AI Agent crate。
+          它用不到 3000 行 Rust 代码展示了 AI Agent 最核心的工作原理——没有任何黑魔法，
+          不依赖任何其他 <code>pigs-*</code> crate。
+        </p>
+        <p class="reveal reveal-d4">
+          如果你想知道 Claude Code、Cursor、Codex 这些工具「底下到底在干什么」，
+          读这个 crate 就够了。
+        </p>
+
+        <!-- 核心循环可视化 -->
+        <h2 class="reveal reveal-d4"><span class="h-num">02</span> 核心循环</h2>
+        <p>Agent 的全部「智能」来自一个循环。代码本身不做任何决策——所有思考来自 LLM，Agent 只是 LLM 的手脚。</p>
+
+        <div class="loop-viz">
+          <div class="loop-steps">
+            <div class="loop-step">
+              <div class="loop-dot">1</div>
+              <div class="loop-body">
+                <div class="loop-label">用户发消息</div>
+                <div class="loop-desc">加入对话历史</div>
+              </div>
+            </div>
+            <div class="loop-step">
+              <div class="loop-dot">2</div>
+              <div class="loop-body">
+                <div class="loop-label">调用 LLM</div>
+                <div class="loop-desc">把历史 + 工具列表发给大模型</div>
+              </div>
+            </div>
+            <div class="loop-step branch">
+              <div class="loop-dot">3</div>
+              <div class="loop-body">
+                <div class="loop-label">LLM 回复</div>
+                <div class="loop-desc">判断是否包含工具调用</div>
+                <div class="loop-branch">
+                  <div class="branch-item ok"><span class="arrow">├──</span> 纯文本 → 返回给用户 ✓</div>
+                  <div class="branch-item loop"><span class="arrow">└──</span> 工具调用 → 执行 → 结果入历史 → 回到 2</div>
+                </div>
+              </div>
+            </div>
+            <div class="loop-step end">
+              <div class="loop-dot">✓</div>
+              <div class="loop-body">
+                <div class="loop-label">结束或达上限</div>
+                <div class="loop-desc">循环直到不再需要工具，或 max_rounds</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 阅读路径 -->
+        <h2><span class="h-num">03</span> 推荐阅读顺序</h2>
+        <p>每个章节对应一个源码文件。按下面顺序走，从数据结构到核心循环。每章末尾有<strong>源码拆解</strong>：字段、方法、调用链对照 <code>src/</code> 真实代码。</p>
+
+        <div class="card-grid">
+          <a class="card" href="01-message.html">
+            <div class="card-num">01</div>
+            <div class="card-title">消息模型</div>
+            <p class="card-desc">对话历史的数据结构是什么？</p>
+            <div class="card-file">src/message.rs</div>
+          </a>
+          <a class="card" href="02-tool.html">
+            <div class="card-num">02</div>
+            <div class="card-title">工具系统</div>
+            <p class="card-desc">Agent 如何调用工具？</p>
+            <div class="card-file">src/tool.rs</div>
+          </a>
+          <a class="card" href="03-prompt.html">
+            <div class="card-num">03</div>
+            <div class="card-title">系统提示词</div>
+            <p class="card-desc">如何设定 Agent 的行为？</p>
+            <div class="card-file">src/prompt.rs</div>
+          </a>
+          <a class="card" href="04-llm.html">
+            <div class="card-num">04</div>
+            <div class="card-title">LLM 客户端</div>
+            <p class="card-desc">如何与大模型 API 交互？</p>
+            <div class="card-file">src/llm.rs</div>
+          </a>
+          <a class="card" href="05-tools.html">
+            <div class="card-num">05</div>
+            <div class="card-title">内置工具</div>
+            <p class="card-desc">具体工具怎么实现？</p>
+            <div class="card-file">src/tools/</div>
+          </a>
+          <a class="card" href="06-agent.html">
+            <div class="card-num">06 · 核心</div>
+            <div class="card-title">Agent 循环</div>
+            <p class="card-desc">循环是怎么跑的？</p>
+            <div class="card-file">src/agent.rs</div>
+          </a>
+          <a class="card" href="07-error.html">
+            <div class="card-num">07</div>
+            <div class="card-title">错误处理</div>
+            <p class="card-desc">出错了怎么办？</p>
+            <div class="card-file">src/error.rs</div>
+          </a>
+        </div>
+
+        <!-- 快速开始 -->
+        <h2><span class="h-num">04</span> 快速开始</h2>
+        <pre data-lang="bash"><code><span class="tok-cm"># 设置 API 密钥（任选一个供应商）</span>
+export OPENAI_API_KEY=<span class="tok-str">"sk-xxxx"</span>
+
+<span class="tok-cm"># 运行示例</span>
+cargo run --example chat</code></pre>
+
+        <pre data-lang="rust"><code><span class="tok-kw">use</span> pigs_mini_agent::{Agent, LlmClient, create_default_tools};
+
+<span class="tok-attr">#[tokio::main]</span>
+<span class="tok-kw">async fn</span> <span class="tok-fn">main</span>() -&gt; pigs_mini_agent::Result&lt;()&gt; {
+    <span class="tok-kw">let</span> llm = LlmClient::from_env()?;
+    <span class="tok-kw">let</span> tools = create_default_tools();
+    <span class="tok-kw">let mut</span> agent = Agent::new(llm, tools);
+    <span class="tok-kw">let</span> response = agent.chat(<span class="tok-str">"帮我创建一个 hello.txt 文件"</span>).await?;
+    println!(<span class="tok-str">"{response}"</span>);
+    Ok(())
+}</code></pre>
+
+        <!-- 设计决策 -->
+        <h2><span class="h-num">05</span> 关键设计决策</h2>
+
+        <div class="decision">
+          <div class="decision-q">为什么自包含？</div>
+          <p>不依赖 pigs-core / pigs-llm 等。读者只看这一个 crate 就能理解完整 Agent 循环，不需要在多个 crate 之间跳转。</p>
+        </div>
+        <div class="decision">
+          <div class="decision-q">为什么用 OpenAI 兼容格式？</div>
+          <p>OpenAI、DeepSeek、Qwen、Kimi、Ollama 都实现了这个格式。一个客户端就能对接所有供应商。</p>
+        </div>
+        <div class="decision">
+          <div class="decision-q">为什么用非流式？</div>
+          <p>流式响应需要处理 SSE 和工具参数碎片重组，增加约 200 行复杂代码。教学版优先展示核心逻辑。</p>
+        </div>
+        <div class="decision">
+          <div class="decision-q">为什么 edit_file 用唯一匹配而非行号？</div>
+          <p>「行号是陷阱，模型数错一行就悄悄改错地方。用唯一片段锚定，失败可恢复、成功可验证。」—— CoreCoder</p>
+        </div>
+
+        <!-- 参考项目 -->
+        <h2><span class="h-num">06</span> 与参考项目的关系</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>参考项目</th>
+                <th>语言</th>
+                <th>本 crate 借鉴了什么</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>CoreCoder</strong></td>
+                <td>Python</td>
+                <td>极简循环骨架、工具设计、edit_file 唯一匹配、系统提示词</td>
+              </tr>
+              <tr>
+                <td><strong>claw-analog</strong></td>
+                <td>Rust</td>
+                <td>Rust Agent 循环模式、工具 match 分发</td>
+              </tr>
+              <tr>
+                <td><strong>codex</strong></td>
+                <td>Rust</td>
+                <td>分层架构理念、消息类型设计</td>
+              </tr>
+              <tr>
+                <td><strong>pigs-core/cli</strong></td>
+                <td>Rust</td>
+                <td>类型安全 enum、thiserror 错误模式</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="callout callout-tip">
+          <span class="callout-icon">TIP</span>
+          <p>键盘 <code>←</code> / <code>→</code> 可在章节间翻页。建议从「消息模型」开始顺序阅读。</p>
+        </div>
+
+        <!-- 页脚导航 -->
+        <nav class="page-nav">
+          <span></span>
+          <a class="next" href="01-message.html">
+            <span class="nav-dir">下一章 →</span>
+            <span class="nav-name">消息模型</span>
+          </a>
+        </nav>
+      </article>
+    </main>
+  </div>
+
+  <script src="assets/app.js"></script>
+</body>
+</html>

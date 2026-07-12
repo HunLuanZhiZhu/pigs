@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>06 · Agent 循环 · Pigs Mini Agent</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <button class="menu-toggle" aria-label="打开导航" type="button">
+    <span></span><span></span><span></span>
+  </button>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="sidebar-brand">
+        <div class="brand-mark">Teaching Codex</div>
+        <div class="brand-title">Pigs Mini Agent</div>
+        <div class="brand-sub">Rust AI Agent · 教学版</div>
+      </div>
+      <nav class="nav">
+        <div class="nav-label">目录</div>
+        <a href="index.html"><span class="nav-num">00</span> 总览</a>
+        <a href="01-message.html"><span class="nav-num">01</span> 消息模型</a>
+        <a href="02-tool.html"><span class="nav-num">02</span> 工具系统</a>
+        <a href="03-prompt.html"><span class="nav-num">03</span> 系统提示词</a>
+        <a href="04-llm.html"><span class="nav-num">04</span> LLM 客户端</a>
+        <a href="05-tools.html"><span class="nav-num">05</span> 内置工具</a>
+        <a href="06-agent.html" class="nav-core"><span class="nav-num">06</span> Agent 循环</a>
+        <a href="07-error.html"><span class="nav-num">07</span> 错误处理</a>
+      </nav>
+      <div class="sidebar-footer"><a href="../../README.md">← README</a></div>
+    </aside>
+
+    <main class="main">
+      <article class="content">
+        <div class="page-eyebrow reveal">Chapter 06 · 核心</div>
+        <h1 class="page-title reveal reveal-d1">Agent 循环</h1>
+        <div class="file-tag reveal reveal-d2">src/agent.rs</div>
+        <div class="page-lead reveal reveal-d2">
+          这是整个 crate 的心脏。调 LLM → 有工具？执行再循环 : 返回文本。
+        </div>
+
+        <div class="callout callout-tip reveal reveal-d3">
+          <span class="callout-icon">CORE</span>
+          <p>所有「智能」来自 LLM。Agent 代码只是忠实执行循环——历史进 LLM，看要干什么，帮它执行工具，把结果再告诉它。</p>
+        </div>
+
+        <h2 class="reveal reveal-d3"><span class="h-num">01</span> 12 行骨架</h2>
+        <p>借鉴 CoreCoder <code>agent.py</code>：</p>
+        <pre data-lang="python"><code><span class="tok-cm"># CoreCoder Python</span>
+<span class="tok-kw">for</span> _ <span class="tok-kw">in</span> range(self.max_rounds):
+    reply = self.llm.chat(self.messages, self.tools)
+    <span class="tok-kw">if not</span> reply.tool_calls:
+        <span class="tok-kw">return</span> reply.text
+    results = run_parallel(reply.tool_calls)
+    self.messages += results
+<span class="tok-kw">return</span> <span class="tok-str">"(hit the round limit)"</span></code></pre>
+        <pre data-lang="rust"><code><span class="tok-cm">// 本 crate Rust</span>
+<span class="tok-kw">for</span> round <span class="tok-kw">in</span> <span class="tok-num">0</span>..self.max_rounds {
+    <span class="tok-kw">let</span> response = self.llm.chat(&amp;messages, &amp;schemas).await?;
+    <span class="tok-kw">if</span> response.tool_calls.is_empty() {
+        self.messages.push(Message::assistant_text(&amp;response.content));
+        <span class="tok-kw">return</span> Ok(response.content);
+    }
+    self.messages.push(Message::assistant_with_tools(...));
+    <span class="tok-kw">for</span> tc <span class="tok-kw">in</span> &amp;response.tool_calls {
+        <span class="tok-kw">let</span> result = self.tools.execute(&amp;tc.name, tc.arguments.clone()).await;
+        self.messages.push(Message::tool_result(...));
+    }
+}
+<span class="tok-kw">return</span> Err(MiniAgentError::MaxRoundsReached(self.max_rounds));</code></pre>
+
+        <h2><span class="h-num">02</span> 循环图示</h2>
+        <div class="loop-viz">
+          <div class="loop-steps">
+            <div class="loop-step">
+              <div class="loop-dot">1</div>
+              <div class="loop-body">
+                <div class="loop-label">用户消息入历史</div>
+                <div class="loop-desc">Message::user(input)</div>
+              </div>
+            </div>
+            <div class="loop-step">
+              <div class="loop-dot">2</div>
+              <div class="loop-body">
+                <div class="loop-label">调用 LLM</div>
+                <div class="loop-desc">full_messages + tool schemas</div>
+              </div>
+            </div>
+            <div class="loop-step branch">
+              <div class="loop-dot">3</div>
+              <div class="loop-body">
+                <div class="loop-label">分支判断</div>
+                <div class="loop-branch">
+                  <div class="branch-item ok"><span class="arrow">├──</span> 无 tool_calls → 返回文本 ✓</div>
+                  <div class="branch-item loop"><span class="arrow">└──</span> 有 tool_calls → 先 push assistant</div>
+                </div>
+              </div>
+            </div>
+            <div class="loop-step">
+              <div class="loop-dot">4</div>
+              <div class="loop-body">
+                <div class="loop-label">执行工具</div>
+                <div class="loop-desc">结果 push 为 tool 消息 → 回到 2</div>
+              </div>
+            </div>
+            <div class="loop-step end">
+              <div class="loop-dot">!</div>
+              <div class="loop-body">
+                <div class="loop-label">max_rounds</div>
+                <div class="loop-desc">强制停止，返回 MaxRoundsReached</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <h2><span class="h-num">03</span> 关键设计决策</h2>
+        <div class="decision">
+          <div class="decision-q">为什么 for 而非 loop？</div>
+          <p>有界循环。可能陷入「工具 → LLM 再要工具」死循环。max_rounds 默认 50（CoreCoder），是保护阀。</p>
+        </div>
+        <div class="decision">
+          <div class="decision-q">为什么先 push assistant 再 push tool_result？</div>
+          <p>OpenAI 要求每个 tool_call 都有对应 tool 回复。顺序搞反会被 API 拒绝。CoreCoder 的 <code>_answer_pending_tool_calls</code> 就是为中断时补全回复。</p>
+        </div>
+        <div class="decision">
+          <div class="decision-q">工具失败为什么不 panic？</div>
+          <p>把错误字符串当 tool 结果返回（is_error=true）。LLM 能看到错误并决定下一步——与 CoreCoder <code>_exec_tool</code> 一致。</p>
+        </div>
+        <div class="decision">
+          <div class="decision-q">为什么每次发完整历史？</div>
+          <p>LLM 无记忆。后果：历史越长越慢越贵。生产级有 auto-compact；教学版不做。</p>
+        </div>
+
+        <h2><span class="h-num">04</span> Agent 结构体</h2>
+        <div class="ascii-art"><span class="dim">┌───────────────────────────────────────────────────┐</span>
+<span class="dim">│</span>  <span class="hl">Agent</span>
+<span class="dim">│</span>  ┌──────────┐  ┌──────────┐  ┌──────────────────┐
+<span class="dim">│</span>  │  <span class="accent">LLM</span>     │  │  <span class="accent">Tools</span>   │  │   <span class="accent">Messages</span>      │
+<span class="dim">│</span>  │  大脑    │  │  手脚    │  │   记忆 / 历史    │
+<span class="dim">│</span>  └──────────┘  └──────────┘  └──────────────────┘
+<span class="dim">│</span>  system_prompt → 行为规则
+<span class="dim">│</span>  max_rounds    → 防止无限循环
+<span class="dim">└───────────────────────────────────────────────────┘</span></div>
+
+        <h2><span class="h-num">05</span> 用法</h2>
+        <pre data-lang="rust"><code><span class="tok-kw">let mut</span> agent = Agent::new(llm, tools)
+    .with_max_rounds(<span class="tok-num">30</span>)
+    .with_system_prompt(<span class="tok-str">"你是一个测试 Agent"</span>);
+
+<span class="tok-kw">let</span> response = agent.chat(<span class="tok-str">"帮我创建一个 hello.txt"</span>).await?;
+agent.reset();           <span class="tok-cm">// 清空历史</span>
+agent.history_len();     <span class="tok-cm">// 不含 system 的消息数</span></code></pre>
+
+        <h2><span class="h-num">06</span> 借鉴对比</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>项目</th><th>位置</th><th>特性</th></tr></thead>
+            <tbody>
+              <tr><td>CoreCoder</td><td>Agent.chat()</td><td>并行工具、压缩</td></tr>
+              <tr><td>claw-analog</td><td>run()</td><td>流式、权限、NDJSON</td></tr>
+              <tr><td>codex</td><td>run_turn()</td><td>hooks、cancellation</td></tr>
+              <tr><td>pigs</td><td>run_turn()</td><td>流式、会话、权限</td></tr>
+              <tr><td><strong>本 crate</strong></td><td>Agent::chat()</td><td>纯循环，无额外复杂度</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+
+        <!-- WALKTHROUGH -->
+        <section class="walkthrough reveal">
+<hr />
+<h2><span class="h-num">CODE</span> 源码拆解（<code>src/agent.rs</code>）</h2>
+<h3>1. 结构体</h3>
+<pre data-lang="rust"><code>pub struct Agent {
+    pub llm: LlmClient,
+    pub tools: ToolRegistry,
+    pub messages: Vec&lt;Message&gt;,
+    pub system_prompt: String,
+    pub max_rounds: u32,
+}</code></pre>
+<p>五个字段全 <code>pub</code>，方便教学调试。</p>
+<h3>2. <code>new</code></h3>
+<pre data-lang="rust"><code>let system_prompt = build_system_prompt(&amp;tools);
+Agent { llm, tools, messages: Vec::new(), system_prompt, max_rounds: 50 }</code></pre>
+<p>建 Agent 时按<strong>当前</strong>工具表生成 prompt。之后改 tools 默认不重算（可用 <code>with_system_prompt</code>）。</p>
+<h3>3. Builder</h3>
+<p><code>with_max_rounds</code> / <code>with_system_prompt</code>：消费 <code>self</code> 返回 <code>Self</code>，支持链式调用。</p>
+<h3>4. 私有辅助</h3>
+<p><strong><code>full_messages</code></strong>：<code>system</code> + <code>messages.clone()</code>。system <strong>不</strong>存在 <code>self.messages</code> 里。</p>
+<p><strong><code>tool_schemas</code></strong>：<code>self.tools.schemas()</code> 转发。</p>
+<h3>5. <code>chat</code> 逐步</h3>
+<p>#### 步骤 1：入历史</p>
+<pre data-lang="rust"><code>self.messages.push(Message::user(user_input));</code></pre>
+<p>#### 步骤 2：有界 for</p>
+<pre data-lang="rust"><code>for round in 0..self.max_rounds {</code></pre>
+<p>#### 步骤 2.1：调模型</p>
+<pre data-lang="rust"><code>let response = self.llm.chat(&amp;self.full_messages(), &amp;self.tool_schemas()).await?;</code></pre>
+<p>#### 步骤 2.2：结束分支</p>
+<pre data-lang="rust"><code>if response.tool_calls.is_empty() {
+    self.messages.push(Message::assistant_text(&amp;response.content));
+    return Ok(response.content);
+}</code></pre>
+<p>#### 步骤 2.3：assistant + tools 入历史（必须先于 tool 结果）</p>
+<pre data-lang="rust"><code>self.messages.push(Message::assistant_with_tools(
+    &amp;response.content,
+    response.tool_calls.clone(),
+));</code></pre>
+<p>#### 步骤 2.4：顺序执行工具</p>
+<pre data-lang="rust"><code>for tc in &amp;response.tool_calls {
+    let result = self.tools.execute(&amp;tc.name, tc.arguments.clone()).await;
+    let (output, is_error) = match result {
+        Ok(o) =&gt; (o, false),
+        Err(e) =&gt; (e.to_string(), true), // 不中断 chat
+    };
+    self.messages.push(Message::tool_result(&amp;tc.id, &amp;output, is_error));
+}</code></pre>
+<p>#### 步骤 2.5：循环体结束 → 下一轮再 <code>llm.chat</code></p>
+<p>#### 步骤 3：打满轮次</p>
+<pre data-lang="rust"><code>Err(MiniAgentError::MaxRoundsReached(self.max_rounds))</code></pre>
+<h3>6. <code>reset</code> / <code>history_len</code></h3>
+<ul>
+<li><code>reset</code>：清空 <code>messages</code>，保留 system_prompt  </li>
+<li><code>history_len</code>：只计 <code>messages</code>，<strong>不含</strong> system  </li>
+</ul>
+<h3>7. 测试范围</h3>
+<p>不测真实网络 <code>chat</code>；测创建、builder、reset、full_messages。</p>
+<h3>8. 心智模型</h3>
+<pre data-lang="text"><code>user push
+  → [for]
+      full_messages + schemas → LLM
+      empty tools? → assistant_text + return
+      else assistant_with_tools
+           for each tool → execute → tool_result
+  → MaxRoundsReached</code></pre>
+<p>读完应能<strong>默写</strong> <code>chat</code> 分支，并说明为何 assistant 必须先于 tool 入历史。</p>
+        </section>
+        <!-- /WALKTHROUGH -->
+        <nav class="page-nav">
+          <a class="prev" href="05-tools.html">
+            <span class="nav-dir">← 上一章</span>
+            <span class="nav-name">内置工具</span>
+          </a>
+          <a class="next" href="07-error.html">
+            <span class="nav-dir">下一章 →</span>
+            <span class="nav-name">错误处理</span>
+          </a>
+        </nav>
+      </article>
+    </main>
+  </div>
+  <script src="assets/app.js"></script>
+</body>
+</html>

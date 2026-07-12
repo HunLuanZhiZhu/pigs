@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>07 · 错误处理 · Pigs Mini Agent</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <button class="menu-toggle" aria-label="打开导航" type="button">
+    <span></span><span></span><span></span>
+  </button>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="sidebar-brand">
+        <div class="brand-mark">Teaching Codex</div>
+        <div class="brand-title">Pigs Mini Agent</div>
+        <div class="brand-sub">Rust AI Agent · 教学版</div>
+      </div>
+      <nav class="nav">
+        <div class="nav-label">目录</div>
+        <a href="index.html"><span class="nav-num">00</span> 总览</a>
+        <a href="01-message.html"><span class="nav-num">01</span> 消息模型</a>
+        <a href="02-tool.html"><span class="nav-num">02</span> 工具系统</a>
+        <a href="03-prompt.html"><span class="nav-num">03</span> 系统提示词</a>
+        <a href="04-llm.html"><span class="nav-num">04</span> LLM 客户端</a>
+        <a href="05-tools.html"><span class="nav-num">05</span> 内置工具</a>
+        <a href="06-agent.html" class="nav-core"><span class="nav-num">06</span> Agent 循环</a>
+        <a href="07-error.html"><span class="nav-num">07</span> 错误处理</a>
+      </nav>
+      <div class="sidebar-footer"><a href="../../README.md">← README</a></div>
+    </aside>
+
+    <main class="main">
+      <article class="content">
+        <div class="page-eyebrow reveal">Chapter 07</div>
+        <h1 class="page-title reveal reveal-d1">错误处理</h1>
+        <div class="file-tag reveal reveal-d2">src/error.rs</div>
+        <div class="page-lead reveal reveal-d2">
+          统一错误类型 + <code>?</code> 操作符。Rust 不靠异常，靠 <code>Result&lt;T, E&gt;</code>。
+        </div>
+
+        <h2 class="reveal reveal-d3"><span class="h-num">01</span> Result 与 ?</h2>
+        <pre data-lang="rust"><code><span class="tok-cm">// 不用 ?</span>
+<span class="tok-kw">let</span> content = <span class="tok-kw">match</span> std::fs::read_to_string(<span class="tok-str">"file.txt"</span>) {
+    Ok(c) =&gt; c,
+    Err(e) =&gt; <span class="tok-kw">return</span> Err(MiniAgentError::IoError(e.to_string())),
+};
+
+<span class="tok-cm">// 用 ?（需 From 实现）</span>
+<span class="tok-kw">let</span> content = std::fs::read_to_string(<span class="tok-str">"file.txt"</span>)?;</code></pre>
+
+        <h2><span class="h-num">02</span> MiniAgentError</h2>
+        <div class="ascii-art"><span class="dim">┌──────────────────────────────────────────────────┐</span>
+<span class="dim">│</span>  <span class="hl">MiniAgentError</span>
+<span class="dim">│</span>  ├── <span class="accent">LlmError</span>          LLM API 调用失败
+<span class="dim">│</span>  ├── <span class="accent">ToolError</span>         工具执行失败
+<span class="dim">│</span>  ├── <span class="accent">NetworkError</span>      网络请求失败
+<span class="dim">│</span>  ├── <span class="accent">ParseError</span>        JSON 解析失败
+<span class="dim">│</span>  ├── <span class="accent">IoError</span>           文件 IO 失败
+<span class="dim">│</span>  ├── <span class="accent">MaxRoundsReached</span>  达到最大轮次
+<span class="dim">│</span>  └── <span class="accent">ConfigError</span>       配置错误
+<span class="dim">│</span>
+<span class="dim">│</span>  From&lt;io::Error&gt; / reqwest::Error / serde_json::Error
+<span class="dim">│</span>  type Result&lt;T&gt; = Result&lt;T, MiniAgentError&gt;
+<span class="dim">└──────────────────────────────────────────────────┘</span></div>
+
+        <h2><span class="h-num">03</span> 变体说明</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>变体</th><th>场景</th></tr></thead>
+            <tbody>
+              <tr><td><code>NetworkError</code></td><td>底层：DNS、超时、TCP</td></tr>
+              <tr><td><code>LlmError</code></td><td>API 层：4xx/5xx 或错误 JSON</td></tr>
+              <tr><td><code>MaxRoundsReached</code></td><td>保护：循环达上限（含轮次数）</td></tr>
+              <tr><td><code>ToolError</code></td><td>硬错误：工具不存在等</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="decision">
+          <div class="decision-q">Tool 硬错误 vs 软错误？</div>
+          <p><strong>硬错误</strong>：返回 <code>Err</code>（如找不到工具）。<strong>软错误</strong>：返回 Ok 但 <code>is_error=true</code>（如命令非零退出），错误信息进 tool 消息让 LLM 看到。</p>
+        </div>
+
+        <h2><span class="h-num">04</span> 设计决策</h2>
+        <div class="decision">
+          <div class="decision-q">为什么一个统一类型？</div>
+          <p>教学简化。pigs-core 拆成 ApiError + ToolError；本 crate 合并，一个 From 链就能 <code>?</code> 到底。</p>
+        </div>
+        <div class="decision">
+          <div class="decision-q">为什么 thiserror？</div>
+          <p><code>#[error("...")]</code> 自动实现 Display + Error，省掉几十行手写 boilerplate。</p>
+        </div>
+        <div class="decision">
+          <div class="decision-q">为什么 type Result&lt;T&gt;？</div>
+          <p>Rust 惯用：<code>fn foo() -&gt; Result&lt;String&gt;</code> 即 <code>Result&lt;String, MiniAgentError&gt;</code>。</p>
+        </div>
+
+        <h2><span class="h-num">05</span> From 转换</h2>
+        <pre data-lang="rust"><code><span class="tok-kw">impl</span> From&lt;std::io::Error&gt; <span class="tok-kw">for</span> MiniAgentError { <span class="tok-cm">/* IoError */</span> }
+<span class="tok-kw">impl</span> From&lt;reqwest::Error&gt; <span class="tok-kw">for</span> MiniAgentError { <span class="tok-cm">/* NetworkError */</span> }
+<span class="tok-kw">impl</span> From&lt;serde_json::Error&gt; <span class="tok-kw">for</span> MiniAgentError { <span class="tok-cm">/* ParseError */</span> }</code></pre>
+
+        <h2><span class="h-num">06</span> 借鉴对比</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>项目</th><th>错误类型</th></tr></thead>
+            <tbody>
+              <tr><td>CoreCoder</td><td>字符串 + try/except</td></tr>
+              <tr><td>pigs-core</td><td>ApiError + ToolError</td></tr>
+              <tr><td>codex</td><td>CodexErr（20+ 变体）</td></tr>
+              <tr><td><strong>本 crate</strong></td><td>MiniAgentError（7 变体）</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="callout callout-tip">
+          <span class="callout-icon">DONE</span>
+          <p>七章读完。建议回到 <a href="06-agent.html">Agent 循环</a> 对照 <code>src/agent.rs</code> 源码，或 <code>cargo run --example chat</code> 亲手跑一遍。</p>
+        </div>
+
+
+        <!-- WALKTHROUGH -->
+        <section class="walkthrough reveal">
+<hr />
+<h2><span class="h-num">CODE</span> 源码拆解（<code>src/error.rs</code>）</h2>
+<h3>1. thiserror 枚举</h3>
+<pre data-lang="rust"><code>#[derive(Debug, Error)]
+pub enum MiniAgentError {
+    #[error(&quot;LLM 调用失败: {0}&quot;)]
+    LlmError(String),
+    // ...
+    #[error(&quot;Agent 达到最大轮次限制 ({0} 轮)，强制停止&quot;)]
+    MaxRoundsReached(u32),
+}</code></pre>
+<ul>
+<li><code>#[error(&quot;...&quot;)]</code>：自动 <code>Display</code>  </li>
+<li><code>{0}</code>：元组变体字段  </li>
+<li><code>Debug + Error</code>：可在 <code>Result</code> 里 <code>?</code>  </li>
+</ul>
+<h3>2. 七个变体对照调用点</h3>
+<div class="table-wrap"><table>
+<thead><tr>
+<th>变体</th>
+<th>典型产生位置</th>
+</tr></thead><tbody>
+<tr>
+<td><code>LlmError</code></td>
+<td><code>call_with_retry</code> HTTP 4xx / 业务失败</td>
+</tr>
+<tr>
+<td><code>ToolError</code></td>
+<td>缺参、未知工具、文件操作失败</td>
+</tr>
+<tr>
+<td><code>NetworkError</code></td>
+<td>reqwest 连接失败耗尽重试</td>
+</tr>
+<tr>
+<td><code>ParseError</code></td>
+<td>响应 JSON / From serde_json</td>
+</tr>
+<tr>
+<td><code>IoError</code></td>
+<td>From <code>std::io::Error</code></td>
+</tr>
+<tr>
+<td><code>MaxRoundsReached</code></td>
+<td><code>Agent::chat</code> 打满轮次</td>
+</tr>
+<tr>
+<td><code>ConfigError</code></td>
+<td>缺 <code>OPENAI_API_KEY</code></td>
+</tr>
+</tbody></table></div>
+<h3>3. 三个 <code>From</code></h3>
+<pre data-lang="rust"><code>impl From&lt;std::io::Error&gt; for MiniAgentError { /* IoError */ }
+impl From&lt;reqwest::Error&gt; for MiniAgentError { /* NetworkError */ }
+impl From&lt;serde_json::Error&gt; for MiniAgentError { /* ParseError */ }</code></pre>
+<p>工具层常 <strong>故意</strong> <code>map_err</code> 成更具体的 <code>ToolError(&quot;读取文件失败...&quot;)</code>，对模型更友好，而不是裸 <code>IoError</code>。</p>
+<h3>4. 类型别名</h3>
+<pre data-lang="rust"><code>pub type Result&lt;T&gt; = std::result::Result&lt;T, MiniAgentError&gt;;</code></pre>
+<h3>5. 硬错误 vs 软错误</h3>
+<div class="table-wrap"><table>
+<thead><tr>
+<th>类型</th>
+<th>表现</th>
+<th>例子</th>
+</tr></thead><tbody>
+<tr>
+<td>硬错误</td>
+<td><code>Err(...)</code> 冒泡</td>
+<td>未知工具、超时、API 401</td>
+</tr>
+<tr>
+<td>软错误</td>
+<td><code>Ok</code> 文本或 <code>is_error=true</code></td>
+<td>bash 非零退出</td>
+</tr>
+</tbody></table></div>
+<p><code>Agent::chat</code> 对 <code>tools.execute</code> 的 <code>Err</code> 会转成字符串 + <code>is_error</code>，<strong>不</strong>因单工具失败中止整次 chat；<code>llm.chat</code> 失败才会冒泡。</p>
+<h3>6. 测试</h3>
+<p><code>From</code> 转换、<code>Display</code> 文案、<code>MaxRoundsReached</code> 含轮次数。</p>
+<p>读完应能说明：<strong>何时 <code>?</code> 冒泡，何时把错误变成 tool 消息字符串。</strong></p>
+        </section>
+        <!-- /WALKTHROUGH -->
+        <nav class="page-nav">
+          <a class="prev" href="06-agent.html">
+            <span class="nav-dir">← 上一章</span>
+            <span class="nav-name">Agent 循环</span>
+          </a>
+          <a class="next" href="index.html">
+            <span class="nav-dir">回到 →</span>
+            <span class="nav-name">总览</span>
+          </a>
+        </nav>
+      </article>
+    </main>
+  </div>
+  <script src="assets/app.js"></script>
+</body>
+</html>

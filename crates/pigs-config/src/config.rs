@@ -169,10 +169,15 @@ pub struct AppConfig {
     /// Default permission mode.
     #[serde(default = "default_permission_mode")]
     pub permission_mode: String,
-    /// UI / default reply language: `en` or `zh`.
+    /// UI / default reply language: `en` or `zh` (product default: `zh`).
     ///
-    /// Affects the built-in system prompt language preference and REPL chrome.
+    /// Affects:
+    /// - built-in system prompt language preference and REPL chrome
+    /// - phased agent (PRE / Executor / Post) system prompts and user payloads
+    ///
     /// Slash commands accept Chinese / pinyin aliases regardless of this setting.
+    /// Set in `~/.pigs/config.toml` or workspace `.pigs/config.toml`, or via
+    /// env `PIGS_LANGUAGE` / CLI `--language`.
     #[serde(default = "default_language")]
     pub language: String,
     /// Maximum number of agent loop iterations per turn.

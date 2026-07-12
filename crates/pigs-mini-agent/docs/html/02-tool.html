@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>02 · 工具系统 · Pigs Mini Agent</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <button class="menu-toggle" aria-label="打开导航" type="button">
+    <span></span><span></span><span></span>
+  </button>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="sidebar-brand">
+        <div class="brand-mark">Teaching Codex</div>
+        <div class="brand-title">Pigs Mini Agent</div>
+        <div class="brand-sub">Rust AI Agent · 教学版</div>
+      </div>
+      <nav class="nav">
+        <div class="nav-label">目录</div>
+        <a href="index.html"><span class="nav-num">00</span> 总览</a>
+        <a href="01-message.html"><span class="nav-num">01</span> 消息模型</a>
+        <a href="02-tool.html"><span class="nav-num">02</span> 工具系统</a>
+        <a href="03-prompt.html"><span class="nav-num">03</span> 系统提示词</a>
+        <a href="04-llm.html"><span class="nav-num">04</span> LLM 客户端</a>
+        <a href="05-tools.html"><span class="nav-num">05</span> 内置工具</a>
+        <a href="06-agent.html" class="nav-core"><span class="nav-num">06</span> Agent 循环</a>
+        <a href="07-error.html"><span class="nav-num">07</span> 错误处理</a>
+      </nav>
+      <div class="sidebar-footer"><a href="../../README.md">← README</a></div>
+    </aside>
+
+    <main class="main">
+      <article class="content">
+        <div class="page-eyebrow reveal">Chapter 02</div>
+        <h1 class="page-title reveal reveal-d1">工具系统</h1>
+        <div class="file-tag reveal reveal-d2">src/tool.rs</div>
+        <div class="page-lead reveal reveal-d2">
+          工具是 Agent「动手」的能力——没有工具，Agent 只能聊天。
+        </div>
+
+        <h2 class="reveal reveal-d3"><span class="h-num">01</span> Tool trait</h2>
+        <p>每个工具必须实现 4 个方法：</p>
+        <div class="ascii-art"><span class="dim">┌──────────────────────────────────────────────────┐</span>
+<span class="dim">│</span>  <span class="hl">Tool trait</span>（工具接口）
+<span class="dim">│</span>
+<span class="dim">│</span>  fn <span class="accent">name</span>(&amp;self) -&gt; &amp;str           工具名
+<span class="dim">│</span>  fn <span class="accent">description</span>(&amp;self) -&gt; &amp;str    工具描述
+<span class="dim">│</span>  fn <span class="accent">parameters</span>(&amp;self) -&gt; Value    参数 schema
+<span class="dim">│</span>  async fn <span class="accent">execute</span>(&amp;self, input)   执行工具
+<span class="dim">│</span>
+<span class="dim">│</span>  fn <span class="accent">schema</span>(&amp;self) -&gt; Value        默认实现：
+<span class="dim">│</span>                                    生成 OpenAI
+<span class="dim">│</span>                                    function 格式
+<span class="dim">└──────────────────────────────────────────────────┘</span></div>
+
+        <h2><span class="h-num">02</span> ToolRegistry</h2>
+        <div class="ascii-art"><span class="dim">┌──────────────────────────────────────────────────┐</span>
+<span class="dim">│</span>  <span class="hl">ToolRegistry</span>
+<span class="dim">│</span>  tools: HashMap&lt;String, Box&lt;dyn Tool&gt;&gt;
+<span class="dim">│</span>
+<span class="dim">│</span>  ┌─────────┐  ┌────────────┐  ┌───────────┐
+<span class="dim">│</span>  │  <span class="accent">bash</span>   │  │ <span class="accent">read_file</span>  │  │ <span class="accent">write_file</span>│
+<span class="dim">│</span>  └─────────┘  └────────────┘  └───────────┘
+<span class="dim">│</span>  ┌──────────┐
+<span class="dim">│</span>  │ <span class="accent">edit_file</span>│  ... 可以注册任意多个工具
+<span class="dim">│</span>  └──────────┘
+<span class="dim">│</span>
+<span class="dim">│</span>  register / execute / schemas / has / names
+<span class="dim">└──────────────────────────────────────────────────┘</span></div>
+
+        <h2><span class="h-num">03</span> 关键设计决策</h2>
+        <div class="decision">
+          <div class="decision-q">为什么 execute 返回 String？</div>
+          <p>来自 CoreCoder——「所有工具都返回字符串，让消息拼接永远是 str」。Agent 循环里处理结果时不用做类型匹配。</p>
+        </div>
+        <div class="decision">
+          <div class="decision-q">为什么用 Box&lt;dyn Tool&gt;？</div>
+          <p>trait object 让不同工具可以存到同一个 HashMap——Rust 的「多态」，类似 Python 把不同类对象放进同一个 dict。</p>
+        </div>
+        <div class="decision">
+          <div class="decision-q">为什么用 #[async_trait]？</div>
+          <p>Rust trait 不支持直接定义 async fn。宏通过 <code>Pin&lt;Box&lt;dyn Future&gt;&gt;</code> 绕过这个限制。</p>
+        </div>
+
+        <h2><span class="h-num">04</span> 添加新工具</h2>
+        <pre data-lang="rust"><code><span class="tok-kw">use</span> async_trait::async_trait;
+<span class="tok-kw">use</span> pigs_mini_agent::{Tool, Result};
+<span class="tok-kw">use</span> serde_json::Value;
+
+<span class="tok-kw">struct</span> <span class="tok-type">MyTool</span>;
+
+<span class="tok-attr">#[async_trait]</span>
+<span class="tok-kw">impl</span> Tool <span class="tok-kw">for</span> MyTool {
+    <span class="tok-kw">fn</span> <span class="tok-fn">name</span>(&amp;self) -&gt; &amp;str { <span class="tok-str">"my_tool"</span> }
+    <span class="tok-kw">fn</span> <span class="tok-fn">description</span>(&amp;self) -&gt; &amp;str { <span class="tok-str">"我的工具描述"</span> }
+    <span class="tok-kw">fn</span> <span class="tok-fn">parameters</span>(&amp;self) -&gt; Value {
+        serde_json::json!({
+            <span class="tok-str">"type"</span>: <span class="tok-str">"object"</span>,
+            <span class="tok-str">"properties"</span>: {
+                <span class="tok-str">"input"</span>: { <span class="tok-str">"type"</span>: <span class="tok-str">"string"</span> }
+            },
+            <span class="tok-str">"required"</span>: [<span class="tok-str">"input"</span>]
+        })
+    }
+    <span class="tok-kw">async fn</span> <span class="tok-fn">execute</span>(&amp;self, input: Value) -&gt; Result&lt;String&gt; {
+        <span class="tok-kw">let</span> text = input[<span class="tok-str">"input"</span>].as_str().unwrap_or(<span class="tok-str">""</span>);
+        Ok(format!(<span class="tok-str">"处理结果: {text}"</span>))
+    }
+}
+
+<span class="tok-kw">let mut</span> tools = ToolRegistry::new();
+tools.register(Box::new(MyTool));</code></pre>
+
+        <h2><span class="h-num">05</span> 借鉴对比</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>项目</th><th>工具抽象</th><th>区别</th></tr></thead>
+            <tbody>
+              <tr><td>CoreCoder</td><td>Tool(ABC)</td><td>无类型，dict 传参</td></tr>
+              <tr><td>pigs-core</td><td>ToolHandler + Pin&lt;Box&gt;</td><td>手动装箱 Future</td></tr>
+              <tr><td>claw-analog</td><td>大 match 分发</td><td>简单但不灵活</td></tr>
+              <tr><td><strong>本 crate</strong></td><td>Tool + async_trait</td><td>教学版，宏简化异步</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+
+        <!-- WALKTHROUGH -->
+        <section class="walkthrough reveal">
+<hr />
+<h2><span class="h-num">CODE</span> 源码拆解（<code>src/tool.rs</code>）</h2>
+<h3>1. 依赖</h3>
+<pre data-lang="rust"><code>use std::collections::HashMap;
+use async_trait::async_trait;
+use serde_json::Value;
+use crate::error::{MiniAgentError, Result};</code></pre>
+<ul>
+<li><code>HashMap</code>：名字 → 工具实例</li>
+<li><code>async_trait</code>：trait 里写 <code>async fn execute</code></li>
+<li><code>Value</code>：LLM 传来的 JSON 参数</li>
+</ul>
+<h3>2. <code>Tool</code> trait 逐方法</h3>
+<pre data-lang="rust"><code>#[async_trait]
+pub trait Tool: Send + Sync {
+    fn name(&amp;self) -&gt; &amp;str;
+    fn description(&amp;self) -&gt; &amp;str;
+    fn parameters(&amp;self) -&gt; Value;
+    async fn execute(&amp;self, input: Value) -&gt; Result&lt;String&gt;;
+    fn schema(&amp;self) -&gt; Value { /* 默认实现 */ }
+}</code></pre>
+<div class="table-wrap"><table>
+<thead><tr>
+<th>约束 / 方法</th>
+<th>含义</th>
+</tr></thead><tbody>
+<tr>
+<td><code>Send + Sync</code></td>
+<td>可跨线程共享；异步环境需要</td>
+</tr>
+<tr>
+<td><code>name</code></td>
+<td>唯一蛇形名，出现在 prompt 与 tool_calls</td>
+</tr>
+<tr>
+<td><code>description</code></td>
+<td>模型靠它决定何时调用</td>
+</tr>
+<tr>
+<td><code>parameters</code></td>
+<td>JSON Schema，描述参数形状</td>
+</tr>
+<tr>
+<td><code>execute</code></td>
+<td>真正干活；返回 <strong>字符串</strong> 结果</td>
+</tr>
+<tr>
+<td><code>schema</code></td>
+<td>默认拼成 OpenAI function-calling 外层格式</td>
+</tr>
+</tbody></table></div>
+<p><strong>为什么 <code>execute</code> 返回 <code>String</code>？</strong></p>
+<p>CoreCoder 哲学：消息拼接永远是文本。结构化数据自己序列化成字符串即可。</p>
+<p><strong><code>schema</code> 默认实现</strong> 固定包装：</p>
+<pre data-lang="json"><code>{ &quot;type&quot;: &quot;function&quot;, &quot;function&quot;: { &quot;name&quot;, &quot;description&quot;, &quot;parameters&quot; } }</code></pre>
+<h3>3. <code>ToolRegistry</code></h3>
+<pre data-lang="rust"><code>pub struct ToolRegistry {
+    tools: HashMap&lt;String, Box&lt;dyn Tool&gt;&gt;,
+}</code></pre>
+<p><code>Box&lt;dyn Tool&gt;</code> = trait object：BashTool、ReadFileTool 等不同具体类型放进同一张表。</p>
+<p>#### <code>register</code></p>
+<pre data-lang="rust"><code>pub fn register(&amp;mut self, tool: Box&lt;dyn Tool&gt;) {
+    let name = tool.name().to_string();
+    self.tools.insert(name, tool);
+}</code></pre>
+<p>先取名再 <code>insert</code>（<code>insert</code> 会 move <code>tool</code>）。同名后注册覆盖前者。</p>
+<p>#### <code>execute</code> —— 分发</p>
+<pre data-lang="rust"><code>let tool = self.tools.get(name)
+    .ok_or_else(|| MiniAgentError::ToolError(format!(&quot;未知的工具: &#x27;{name}&#x27;&quot;)))?;
+tool.execute(input).await</code></pre>
+<p>模型幻觉不存在的工具名 → <code>ToolError</code>；Agent 把错误字符串塞回历史。</p>
+<p>#### 其它方法</p>
+<div class="table-wrap"><table>
+<thead><tr>
+<th>方法</th>
+<th>用途</th>
+</tr></thead><tbody>
+<tr>
+<td><code>has</code></td>
+<td>是否注册</td>
+</tr>
+<tr>
+<td><code>schemas</code></td>
+<td>全部 schema → 发给 LLM</td>
+</tr>
+<tr>
+<td><code>names</code></td>
+<td>工具名 → 拼 prompt</td>
+</tr>
+<tr>
+<td><code>len</code> / <code>is_empty</code></td>
+<td>调试与测试</td>
+</tr>
+<tr>
+<td><code>Default</code></td>
+<td>等价于 <code>new()</code></td>
+</tr>
+</tbody></table></div>
+<h3>4. 测试桩 <code>EchoTool</code></h3>
+<p>覆盖：注册执行、未知工具、schemas 结构、names 列表。</p>
+<h3>5. 和 Agent 的衔接</h3>
+<pre data-lang="text"><code>create_default_tools() → ToolRegistry
+Agent::new(..., tools)
+每轮 tool_schemas() → llm.chat
+有 tool_calls → tools.execute(name, args)</code></pre>
+<p>读完应能自己实现一个 <code>Tool</code> 并 <code>register</code>。</p>
+        </section>
+        <!-- /WALKTHROUGH -->
+        <nav class="page-nav">
+          <a class="prev" href="01-message.html">
+            <span class="nav-dir">← 上一章</span>
+            <span class="nav-name">消息模型</span>
+          </a>
+          <a class="next" href="03-prompt.html">
+            <span class="nav-dir">下一章 →</span>
+            <span class="nav-name">系统提示词</span>
+          </a>
+        </nav>
+      </article>
+    </main>
+  </div>
+  <script src="assets/app.js"></script>
+</body>
+</html>

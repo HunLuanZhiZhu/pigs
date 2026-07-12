@@ -1,0 +1,9 @@
+POST phase instructions above.
+
+--- PRE plan/GOAL ---
+{pre_output}
+
+--- EXECUTOR draft ---
+{executor_draft}
+
+Review, check GOAL, then route with PIGEND / PIGFAILED / no marker.

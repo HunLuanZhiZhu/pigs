@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>04 · LLM 客户端 · Pigs Mini Agent</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <button class="menu-toggle" aria-label="打开导航" type="button">
+    <span></span><span></span><span></span>
+  </button>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="sidebar-brand">
+        <div class="brand-mark">Teaching Codex</div>
+        <div class="brand-title">Pigs Mini Agent</div>
+        <div class="brand-sub">Rust AI Agent · 教学版</div>
+      </div>
+      <nav class="nav">
+        <div class="nav-label">目录</div>
+        <a href="index.html"><span class="nav-num">00</span> 总览</a>
+        <a href="01-message.html"><span class="nav-num">01</span> 消息模型</a>
+        <a href="02-tool.html"><span class="nav-num">02</span> 工具系统</a>
+        <a href="03-prompt.html"><span class="nav-num">03</span> 系统提示词</a>
+        <a href="04-llm.html"><span class="nav-num">04</span> LLM 客户端</a>
+        <a href="05-tools.html"><span class="nav-num">05</span> 内置工具</a>
+        <a href="06-agent.html" class="nav-core"><span class="nav-num">06</span> Agent 循环</a>
+        <a href="07-error.html"><span class="nav-num">07</span> 错误处理</a>
+      </nav>
+      <div class="sidebar-footer"><a href="../../README.md">← README</a></div>
+    </aside>
+
+    <main class="main">
+      <article class="content">
+        <div class="page-eyebrow reveal">Chapter 04</div>
+        <h1 class="page-title reveal reveal-d1">LLM 客户端</h1>
+        <div class="file-tag reveal reveal-d2">src/llm.rs</div>
+        <div class="page-lead reveal reveal-d2">
+          整个 crate 中<strong>唯一与外部服务交互</strong>的地方——把历史发给大模型，拿回复回来。
+        </div>
+
+        <h2 class="reveal reveal-d3"><span class="h-num">01</span> 数据流</h2>
+        <div class="ascii-art"><span class="dim">┌──────────┐</span>     HTTP POST      <span class="dim">┌──────────────┐</span>
+<span class="dim">│</span> <span class="hl">LlmClient</span> <span class="dim">│</span> ─────────────────→ <span class="dim">│</span> OpenAI 兼容  <span class="dim">│</span>
+<span class="dim">│</span>  chat()  <span class="dim">│</span> ←───────────────── <span class="dim">│</span> API 服务器   <span class="dim">│</span>
+<span class="dim">└──────────┘</span>     JSON 响应       <span class="dim">└──────────────┘</span>
+     ↓
+<span class="dim">┌──────────────────┐</span>
+<span class="dim">│</span> <span class="hl">LlmResponse</span>
+<span class="dim">│</span>  - content       <span class="dim">// 文本回复</span>
+<span class="dim">│</span>  - tool_calls[]  <span class="dim">// 工具调用列表</span>
+<span class="dim">└──────────────────┘</span></div>
+
+        <h2><span class="h-num">02</span> 支持的供应商</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>供应商</th><th>base_url</th><th>model 示例</th></tr></thead>
+            <tbody>
+              <tr><td>OpenAI</td><td><code>https://api.openai.com/v1</code></td><td>gpt-4o</td></tr>
+              <tr><td>DeepSeek</td><td><code>https://api.deepseek.com/v1</code></td><td>deepseek-chat</td></tr>
+              <tr><td>Qwen</td><td><code>.../compatible-mode/v1</code></td><td>qwen-plus</td></tr>
+              <tr><td>Kimi</td><td><code>https://api.moonshot.cn/v1</code></td><td>moonshot-v1-8k</td></tr>
+              <tr><td>Ollama</td><td><code>http://localhost:11434/v1</code></td><td>llama3</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2><span class="h-num">03</span> 关键设计决策</h2>
+        <div class="decision">
+          <div class="decision-q">为什么用非流式？</div>
+          <p>流式 SSE 里 tool_calls 参数是碎片化的，要按 index 累积拼接。CoreCoder 用了 30+ 行，pigs-llm 更多。教学版用非流式——一次返回完整 tool_calls。</p>
+        </div>
+        <div class="decision">
+          <div class="decision-q">为什么有重试？</div>
+          <p>429 / 5xx / 网络错误：指数退避重试（1→2→4 秒，最多 3 次）。4xx（非 429）：不重试，请求本身有问题。</p>
+        </div>
+        <div class="decision">
+          <div class="decision-q">为什么在 LLM 层解析 arguments？</div>
+          <p>API 返回的是 JSON 字符串。在 <code>parse_llm_response</code> 里 <code>from_str</code>，失败降级为 <code>{}</code>，下游工具直接拿 Value——CoreCoder 的设计。</p>
+        </div>
+
+        <h2><span class="h-num">04</span> 环境变量</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>变量</th><th>必需</th><th>默认值</th></tr></thead>
+            <tbody>
+              <tr><td><code>OPENAI_API_KEY</code></td><td>是</td><td>—</td></tr>
+              <tr><td><code>OPENAI_BASE_URL</code></td><td>否</td><td>api.openai.com/v1</td></tr>
+              <tr><td><code>OPENAI_MODEL</code></td><td>否</td><td>gpt-4o</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2><span class="h-num">05</span> API 速览</h2>
+        <pre data-lang="rust"><code><span class="tok-kw">let</span> llm = LlmClient::from_env()?;
+<span class="tok-kw">let</span> llm = LlmClient::new(<span class="tok-str">"key"</span>, <span class="tok-str">"https://..."</span>, <span class="tok-str">"model"</span>);
+<span class="tok-kw">let</span> response = llm.chat(&amp;messages, &amp;tool_schemas).await?;
+<span class="tok-cm">// response.content / response.tool_calls</span></code></pre>
+
+        <div class="callout callout-info">
+          <span class="callout-icon">NOTE</span>
+          <p>Agent 循环看 <code>tool_calls</code> 是否为空：空 → 完成；非空 → 执行工具再循环。</p>
+        </div>
+
+
+        <!-- WALKTHROUGH -->
+        <section class="walkthrough reveal">
+<hr />
+<h2><span class="h-num">CODE</span> 源码拆解（<code>src/llm.rs</code>）</h2>
+<h3>1. 结构体字段</h3>
+<pre data-lang="rust"><code>pub struct LlmClient {
+    http: reqwest::Client,  // 120s 超时
+    api_key: String,
+    base_url: String,
+    model: String,
+}</code></pre>
+<p>字段私有；只能通过 <code>new</code> / <code>from_env</code> 构造。</p>
+<h3>2. <code>new</code></h3>
+<pre data-lang="rust"><code>reqwest::Client::builder()
+    .timeout(Duration::from_secs(120))
+    .build()
+    .unwrap_or_else(|_| reqwest::Client::new())</code></pre>
+<p>LLM 可能很慢 → 120 秒超时。参数 <code>impl Into&lt;String&gt;</code> 可接 <code>&amp;str</code> / <code>String</code>。</p>
+<h3>3. <code>from_env</code></h3>
+<div class="table-wrap"><table>
+<thead><tr>
+<th>变量</th>
+<th>必需</th>
+<th>默认</th>
+</tr></thead><tbody>
+<tr>
+<td><code>OPENAI_API_KEY</code></td>
+<td>是</td>
+<td>无 → <code>ConfigError</code></td>
+</tr>
+<tr>
+<td><code>OPENAI_BASE_URL</code></td>
+<td>否</td>
+<td><code>https://api.openai.com/v1</code></td>
+</tr>
+<tr>
+<td><code>OPENAI_MODEL</code></td>
+<td>否</td>
+<td><code>gpt-4o</code></td>
+</tr>
+</tbody></table></div>
+<h3>4. <code>chat</code> 主路径</h3>
+<pre data-lang="rust"><code>// 1) Message → OpenAI JSON
+// 2) body = { model, messages }
+// 3) 有 tools → tools + tool_choice: &quot;auto&quot;
+// 4) call_with_retry
+// 5) parse_llm_response</code></pre>
+<h3>5. <code>call_with_retry</code></h3>
+<pre data-lang="rust"><code>max_retries = 3; wait_secs = 1;
+// POST {base}/chat/completions
+// Authorization: Bearer {key}</code></pre>
+<div class="table-wrap"><table>
+<thead><tr>
+<th>情况</th>
+<th>行为</th>
+</tr></thead><tbody>
+<tr>
+<td>2xx</td>
+<td>解析 JSON 返回</td>
+</tr>
+<tr>
+<td>429 或 5xx 且可重试</td>
+<td>sleep 后 <code>wait_secs *= 2</code></td>
+</tr>
+<tr>
+<td>其它 4xx</td>
+<td>立即 <code>LlmError</code></td>
+</tr>
+<tr>
+<td>网络错误可重试</td>
+<td>同上退避</td>
+</tr>
+<tr>
+<td>网络错误用尽</td>
+<td><code>NetworkError</code></td>
+</tr>
+</tbody></table></div>
+<p>退避：1s → 2s → 4s。</p>
+<h3>6. <code>LlmResponse</code></h3>
+<pre data-lang="rust"><code>pub struct LlmResponse {
+    pub content: String,
+    pub tool_calls: Vec&lt;ToolCall&gt;,
+}</code></pre>
+<p>Agent 只看 <code>tool_calls.is_empty()</code>。</p>
+<h3>7. <code>parse_llm_response</code></h3>
+<p>路径：<code>choices[0].message</code> → content + tool_calls。</p>
+<pre data-lang="rust"><code>let arguments: Value = serde_json::from_str(arguments_str)
+    .unwrap_or_else(|_| json!({}));</code></pre>
+<ul>
+<li>缺字段用 <code>&quot;unknown&quot;</code> / <code>&quot;&quot;</code> / <code>{}</code> 兜底  </li>
+<li>非法 JSON 参数 → 空对象，不整请求失败  </li>
+</ul>
+<h3>8. 测试</h3>
+<p>纯文本 / tool_calls / 坏 arguments / 缺 choices；<code>from_env</code> 串行；<code>new</code> 字段。</p>
+<p>读完应能画出：<strong>Message → JSON body → HTTP → JSON → LlmResponse</strong>。</p>
+        </section>
+        <!-- /WALKTHROUGH -->
+        <nav class="page-nav">
+          <a class="prev" href="03-prompt.html">
+            <span class="nav-dir">← 上一章</span>
+            <span class="nav-name">系统提示词</span>
+          </a>
+          <a class="next" href="05-tools.html">
+            <span class="nav-dir">下一章 →</span>
+            <span class="nav-name">内置工具</span>
+          </a>
+        </nav>
+      </article>
+    </main>
+  </div>
+  <script src="assets/app.js"></script>
+</body>
+</html>

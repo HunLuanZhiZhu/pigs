@@ -1,0 +1,33 @@
+[package]
+name = "pigs-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Phased agent HTTP API server + phased runtime modules (OpenAI-compatible)"
+
+[lib]
+name = "pigs_api"
+path = "src/lib.rs"
+
+[dependencies]
+pigs-core = { workspace = true }
+pigs-llm = { workspace = true }
+pigs-config = { workspace = true }
+pigs-tools = { workspace = true }
+pigs-prompts = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+futures-util = { workspace = true }
+axum = { version = "0.7", features = ["json", "tokio"] }
+tower-http = { version = "0.5", features = ["cors"] }
+
+[lints]
+workspace = true

@@ -1,0 +1,13 @@
+[package]
+name = "pigs-prompts"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Phased agent prompt templates as plain-text files, compiled in via include_str!"
+
+[dependencies]
+pigs-config = { workspace = true }
+
+[lints]
+workspace = true

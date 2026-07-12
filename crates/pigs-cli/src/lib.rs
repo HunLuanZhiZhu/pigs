@@ -16,12 +16,15 @@ pub mod models;
 pub mod repl;
 pub mod skill_tool;
 pub mod snapshots;
-pub mod phased_api_convert;
-pub mod phased_tools;
-pub mod phased_runtime;
-pub mod phased_prompts;
-pub mod phased_phase;
-pub mod phased_markers;
+
+// 相位模块已移至 pigs-api crate；此处 re-export 保持旧路径可用。
+// Phased modules moved to pigs-api crate; re-export keeps old paths working.
+pub use pigs_api::phased_api_convert;
+pub use pigs_api::phased_runtime;
+pub use pigs_api::phased_tools;
+pub use pigs_api::phased_prompts;
+pub use pigs_api::phased_phase;
+pub use pigs_api::phased_markers;
 
 use std::process::ExitCode;
 

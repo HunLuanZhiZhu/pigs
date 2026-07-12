@@ -1,0 +1,9 @@
+POST 相位指令见上。
+
+--- PRE 计划 / GOAL ---
+{pre_output}
+
+--- EXECUTOR 草稿 ---
+{executor_draft}
+
+请审阅、验收 GOAL，并用 PIGEND / PIGFAILED / 无标记 做路由。

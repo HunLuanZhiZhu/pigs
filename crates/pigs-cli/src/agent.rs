@@ -703,25 +703,74 @@ impl Agent {
             ..Default::default()
         };
 
-        let mut runtime = crate::phased_runtime::PhasedRuntime::from_resolved(resolved, limits)?;
+        let mut runtime = crate::phased_runtime::PhasedRuntime::from_resolved(
+            resolved,
+            limits,
+            self.language,
+        )?;
 
         // Inject the agent's full tool registry (bash, read_file, MCP, etc.)
-        // by replacing the runtime's default tools.
-        // We swap registries: give the runtime our tools, keep a placeholder.
         let agent_tools = std::mem::replace(&mut self.tool_registry, pigs_core::ToolRegistry::new());
         runtime.tools = agent_tools;
 
-        // Build history from session messages (excluding the new user turn).
-        let history: Vec<Message> = self.session.messages.clone();
+        // Build the complete message array as an API caller would:
+        // [system, ...prior_turns, current_user]
+        let mut messages: Vec<Message> = Vec::with_capacity(self.session.messages.len() + 2);
+        if !self.system_prompt.is_empty() {
+            messages.push(Message::system(&self.system_prompt));
+        }
+        messages.extend(self.session.messages.iter().cloned());
+        messages.push(Message::user(user_input));
+
+        // Progress sink: print text deltas and tool events to the console in real time.
+        let text_printed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let text_printed_clone = text_printed.clone();
+        println!();
+        let sink: crate::phased_runtime::ProgressSink = std::sync::Arc::new(move |p| {
+            use crate::phased_runtime::TurnProgress;
+            match p {
+                TurnProgress::PhaseStart { phase } => {
+                    eprintln!("[pigs] phase: {phase}");
+                }
+                TurnProgress::TextDelta { text, .. } => {
+                    if !text.is_empty() {
+                        text_printed_clone.store(true, std::sync::atomic::Ordering::Relaxed);
+                        print!("{text}");
+                        use std::io::Write;
+                        let _ = std::io::stdout().flush();
+                    }
+                }
+                TurnProgress::ToolStart { phase, name } => {
+                    eprintln!("[pigs] tool: {name} ({phase})");
+                }
+                TurnProgress::ToolEnd {
+                    phase,
+                    name,
+                    is_error,
+                } => {
+                    if is_error {
+                        eprintln!("[pigs] tool: {name} ({phase}) failed");
+                    }
+                }
+                _ => {}
+            }
+        });
 
         let result = runtime
-            .run_turn_with_progress(&history, user_input, None)
+            .run_turn_with_progress(&messages, Some(sink))
             .await;
 
         // Restore agent's tools.
         self.tool_registry = runtime.tools;
 
         let result = result?;
+
+        // If no text was streamed (e.g. PRE short-circuit without stream_visible),
+        // print the final text explicitly.
+        if !text_printed.load(std::sync::atomic::Ordering::Relaxed) && !result.final_text.is_empty() {
+            println!("{}", result.final_text);
+        }
+        println!(); // newline after streamed text
 
         // Update session: add user + assistant for multi-turn continuity.
         self.session.add_message(Message::user(user_input));

@@ -1,0 +1,21 @@
+# Project-level Pigs overrides (merged over ~/.pigs/config.toml)
+
+# Example: prefer a cheaper/faster model in this repo
+# model = "gpt-4o-mini"
+
+# Compaction policy for long coding sessions
+compact_token_threshold = 80000
+compact_keep_recent = 6
+
+# Example project MCP server (disabled by default)
+# [[mcp_servers]]
+# name = "filesystem"
+# command = "npx"
+# args = ["-y", "@modelcontextprotocol/server-filesystem", "."]
+# enabled = false
+
+# Example project hook
+# [[hooks.pre_tool_use]]
+# matcher = "bash"
+# command = "echo [project-hook] $PIGS_TOOL_NAME"
+# enabled = false

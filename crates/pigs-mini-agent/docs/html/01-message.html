@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>01 · 消息模型 · Pigs Mini Agent</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <button class="menu-toggle" aria-label="打开导航" type="button">
+    <span></span><span></span><span></span>
+  </button>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="sidebar-brand">
+        <div class="brand-mark">Teaching Codex</div>
+        <div class="brand-title">Pigs Mini Agent</div>
+        <div class="brand-sub">Rust AI Agent · 教学版</div>
+      </div>
+      <nav class="nav">
+        <div class="nav-label">目录</div>
+        <a href="index.html"><span class="nav-num">00</span> 总览</a>
+        <a href="01-message.html"><span class="nav-num">01</span> 消息模型</a>
+        <a href="02-tool.html"><span class="nav-num">02</span> 工具系统</a>
+        <a href="03-prompt.html"><span class="nav-num">03</span> 系统提示词</a>
+        <a href="04-llm.html"><span class="nav-num">04</span> LLM 客户端</a>
+        <a href="05-tools.html"><span class="nav-num">05</span> 内置工具</a>
+        <a href="06-agent.html" class="nav-core"><span class="nav-num">06</span> Agent 循环</a>
+        <a href="07-error.html"><span class="nav-num">07</span> 错误处理</a>
+      </nav>
+      <div class="sidebar-footer">
+        <a href="../../README.md">← README</a>
+      </div>
+    </aside>
+
+    <main class="main">
+      <article class="content">
+        <div class="page-eyebrow reveal">Chapter 01</div>
+        <h1 class="page-title reveal reveal-d1">消息模型</h1>
+        <div class="file-tag reveal reveal-d2">src/message.rs</div>
+        <div class="page-lead reveal reveal-d2">
+          对话历史的数据结构是什么？—— 谁说了什么，消息里有什么。
+        </div>
+
+        <h2 class="reveal reveal-d3"><span class="h-num">01</span> 这个模块解决什么问题？</h2>
+        <p>AI Agent 的对话历史本质就是一个消息列表。这个模块定义了消息的数据结构——「谁说了什么」以及「消息里有什么」。</p>
+
+        <h2><span class="h-num">02</span> 三种数据类型</h2>
+        <div class="ascii-art"><span class="dim">┌─────────────────────────────────────────────────┐</span>
+<span class="dim">│</span>  <span class="hl">Role</span> (角色)
+<span class="dim">│</span>  ├── <span class="accent">System</span>     系统提示词（设定 Agent 行为）
+<span class="dim">│</span>  ├── <span class="accent">User</span>       用户输入
+<span class="dim">│</span>  ├── <span class="accent">Assistant</span>  LLM 回复
+<span class="dim">│</span>  └── <span class="accent">Tool</span>       工具执行结果
+<span class="dim">│</span>
+<span class="dim">│</span>  <span class="hl">ToolCall</span> (工具调用)
+<span class="dim">│</span>  ├── id          唯一标识（用于匹配结果）
+<span class="dim">│</span>  ├── name        工具名
+<span class="dim">│</span>  └── arguments   参数（已解析为 JSON Value）
+<span class="dim">│</span>
+<span class="dim">│</span>  <span class="hl">Message</span> (消息)
+<span class="dim">│</span>  ├── role            消息角色
+<span class="dim">│</span>  ├── content         文本内容
+<span class="dim">│</span>  ├── tool_calls      工具调用列表（仅 assistant）
+<span class="dim">│</span>  └── tool_call_id    关联的工具调用 ID（仅 tool）
+<span class="dim">└─────────────────────────────────────────────────┘</span></div>
+
+        <h2><span class="h-num">03</span> 消息在对话中的流转</h2>
+        <div class="ascii-art">用户输入 → [<span class="accent">User</span> 消息] → 送给 LLM
+                            ↓
+                 LLM 返回 [<span class="hl">Assistant</span> 消息（含工具调用）]
+                            ↓
+                 执行工具 → [<span class="accent">Tool</span> 消息（工具结果）]
+                            ↓
+                 再送给 LLM → 可能再次调用工具...
+                            ↓
+                 LLM 返回 [<span class="hl">Assistant</span> 消息（纯文本）] → 返回给用户</div>
+
+        <h2><span class="h-num">04</span> 关键设计决策</h2>
+        <div class="decision">
+          <div class="decision-q">为什么用 Option&lt;String&gt; 而非 String 存内容？</div>
+          <p>assistant 消息可以只有工具调用、没有文本。用 Option 表示「可能没有文本」。配合 <code>skip_serializing_if</code>，序列化时不输出空字段。</p>
+        </div>
+        <div class="decision">
+          <div class="decision-q">为什么 arguments 是 Value 而非 String？</div>
+          <p>OpenAI API 返回的 arguments 是 JSON <strong>字符串</strong>。在 LLM 层就做 <code>from_str</code> 解析为 Value，下游工具直接拿用——这是 CoreCoder 的设计。</p>
+        </div>
+        <div class="decision">
+          <div class="decision-q">为什么 ToolResult 用独立角色 role: "tool"？</div>
+          <p>OpenAI 用独立 tool 角色；Anthropic 把结果放进 user 消息。本 crate 选 OpenAI 格式，更直观——工具结果就是一种独立的消息。</p>
+        </div>
+
+        <h2><span class="h-num">05</span> API 速览</h2>
+        <h3>Message 构造器</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>方法</th><th>用途</th></tr></thead>
+            <tbody>
+              <tr><td><code>Message::system(text)</code></td><td>创建系统消息</td></tr>
+              <tr><td><code>Message::user(text)</code></td><td>创建用户消息</td></tr>
+              <tr><td><code>Message::assistant_text(text)</code></td><td>纯文本 assistant 消息</td></tr>
+              <tr><td><code>Message::assistant_with_tools(text, calls)</code></td><td>含工具调用的 assistant 消息</td></tr>
+              <tr><td><code>Message::tool_result(id, output, is_error)</code></td><td>工具结果消息</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Message 方法</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>方法</th><th>用途</th></tr></thead>
+            <tbody>
+              <tr><td><code>has_tool_calls()</code></td><td>判断是否包含工具调用</td></tr>
+              <tr><td><code>get_tool_calls()</code></td><td>获取工具调用列表</td></tr>
+              <tr><td><code>to_openai_json()</code></td><td>序列化为 OpenAI API 格式</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2><span class="h-num">06</span> 借鉴对比</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>项目</th><th>消息表示</th><th>区别</th></tr></thead>
+            <tbody>
+              <tr><td>CoreCoder</td><td>裸 dict</td><td>无类型安全</td></tr>
+              <tr><td>pigs-core</td><td>ContentBlock enum</td><td>类型安全，更复杂</td></tr>
+              <tr><td>codex</td><td>ResponseItem（20+ 变体）</td><td>过于庞大</td></tr>
+              <tr><td><strong>本 crate</strong></td><td>Message + Option 字段</td><td>简化版，足够展示核心</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+
+        <!-- WALKTHROUGH -->
+        <section class="walkthrough reveal">
+<hr />
+<h2><span class="h-num">CODE</span> 源码拆解（<code>src/message.rs</code>）</h2>
+<p>本章对应文件约 400 行。下面按<strong>阅读顺序</strong>拆解每一块代码在做什么、为什么这样写。</p>
+<h3>1. 依赖与模块定位</h3>
+<pre data-lang="rust"><code>use serde::{Deserialize, Serialize};
+use serde_json::Value;</code></pre>
+<ul>
+<li><code>Serialize</code> / <code>Deserialize</code>：消息要进对话历史、也要变成 JSON 发给 API。</li>
+<li><code>Value</code>：工具参数是任意 JSON 对象，用动态 JSON 比硬编码 struct 更适合 LLM 输出。</li>
+</ul>
+<p>文件顶部的 <code>//!</code> 文档已经说明：历史 = 消息列表；assistant 可同时带文本和工具调用。</p>
+<h3>2. <code>Role</code> —— 四种说话人</h3>
+<pre data-lang="rust"><code>#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = &quot;lowercase&quot;)]
+pub enum Role {
+    System,
+    User,
+    Assistant,
+    Tool,
+}</code></pre>
+<div class="table-wrap"><table>
+<thead><tr>
+<th>属性</th>
+<th>作用</th>
+</tr></thead><tbody>
+<tr>
+<td><code>Serialize</code></td>
+<td>发 API 时变成 <code>&quot;user&quot;</code> 等字符串</td>
+</tr>
+<tr>
+<td><code>rename_all = &quot;lowercase&quot;</code></td>
+<td>Rust 的 <code>User</code> → JSON 的 <code>&quot;user&quot;</code></td>
+</tr>
+<tr>
+<td>四个变体</td>
+<td>对齐 OpenAI Chat Completions 的四种 role</td>
+</tr>
+</tbody></table></div>
+<p><code>Display</code> 实现把角色打印成小写字符串，<code>to_openai_json()</code> 里直接用 <code>self.role.to_string()</code>。</p>
+<p><strong>设计点</strong>：选 OpenAI 的独立 <code>tool</code> 角色，而不是 Anthropic 把 tool result 塞进 <code>user</code>。教学上更清晰。</p>
+<h3>3. <code>ToolCall</code> —— LLM 的一次“请执行工具”</h3>
+<pre data-lang="rust"><code>pub struct ToolCall {
+    pub id: String,          // 匹配结果用
+    pub name: String,        // 注册表里的工具名
+    pub arguments: Value,  // 已解析的 JSON
+}</code></pre>
+<ul>
+<li><strong>为什么要 <code>id</code></strong>：一轮回复可以有多个 tool_calls；每个 tool 消息必须用同一个 id 回传。</li>
+<li><strong>为什么 <code>arguments</code> 是 <code>Value</code> 不是 <code>String</code></strong>：API 原始字段是 JSON <strong>字符串</strong>；在 <code>llm.rs</code> 的 <code>parse_llm_response</code> 里已经 <code>from_str</code>。下游工具直接 <code>.get(&quot;path&quot;)</code>，不必再解析。</li>
+</ul>
+<h3>4. <code>Message</code> 字段</h3>
+<pre data-lang="rust"><code>pub struct Message {
+    pub role: Role,
+    #[serde(skip_serializing_if = &quot;Option::is_none&quot;)]
+    pub content: Option&lt;String&gt;,
+    #[serde(skip_serializing_if = &quot;Option::is_none&quot;)]
+    pub tool_calls: Option&lt;Vec&lt;ToolCall&gt;&gt;,
+    #[serde(skip_serializing_if = &quot;Option::is_none&quot;)]
+    pub tool_call_id: Option&lt;String&gt;,
+}</code></pre>
+<div class="table-wrap"><table>
+<thead><tr>
+<th>字段</th>
+<th>谁用</th>
+<th>含义</th>
+</tr></thead><tbody>
+<tr>
+<td><code>content</code></td>
+<td>所有角色</td>
+<td>文本；assistant 只有 tool_calls 时可为 <code>None</code></td>
+</tr>
+<tr>
+<td><code>tool_calls</code></td>
+<td>仅 assistant</td>
+<td>LLM 请求执行的工具列表</td>
+</tr>
+<tr>
+<td><code>tool_call_id</code></td>
+<td>仅 tool</td>
+<td>对应哪个 <code>ToolCall.id</code></td>
+</tr>
+</tbody></table></div>
+<p><code>skip_serializing_if</code>：序列化时省略 <code>null</code> 字段，避免 API 收到多余键。</p>
+<h3>5. 五个构造器（工厂方法）</h3>
+<pre data-lang="rust"><code>Message::system(text)              // role=System
+Message::user(text)                // role=User
+Message::assistant_text(text)      // 纯文本结束
+Message::assistant_with_tools(...) // 文本 + tool_calls
+Message::tool_result(id, out, err) // role=Tool</code></pre>
+<p><strong><code>assistant_with_tools</code> 细节</strong>：空字符串则 <code>content = None</code>，避免序列化空 content。</p>
+<p><strong><code>tool_result</code> 细节</strong>：<code>is_error</code> 时在文本前加 <code>[ERROR]</code>，让模型更容易看见失败。</p>
+<h3>6. 查询方法</h3>
+<pre data-lang="rust"><code>pub fn has_tool_calls(&amp;self) -&gt; bool {
+    self.tool_calls.as_ref().is_some_and(|calls| !calls.is_empty())
+}
+
+pub fn get_tool_calls(&amp;self) -&gt; &amp;[ToolCall] { /* Some → 切片，None → &amp;[] */ }</code></pre>
+<p>Agent 用“有没有 tool_calls”决定继续还是结束。</p>
+<h3>7. <code>to_openai_json()</code> —— 内部类型 → API 线格式</h3>
+<ol class="steps">
+<li>写入 <code>role</code></li>
+<li>有 <code>content</code> → 写入</li>
+<li>有 <code>tool_calls</code> → 转成 OpenAI 格式；<strong>注意</strong> <code>arguments</code> 必须再序列化成 <strong>字符串</strong>（<code>tc.arguments.to_string()</code>）</li>
+<li>有 <code>tool_call_id</code> → tool 消息带上</li>
+</ol>
+<h3>8. 测试覆盖</h3>
+<p>构造器字段、<code>has_tool_calls</code>、错误前缀、<code>to_openai_json</code> 三种形态。</p>
+<h3>9. 和 Agent 循环的衔接</h3>
+<div class="table-wrap"><table>
+<thead><tr>
+<th>循环步骤</th>
+<th>Message API</th>
+</tr></thead><tbody>
+<tr>
+<td>用户输入</td>
+<td><code>Message::user</code></td>
+</tr>
+<tr>
+<td>LLM 纯文本结束</td>
+<td><code>Message::assistant_text</code></td>
+</tr>
+<tr>
+<td>LLM 要工具</td>
+<td><code>Message::assistant_with_tools</code></td>
+</tr>
+<tr>
+<td>工具跑完</td>
+<td><code>Message::tool_result</code></td>
+</tr>
+<tr>
+<td>发给 API</td>
+<td>每条 <code>.to_openai_json()</code></td>
+</tr>
+</tbody></table></div>
+<p>读完应能回答：<strong>对话状态如何用类型安全结构表示，并无损映射到 OpenAI 消息格式。</strong></p>
+        </section>
+        <!-- /WALKTHROUGH -->
+        <nav class="page-nav">
+          <a class="prev" href="index.html">
+            <span class="nav-dir">← 上一章</span>
+            <span class="nav-name">总览</span>
+          </a>
+          <a class="next" href="02-tool.html">
+            <span class="nav-dir">下一章 →</span>
+            <span class="nav-name">工具系统</span>
+          </a>
+        </nav>
+      </article>
+    </main>
+  </div>
+  <script src="assets/app.js"></script>
+</body>
+</html>

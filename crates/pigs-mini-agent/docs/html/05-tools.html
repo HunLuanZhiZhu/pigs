@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>05 · 内置工具 · Pigs Mini Agent</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <button class="menu-toggle" aria-label="打开导航" type="button">
+    <span></span><span></span><span></span>
+  </button>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="sidebar-brand">
+        <div class="brand-mark">Teaching Codex</div>
+        <div class="brand-title">Pigs Mini Agent</div>
+        <div class="brand-sub">Rust AI Agent · 教学版</div>
+      </div>
+      <nav class="nav">
+        <div class="nav-label">目录</div>
+        <a href="index.html"><span class="nav-num">00</span> 总览</a>
+        <a href="01-message.html"><span class="nav-num">01</span> 消息模型</a>
+        <a href="02-tool.html"><span class="nav-num">02</span> 工具系统</a>
+        <a href="03-prompt.html"><span class="nav-num">03</span> 系统提示词</a>
+        <a href="04-llm.html"><span class="nav-num">04</span> LLM 客户端</a>
+        <a href="05-tools.html"><span class="nav-num">05</span> 内置工具</a>
+        <a href="06-agent.html" class="nav-core"><span class="nav-num">06</span> Agent 循环</a>
+        <a href="07-error.html"><span class="nav-num">07</span> 错误处理</a>
+      </nav>
+      <div class="sidebar-footer"><a href="../../README.md">← README</a></div>
+    </aside>
+
+    <main class="main">
+      <article class="content">
+        <div class="page-eyebrow reveal">Chapter 05</div>
+        <h1 class="page-title reveal reveal-d1">内置工具</h1>
+        <div class="file-tag reveal reveal-d2">src/tools/</div>
+        <div class="page-lead reveal reveal-d2">
+          四个核心工具覆盖编程 Agent 的「读 → 改 → 验证」循环。
+        </div>
+
+        <div class="ascii-art reveal reveal-d3">读代码          改代码           验证
+  │               │              │
+  ▼               ▼              ▼
+<span class="hl">read_file</span>  →  <span class="accent">edit_file</span>   →  <span class="hl">bash</span>
+              <span class="accent">write_file</span></div>
+
+        <h2><span class="h-num">01</span> 一览</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>工具</th><th>文件</th><th>功能</th></tr></thead>
+            <tbody>
+              <tr><td><code>bash</code></td><td>bash.rs</td><td>执行 shell 命令</td></tr>
+              <tr><td><code>read_file</code></td><td>read_file.rs</td><td>读文件（带行号）</td></tr>
+              <tr><td><code>write_file</code></td><td>write_file.rs</td><td>写文件（自动建目录）</td></tr>
+              <tr><td><code>edit_file</code></td><td>edit_file.rs</td><td>搜索替换（唯一匹配）</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2><span class="h-num">02</span> bash</h2>
+        <p>执行 shell 命令，返回 stdout + stderr + 退出码。</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>特性</th><th>值</th><th>原因</th></tr></thead>
+            <tbody>
+              <tr><td>超时</td><td>120 秒</td><td>防止 tail -f 卡死</td></tr>
+              <tr><td>输出截断</td><td>20000 字符</td><td>防止日志撑爆上下文</td></tr>
+              <tr><td>跨平台</td><td>cmd /C · sh -c</td><td>自动选 shell</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="callout callout-warn">
+          <span class="callout-icon">SAFE</span>
+          <p>教学版不做命令黑名单 / 沙箱。生产级请参考 claw-code PermissionEnforcer 与 codex 沙箱。</p>
+        </div>
+
+        <h2><span class="h-num">03</span> read_file</h2>
+        <p>带行号返回：<code>{行号}\t{行内容}</code>。支持 <code>offset</code> + <code>limit</code> 范围读取，上限 10000 字符。</p>
+
+        <h2><span class="h-num">04</span> write_file</h2>
+        <p>覆盖写入；父目录不存在时 <code>create_dir_all</code>。新建或大改用 write；小改用 edit。</p>
+
+        <h2><span class="h-num">05</span> edit_file —— 核心创新</h2>
+        <div class="quote">
+          <p>行号是陷阱，模型数错一行就悄悄改错地方。用唯一片段锚定，失败可恢复、成功可验证。</p>
+          <footer>—— CoreCoder README</footer>
+        </div>
+        <ol class="steps">
+          <li>LLM 提供 old_string 与 new_string</li>
+          <li>在文件中搜索 old_string</li>
+          <li><strong>恰好 1 次</strong> → 执行替换 ✓</li>
+          <li><strong>0 次</strong> → 错误 + 文件开头片段（重新锚定）</li>
+          <li><strong>多次</strong> → 错误（要求加更多上下文）</li>
+        </ol>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>匹配</th><th>行为</th></tr></thead>
+            <tbody>
+              <tr><td>0 次</td><td>错误 + 文件头 500 字符</td></tr>
+              <tr><td>1 次</td><td>成功替换</td></tr>
+              <tr><td>多次</td><td>错误：加入更多上下文</td></tr>
+              <tr><td>old == new</td><td>错误：无意义替换</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+
+        <!-- WALKTHROUGH -->
+        <section class="walkthrough reveal">
+<hr />
+<h2><span class="h-num">CODE</span> 源码拆解（<code>src/tools/</code>）</h2>
+<h3>0. <code>mod.rs</code> 工厂</h3>
+<pre data-lang="rust"><code>pub fn create_default_tools() -&gt; ToolRegistry {
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(BashTool));
+    registry.register(Box::new(ReadFileTool));
+    registry.register(Box::new(WriteFileTool));
+    registry.register(Box::new(EditFileTool));
+    registry
+}</code></pre>
+<p>四个单元结构体 <code>struct XxxTool;</code>，无字段，行为全在 <code>impl Tool</code>。</p>
+<hr />
+<h3>1. <code>bash.rs</code></h3>
+<pre data-lang="text"><code>input[&quot;command&quot;]
+  → Windows: cmd /C  |  Unix: sh -c
+  → tokio::process::Command + piped stdout/stderr
+  → timeout 120s
+  → 拼 stdout + [stderr] + [退出码: n]
+  → 超过 20000 字符截断</code></pre>
+<ul>
+<li><code>timeout</code> 包 <code>wait_with_output</code>，超时 → <code>ToolError</code>  </li>
+<li>非零退出仍 <code>Ok(String)</code>，退出码写在文本里（<strong>软错误</strong>）  </li>
+<li><code>from_utf8_lossy</code>：非法 UTF-8 不崩  </li>
+</ul>
+<h3>2. <code>read_file.rs</code></h3>
+<pre data-lang="text"><code>path / offset(默认1) / limit(默认2000)
+  → read_to_string → lines 切片
+  → &quot;{line_num}\t{line}\n&quot;
+  → 范围提示 + 10000 字符截断</code></pre>
+<p>行号 1-based；<code>offset-1</code> 转 0-based；<code>.min(total)</code> 防越界。</p>
+<h3>3. <code>write_file.rs</code></h3>
+<pre data-lang="text"><code>path + content
+  → parent 不存在则 create_dir_all
+  → fs::write（覆盖）
+  → 返回字符数/行数摘要</code></pre>
+<h3>4. <code>edit_file.rs</code>（最重要）</h3>
+<pre data-lang="text"><code>path, old_string, new_string
+  → 校验 old != new
+  → read_to_string
+  → match_count = content.matches(old).count()
+  → 0: Err + 文件头 500 字
+  → 1: replacen(..., 1) + write → Ok
+  → _: Err 要求更多上下文</code></pre>
+<p>对应 <code>match match_count { 0 =&gt; ..., 1 =&gt; ..., _ =&gt; ... }</code>。</p>
+<ul>
+<li><code>replacen(..., 1)</code>：唯一时只换一处  </li>
+<li>0 匹配返回文件头：帮模型重新锚定  </li>
+<li>多匹配逼模型加上下文  </li>
+</ul>
+<h3>5. 共同模式</h3>
+<p>每个工具：<code>name</code> / <code>description</code> / <code>parameters</code> → <code>execute</code> 里抽参 → 业务 → <code>Ok(摘要字符串)</code>。</p>
+<p>读完应能指出 <strong>edit_file 三分支各自对应哪几行逻辑</strong>。</p>
+        </section>
+        <!-- /WALKTHROUGH -->
+        <nav class="page-nav">
+          <a class="prev" href="04-llm.html">
+            <span class="nav-dir">← 上一章</span>
+            <span class="nav-name">LLM 客户端</span>
+          </a>
+          <a class="next" href="06-agent.html">
+            <span class="nav-dir">下一章 →</span>
+            <span class="nav-name">Agent 循环</span>
+          </a>
+        </nav>
+      </article>
+    </main>
+  </div>
+  <script src="assets/app.js"></script>
+</body>
+</html>

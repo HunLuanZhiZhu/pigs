@@ -1,0 +1,8 @@
+EXECUTOR phase instructions above.
+
+--- PRE plan/GOAL ---
+{pre_output}
+
+{post_feedback}
+
+Produce the best draft answer after any needed tools.

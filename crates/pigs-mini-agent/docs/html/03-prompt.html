@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>03 · 系统提示词 · Pigs Mini Agent</title>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <button class="menu-toggle" aria-label="打开导航" type="button">
+    <span></span><span></span><span></span>
+  </button>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="sidebar-brand">
+        <div class="brand-mark">Teaching Codex</div>
+        <div class="brand-title">Pigs Mini Agent</div>
+        <div class="brand-sub">Rust AI Agent · 教学版</div>
+      </div>
+      <nav class="nav">
+        <div class="nav-label">目录</div>
+        <a href="index.html"><span class="nav-num">00</span> 总览</a>
+        <a href="01-message.html"><span class="nav-num">01</span> 消息模型</a>
+        <a href="02-tool.html"><span class="nav-num">02</span> 工具系统</a>
+        <a href="03-prompt.html"><span class="nav-num">03</span> 系统提示词</a>
+        <a href="04-llm.html"><span class="nav-num">04</span> LLM 客户端</a>
+        <a href="05-tools.html"><span class="nav-num">05</span> 内置工具</a>
+        <a href="06-agent.html" class="nav-core"><span class="nav-num">06</span> Agent 循环</a>
+        <a href="07-error.html"><span class="nav-num">07</span> 错误处理</a>
+      </nav>
+      <div class="sidebar-footer"><a href="../../README.md">← README</a></div>
+    </aside>
+
+    <main class="main">
+      <article class="content">
+        <div class="page-eyebrow reveal">Chapter 03</div>
+        <h1 class="page-title reveal reveal-d1">系统提示词</h1>
+        <div class="file-tag reveal reveal-d2">src/prompt.rs</div>
+        <div class="page-lead reveal reveal-d2">
+          LLM 本身只是「续写文本」。是系统提示词让它「扮演」一个 Agent。
+        </div>
+
+        <h2 class="reveal reveal-d3"><span class="h-num">01</span> 提示词的四部分</h2>
+        <div class="ascii-art"><span class="dim">┌──────────────────────────────────────────────────┐</span>
+<span class="dim">│</span>  系统提示词 = <span class="accent">身份</span> + <span class="accent">环境</span> + <span class="hl">工具</span> + <span class="accent">规则</span>
+<span class="dim">│</span>
+<span class="dim">│</span>  1. <span class="hl">身份介绍</span>
+<span class="dim">│</span>     "你是 Pigs Mini Agent，一个 AI 助手..."
+<span class="dim">│</span>
+<span class="dim">│</span>  2. <span class="hl">环境信息</span>
+<span class="dim">│</span>     - 工作目录: /home/user/project
+<span class="dim">│</span>     - 操作系统: linux
+<span class="dim">│</span>
+<span class="dim">│</span>  3. <span class="hl">工具清单</span>（动态生成！）
+<span class="dim">│</span>     - **bash**: 执行 shell 命令
+<span class="dim">│</span>     - **read_file**: 读取文件内容
+<span class="dim">│</span>     - **write_file**: 写入文件
+<span class="dim">│</span>     - **edit_file**: 搜索替换编辑
+<span class="dim">│</span>
+<span class="dim">│</span>  4. <span class="hl">行为规则</span>（8 条）
+<span class="dim">│</span>     1. 先读后改 · 2. 小改用编辑 · 3. 验证工作 ...
+<span class="dim">└──────────────────────────────────────────────────┘</span></div>
+
+        <h2><span class="h-num">02</span> 为什么是动态的？</h2>
+        <p>工具列表从 <code>ToolRegistry</code> 遍历生成。注册新工具，提示词自动包含；移除工具，提示词自动不提。不需要手动维护一致性。</p>
+
+        <h2><span class="h-num">03</span> 八条行为规则</h2>
+        <ol class="steps">
+          <li><strong>先读后改</strong> — 修改文件前先读取</li>
+          <li><strong>小改用编辑</strong> — edit_file vs write_file 的选择</li>
+          <li><strong>验证你的工作</strong> — 修改后运行测试</li>
+          <li><strong>简洁明了</strong> — 代码优于废话</li>
+          <li><strong>一步一脚印</strong> — 多步任务按序执行</li>
+          <li><strong>edit_file 唯一性</strong> — old_string 要唯一</li>
+          <li><strong>尊重现有风格</strong> — 匹配项目约定</li>
+          <li><strong>不确定就问</strong> — 别猜</li>
+        </ol>
+        <p>规则来自 CoreCoder 的 <code>prompt.py</code>，是经过实战验证的好规则。</p>
+
+        <div class="quote">
+          <p>改这 80 行里的一行就能看到 Agent 性格变化，是全项目最便宜的「改一处看结果」实验。</p>
+          <footer>—— CoreCoder README</footer>
+        </div>
+
+        <div class="callout callout-tip">
+          <span class="callout-icon">TRY</span>
+          <p>想让 Agent 更谨慎？加一条「修改前先备份」。想更啰嗦？改身份介绍。想注重测试？加「每次修改后必须运行测试」。</p>
+        </div>
+
+        <h2><span class="h-num">04</span> API</h2>
+        <pre data-lang="rust"><code><span class="tok-cm">/// 构建系统提示词 —— 动态拼接工具列表</span>
+<span class="tok-kw">pub fn</span> <span class="tok-fn">build_system_prompt</span>(tools: &amp;ToolRegistry) -&gt; String</code></pre>
+
+        <h2><span class="h-num">05</span> 借鉴对比</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>项目</th><th>提示词来源</th></tr></thead>
+            <tbody>
+              <tr><td>CoreCoder</td><td>prompt.py（33 行）动态拼接 —— 直接灵感</td></tr>
+              <tr><td>pigs</td><td>常量 + AGENTS.md 拼接</td></tr>
+              <tr><td>codex</td><td>base_instructions + skills 注入</td></tr>
+              <tr><td><strong>本 crate</strong></td><td>build_system_prompt(tools) —— 最简版</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+
+        <!-- WALKTHROUGH -->
+        <section class="walkthrough reveal">
+<hr />
+<h2><span class="h-num">CODE</span> 源码拆解（<code>src/prompt.rs</code>）</h2>
+<p>公开 API 只有：<code>build_system_prompt(tools: &amp;ToolRegistry) -&gt; String</code>。</p>
+<h3>1. 函数骨架</h3>
+<pre data-lang="rust"><code>pub fn build_system_prompt(tools: &amp;ToolRegistry) -&gt; String {
+    let identity = &quot;...&quot;;
+    let environment = format!(&quot;...&quot;);
+    let tools_section = format!(&quot;...&quot;);
+    let rules = &quot;...&quot;;
+    format!(&quot;{identity}\n\n{environment}\n\n{tools_section}\n\n{rules}&quot;)
+}</code></pre>
+<p>四段字符串空行拼接。改性格 = 改这几段。</p>
+<h3>2. 身份（静态）</h3>
+<p>硬编码中文身份：终端助手、能写代码改 bug、主动用工具。</p>
+<h3>3. 环境（运行时）</h3>
+<pre data-lang="rust"><code>let cwd = std::env::current_dir()
+    .map(|p| p.display().to_string())
+    .unwrap_or_else(|_| &quot;.&quot;.to_string());
+let os = std::env::consts::OS;</code></pre>
+<p>cwd 失败降级 <code>&quot;.&quot;</code>，避免建 Agent 失败。<code>OS</code> 为 <code>windows</code> / <code>linux</code> / <code>macos</code>。</p>
+<h3>4. 工具清单（动态）</h3>
+<pre data-lang="rust"><code>tools.names().iter().map(|name| {
+    let schemas = tools.schemas();
+    let desc = schemas.iter()
+        .find(|s| s[&quot;function&quot;][&quot;name&quot;].as_str() == Some(name.as_str()))
+        .and_then(|s| s[&quot;function&quot;][&quot;description&quot;].as_str())
+        .unwrap_or(&quot;&quot;);
+    format!(&quot;- **{name}**: {desc}&quot;)
+})</code></pre>
+<ol class="steps">
+<li>取所有注册名  </li>
+<li>在 schemas 里找匹配的 <code>function.name</code>  </li>
+<li>取 <code>description</code>  </li>
+<li>拼 Markdown 列表行  </li>
+</ol>
+<p><strong>教学备注</strong>：对每个 name 都调 <code>schemas()</code> 是 O(n²)；清晰优先，优化可缓存一次 schemas。</p>
+<h3>5. 规则（静态 8 条）</h3>
+<p>来自 CoreCoder：先读后改、小改 edit、验证、简洁、顺序、唯一匹配、风格、不确定就问。</p>
+<h3>6. 谁在调用</h3>
+<p><code>Agent::new</code> 里：<code>let system_prompt = build_system_prompt(&amp;tools);</code></p>
+<p>之后 <code>full_messages()</code> 用 <code>Message::system(&amp;self.system_prompt)</code> 放在历史最前。</p>
+<h3>7. 测试</h3>
+<p>含身份关键字、环境段落、假工具出现在列表、空注册表仍有规则。</p>
+<p>读完应理解：<strong>prompt 是字符串拼装；工具列表必须与 registry 同源。</strong></p>
+        </section>
+        <!-- /WALKTHROUGH -->
+        <nav class="page-nav">
+          <a class="prev" href="02-tool.html">
+            <span class="nav-dir">← 上一章</span>
+            <span class="nav-name">工具系统</span>
+          </a>
+          <a class="next" href="04-llm.html">
+            <span class="nav-dir">下一章 →</span>
+            <span class="nav-name">LLM 客户端</span>
+          </a>
+        </nav>
+      </article>
+    </main>
+  </div>
+  <script src="assets/app.js"></script>
+</body>
+</html>
