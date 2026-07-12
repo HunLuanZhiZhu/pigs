@@ -1,0 +1,42 @@
+[package]
+name = "pigs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Pigs — unique product binary: local phased API by default, --cli for REPL"
+default-run = "pigs"
+
+[[bin]]
+name = "pigs"
+path = "src/main.rs"
+
+[dependencies]
+pigs-core = { workspace = true }
+pigs-llm = { workspace = true }
+pigs-config = { workspace = true }
+pigs-session = { workspace = true }
+pigs-tools = { workspace = true }
+pigs-cli = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+reqwest = { workspace = true }
+async-trait = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+axum = { version = "0.7", features = ["json", "tokio"] }
+tower-http = { version = "0.5", features = ["cors"] }
+futures-util = { workspace = true }
+bytes = "1"
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+[lints]
+workspace = true
