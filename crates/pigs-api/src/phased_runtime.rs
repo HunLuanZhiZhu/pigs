@@ -152,8 +152,9 @@ impl PhasedRuntime {
         )
     }
 
-    /// 从已解析的模型配置构建运行时。
-    /// Build runtime from a resolved model config.
+    /// 从已解析的模型配置构建运行时（直连上游 LLM）。
+    /// Build runtime from a resolved model config (direct upstream connection).
+    #[allow(dead_code)]
     pub fn from_resolved(
         resolved: ResolvedModel,
         limits: RuntimeLimits,

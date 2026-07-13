@@ -1,0 +1,39 @@
+[package]
+name = "pigs-proxy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Multi-protocol HTTP proxy + phased agent router (OpenAI Chat / Anthropic / OpenAI Responses)"
+
+[lib]
+name = "pigs_proxy"
+path = "src/lib.rs"
+
+[dependencies]
+pigs-api = { workspace = true }
+pigs-core = { workspace = true }
+pigs-config = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt", "registry"] }
+tracing-appender = "0.2"
+futures-util = { workspace = true }
+uuid = { version = "1", features = ["v4", "v7"] }
+axum = { version = "0.7", features = ["macros"] }
+tower = "0.5"
+hyper = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
+bytes = "1"
+http-body-util = "0.1"
+toml = { workspace = true }
+
+[lints.clippy]
+# mini-proxy 原有代码使用 unwrap/expect，待逐步迁移
+# Original mini-proxy code uses unwrap/expect; migrate gradually
+unwrap_used = "allow"
+expect_used = "allow"

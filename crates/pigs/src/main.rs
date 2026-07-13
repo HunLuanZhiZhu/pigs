@@ -37,15 +37,16 @@
 // 模块声明 / Module declarations
 // ---------------------------------------------------------------------------
 
-/// HTTP 服务器模块（从 pigs-api crate 导入）。
-/// HTTP server module (imported from pigs-api crate).
-use pigs_api::server;
+/// HTTP 代理 + 相位路由服务器（从 pigs-proxy crate 导入）。
+/// HTTP proxy + phased router server (imported from pigs-proxy crate).
+use pigs_proxy::config::Config as ProxyConfig;
 
 // ---------------------------------------------------------------------------
 // 外部依赖 / External dependencies
 // ---------------------------------------------------------------------------
 
 use std::path::PathBuf;
+use std::str::FromStr;
 
 use clap::Parser;              // 命令行参数解析 / Command-line argument parsing
 use tracing_subscriber::EnvFilter; // tracing 日志级别过滤 / Tracing log level filtering
@@ -223,59 +224,49 @@ async fn main() -> anyhow::Result<()> {
 /// REPL 退出时，API 随之停止。
 /// When the REPL exits, the API stops as well.
 async fn run_api_and_cli(args: &Args) -> anyhow::Result<()> {
-    // 获取当前工作目录，失败时回退到 "." / Get current working directory, fallback to "."
-    let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    // 加载 pigs-proxy 配置（统一配置格式 / mini-proxy 格式 + pigs 顶层字段）
+    // Load pigs-proxy config (unified config format: mini-proxy format + pigs top-level fields)
+    let config_path = std::env::var("PIGS_CONFIG")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("config.toml"));
+    let proxy_config = ProxyConfig::load(config_path.as_path())
+        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
 
-    // 分层加载配置（工作区 .pigs/config.toml + 全局 ~/.pigs/config.toml）
-    // Load layered config: workspace .pigs/config.toml + global ~/.pigs/config.toml
-    let config = pigs_config::AppConfig::load_layered(&workspace)
-        .map_err(|e| anyhow::anyhow!(e.to_string()))?
-        .with_env_overrides(); // 环境变量覆盖 / Apply env var overrides
+    // 从 pigs-proxy 配置构建 PhasedRuntime（通过 ProxyApiClient 走 pigs-proxy 重试）
+    // Build PhasedRuntime from pigs-proxy config (via ProxyApiClient through pigs-proxy retry)
+    let proxy_config_arc = std::sync::Arc::new(proxy_config.clone());
+    let runtime = pigs_proxy::build_phased_runtime(
+        proxy_config_arc,
+        "pigs",
+        pigs_config::Language::from_str(&proxy_config.language).unwrap_or_default(),
+        pigs_api::phased_runtime::RuntimeLimits {
+            max_tokens: proxy_config.max_tokens,
+            temperature: proxy_config.temperature,
+            ..Default::default()
+        },
+    )?;
 
-    // 从配置构建相位运行时 / Build the phased runtime from config
-    // PhasedRuntime 持有 wrapped_model（外部暴露的模型名）和 remote_model（实际后端模型名）
-    // PhasedRuntime holds wrapped_model (externally exposed model name) and
-    // remote_model (actual backend model name)
-    let runtime = pigs_api::phased_runtime::PhasedRuntime::from_config(&config)?;
-    let wrapped = runtime.wrapped_model.clone(); // 包装后模型 ID / Wrapped model ID
-    let root = runtime.remote_model.clone();  // 实际远端模型 / Actual remote model
-    let host_display = args.host.clone();
-    let port = args.port;
-    let host = host_display.clone();
-
-    // 打印启动信息 - 向 stderr 输出，不干扰 stdout 管道
-    // Print startup info to stderr, not interfering with stdout piping
-    eprintln!("[pigs] API: http://{host_display}:{port}  (wrapped: {wrapped}, root: {root})");
     eprintln!("[pigs] CLI: full pigs-cli REPL (tools/MCP/slash commands)");
-    eprintln!("[pigs] /quit to exit (API will stop too)");
+    eprintln!("[pigs] /quit to exit (proxy will stop too)");
     eprintln!();
 
-    // 在后台 tokio 任务中启动 HTTP API 服务器
-    // Spawn the HTTP API server in a background tokio task
+    // 后台启动 pigs-proxy 服务器 / Spawn pigs-proxy server in background
+    let proxy_config_clone = proxy_config.clone();
     let api_handle = tokio::spawn(async move {
-        // server::serve 返回 Future，运行直到 listener 被关闭
-        // server::serve returns a Future, runs until the listener is closed
-        if let Err(e) = server::serve(runtime, &host, port).await {
-            // 服务器错误时打印到 stderr（非致命，repl 仍可用）
-            // Server errors printed to stderr (non-fatal, REPL still usable)
-            eprintln!("[pigs API] server error: {e:#}");
+        if let Err(e) = pigs_proxy::serve(proxy_config_clone, runtime).await {
+            eprintln!("[pigs proxy] server error: {e:#}");
         }
     });
 
-    // 在前台运行 pigs-cli REPL。pigs-cli 自行初始化日志系统。
-    // Run pigs-cli REPL in the foreground. pigs-cli initializes its own logging.
+    // 前台运行 pigs-cli REPL / Run pigs-cli REPL in foreground
     let mut full_args = vec!["pigs".to_string()];
     full_args.extend(args.cli_args.iter().cloned());
     let code = pigs_cli::run_cli_from(full_args).await;
 
-    // REPL 已退出 —— 中止后台 API 服务器任务
-    // REPL has exited — abort the background API server task
+    // REPL 退出 → 中止代理服务器 / REPL exited → abort proxy server
     api_handle.abort();
-    // 等待任务实际停止（忽略结果，因为 abort 后 join 返回 Err）
-    // Wait for the task to actually stop (ignore result since abort causes Err)
     let _ = api_handle.await;
 
-    // 传播 REPL 的退出码 / Propagate REPL exit code
     if code != std::process::ExitCode::SUCCESS {
         std::process::exit(1);
     }
@@ -291,23 +282,29 @@ async fn run_api_and_cli(args: &Args) -> anyhow::Result<()> {
 /// The only difference from run_api_and_cli is that no REPL is started and no
 /// background task is spawned — serve() blocks the current async context until
 /// the server stops.
-async fn run_api_only(args: &Args) -> anyhow::Result<()> {
-    // 同默认模式：加载配置 + 构建运行时
-    // Same as default mode: load config + build runtime
-    let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let config = pigs_config::AppConfig::load_layered(&workspace)
-        .map_err(|e| anyhow::anyhow!(e.to_string()))?
-        .with_env_overrides();
+async fn run_api_only(_args: &Args) -> anyhow::Result<()> {
+    // 加载 pigs-proxy 配置 / Load pigs-proxy config
+    let config_path = std::env::var("PIGS_CONFIG")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("config.toml"));
+    let proxy_config = ProxyConfig::load(config_path.as_path())
+        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
 
-    let runtime = pigs_api::phased_runtime::PhasedRuntime::from_config(&config)?;
-    // 打印 API-only 模式启动信息 / Print API-only mode startup info
-    eprintln!(
-        "[pigs] API-only: http://{}:{}  (wrapped: {}, root: {})",
-        args.host, args.port, runtime.wrapped_model, runtime.remote_model
-    );
-    // 直接 serve（阻塞式），不 spawn 后台任务
-    // Directly serve (blocking-style), no background task spawn
-    server::serve(runtime, &args.host, args.port).await
+    // 构建 PhasedRuntime（-pig 路由用，走 pigs-proxy 重试）/ Build PhasedRuntime
+    let proxy_config_arc = std::sync::Arc::new(proxy_config.clone());
+    let runtime = pigs_proxy::build_phased_runtime(
+        proxy_config_arc,
+        "pigs",
+        pigs_config::Language::from_str(&proxy_config.language).unwrap_or_default(),
+        pigs_api::phased_runtime::RuntimeLimits {
+            max_tokens: proxy_config.max_tokens,
+            temperature: proxy_config.temperature,
+            ..Default::default()
+        },
+    )?;
+
+    // 直接启动代理服务器（阻塞式）/ Start proxy server (blocking)
+    pigs_proxy::serve(proxy_config, runtime).await
 }
 
 // ---------------------------------------------------------------------------

@@ -22,6 +22,7 @@ use std::sync::Arc;
 use pigs_core::Message;
 use serde::{Deserialize, Serialize};
 
+use crate::format::ApiFormat;
 use crate::phased_runtime::{PhasedRuntime, ProgressSink, TurnResult};
 
 /// OpenAI 兼容的聊天消息（请求侧）。
@@ -76,6 +77,9 @@ pub struct ConvertedTurn {
     /// 是否流式
     /// Whether streaming
     pub stream: bool,
+    /// 请求来源的 API 格式（用于构造同格式响应）。
+    /// Source API format (used to build a same-format response).
+    pub format: ApiFormat,
 }
 
 /// 请求转换错误。
@@ -95,6 +99,7 @@ impl ConvertedTurn {
             messages,
             model: req.model.clone().unwrap_or_else(|| "pigs".into()),
             stream: req.stream.unwrap_or(false),
+            format: ApiFormat::OpenAIChat,
         })
     }
 
@@ -107,6 +112,7 @@ impl ConvertedTurn {
             messages,
             model: "pigs".into(),
             stream: false,
+            format: ApiFormat::OpenAIChat,
         }
     }
 }

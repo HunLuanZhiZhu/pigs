@@ -10,6 +10,7 @@ members = [
     "crates/pigs-cli",
     "crates/pigs-prompts",
     "crates/pigs-api",
+    "crates/pigs-proxy",
     "crates/pigs",
     # Teaching-only crate (self-contained mini agent). Not part of the product runtime.
     "crates/pigs-mini-agent",
@@ -36,6 +37,7 @@ pigs-mcp = { path = "crates/pigs-mcp" }
 pigs-cli = { path = "crates/pigs-cli" }
 pigs-prompts = { path = "crates/pigs-prompts" }
 pigs-api = { path = "crates/pigs-api" }
+pigs-proxy = { path = "crates/pigs-proxy" }
 pigs = { path = "crates/pigs" }
 
 # External dependencies

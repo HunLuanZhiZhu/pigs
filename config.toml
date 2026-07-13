@@ -1,0 +1,82 @@
+# pigs 统一配置文件
+# Unified configuration file for pigs
+# 首次运行自动生成，默认配置即可直接使用，无需填写 API Key
+
+# ════════════════════════════════════════════════════════════
+# 一、pigs 顶层字段 / Top-level pigs fields
+# ════════════════════════════════════════════════════════════
+
+language = "zh"                    # UI / 回复语言：zh（默认）或 en
+permission_mode = "workspace_write" # CLI REPL 权限模式
+max_turns = 50                     # Agent 循环最大轮次
+max_tokens = 4096                  # LLM 最大输出 token 数
+temperature = 0.2                 # LLM 温度参数
+compact_token_threshold = 100000  # 压缩阈值（token 数）
+compact_keep_recent = 10          # 压缩时保留的最近消息数
+# system_prompt = ""              # 自定义系统提示词（可选，留空用默认）
+
+# ════════════════════════════════════════════════════════════
+# 二、服务器配置 / Server configuration
+# ════════════════════════════════════════════════════════════
+
+[server]
+listen = "127.0.0.1:3927"          # 本地监听地址（保持 pigs 默认端口）
+clean_empty_content = true         # 清洗请求体中空 content 项
+
+# ════════════════════════════════════════════════════════════
+# 三、日志配置 / Log configuration
+# ════════════════════════════════════════════════════════════
+
+[log]
+level = "info"
+format = "pretty"
+to_stdout = true
+to_file = "logs/pigs.log"
+rotate_size_mb = 50
+rotate_keep = 7
+
+# ════════════════════════════════════════════════════════════
+# 四、供应商配置 / Provider configuration
+# ════════════════════════════════════════════════════════════
+#
+# 每个 provider 支持三种协议端点（可选）：
+#   [provider.openai]       → /chat/completions
+#   [provider.anthropic]    → /v1/messages
+#   [provider.responses]    → /responses
+#
+# 模型 ID 自动 ×2：每个模型对外暴露两个 ID：
+#   {model}     → 透传到上游 LLM
+#   {model}-pig → 走相位化运行时（Pre→Executor→Post）
+#
+# 字段说明 / Field reference:
+#   name            供应商名称（仅用于日志标识）
+#   api_key         API Key（仅 key_mode = "override" 时使用）
+#   models          支持的模型列表（客户端请求的 model 字段需在此列表中）
+#   model_map       模型 ID 映射：客户端模型名 → 上游模型名（默认同名透传）
+#   max_retries     同渠道最大重试次数（总尝试 = max_retries + 1），默认 10000
+#   retry_on_status 触发重试的 HTTP 状态码，支持单值 429 或范围 "500-504"
+#   retry_on_code   触发重试的业务错误码（响应 body 中 error.code 字段）
+#   key_mode        "passthrough"（默认）| "override"
+#   path_mode       "append"（默认）| "full"
+#   thinking_effort 强制思考强度档位："xhigh"/"max"/"high" | "passthrough" | 缺省=最高档
+
+[[provider]]
+name = "AstronCodingPlan"
+api_key = ""
+models = ["xopglm52", "xopglm51", "xopdeepseekv4pro", "xopkimik26", "auto", "xopdeepseekv4flash"]
+max_retries = 10000
+retry_on_code = [10007, 10008, 10009, 10010, 10012, 10110, 10222, 10223, 11200, 11201, 11202, 11203, 11210, 10310]
+key_mode = "passthrough"
+
+[provider.openai]
+thinking_effort = "xhigh"
+base_url = "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2"
+
+[provider.anthropic]
+thinking_effort = "max"
+base_url = "https://maas-coding-api.cn-huabei-1.xf-yun.com/anthropic"
+
+[provider.responses]
+thinking_effort = "xhigh"
+path_mode = "full"
+base_url = "https://maas-coding-api.cn-huabei-1.xf-yun.com/v1/responses"

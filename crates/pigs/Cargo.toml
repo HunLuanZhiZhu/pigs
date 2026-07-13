@@ -19,6 +19,7 @@ pigs-session = { workspace = true }
 pigs-tools = { workspace = true }
 pigs-cli = { workspace = true }
 pigs-api = { workspace = true }
+pigs-proxy = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }

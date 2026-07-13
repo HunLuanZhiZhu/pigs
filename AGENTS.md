@@ -2,7 +2,7 @@
 
 ## 项目目的
 
-**pigs** 是一个**通用 AI Agent**，使用 Rust 多 crate workspace 结构实现。Agent 具备交互式 REPL、多供应商多模型（`[[providers]]`/`[[models]]` + context_window；线格式：Anthropic Messages / OpenAI Responses / OpenAI Chat Completions + SSE）、12 个内置工具、权限系统、会话持久化、`.pigsignore`、文件日志和配置热重载。
+**pigs** 是一个**通用 AI Agent**，使用 Rust 多 crate workspace（13 个 crate）实现。核心架构：pigs-proxy 作为前置路由层，监听单一端口（默认 3927），按 model ID 分流——无 `-pig` 后缀的请求透传上游 LLM（带重试 + body 清洗），有 `-pig` 后缀的请求走 pigs-api 相位运行时（Pre→Executor→Post）。三种 API 协议（OpenAI Chat / Anthropic Messages / OpenAI Responses）输入什么格式输出什么格式。每个配置模型自动 ×2（`{model}` + `{model}-pig`）。Agent 还具备交互式 REPL、16 个内置工具、权限系统、会话持久化、`.pigsignore`、文件日志和配置热重载。
 
 仓库中还包含多个参考 Agent 实现（作为子目录克隆），供架构借鉴。
 
@@ -17,17 +17,21 @@
 
 ```
 pigs/
-├── Cargo.toml                 # workspace 根配置（9 个 crate）
+├── Cargo.toml                 # workspace 根配置（13 个 crate）
+├── config.toml                # 统一配置文件（mini-proxy 格式 + pigs 顶层字段）
 ├── crates/
 │   ├── pigs-core/              # 核心类型 + trait（Message, ContentBlock, ToolHandler, ApiClient, StreamEvent）
 │   ├── pigs-permissions/       # 权限系统（5 级权限模式 + 交互式提示器）
 │   ├── pigs-config/            # 配置管理（TOML + CLAUDE.md/AGENTS.md + 环境变量 + 日志）
 │   ├── pigs-session/           # 会话持久化（JSONL + 自动压缩）
+│   ├── pigs-prompts/           # 相位提示词模板（12 个 .txt 纯文本 + include_str! + 中英双语）
 │   ├── pigs-llm/               # LLM 客户端（Anthropic + OpenAI Responses + OpenAI Chat + SSE）
 │   ├── pigs-tools/             # 内置工具 + ToolRegistry + .pigsignore
 │   ├── pigs-mcp/               # MCP 客户端（stdio + tools/list + tools/call）
-│   ├── pigs-cli/               # 本地 REPL 宿主（library（非产品 bin））
-│   ├── pigs/                   # 相位化运行时（二进制 pigs；见 crates/pigs/docs/理解与规划.md）
+│   ├── pigs-api/               # 相位运行时（Pre→Executor→Post + 三格式 API 转换 + 标记路由）
+│   ├── pigs-proxy/             # 多协议 HTTP 代理 + 重试 + 路由分流 + ProxyApiClient
+│   ├── pigs-cli/               # CLI REPL + Agent 循环（library，非产品 bin）
+│   ├── pigs/                   # 唯一产品二进制（pigs --api | pigs --cli | 默认两者）
 │   └── pigs-mini-agent/        # 教学用最简 Agent（自包含，不依赖 pigs-*）
 ├── .pigsignore                 # 工具搜索忽略模式
 └── docs/
@@ -43,11 +47,14 @@ pigs/
 | `pigs-permissions` | 权限模式、策略、CLI 提示器 |
 | `pigs-config` | TOML 配置、项目记忆（CLAUDE.md 优先/AGENTS.md）、Skills、Rules、Memory |
 | `pigs-session` | JSONL 会话与压缩 |
+| `pigs-prompts` | 相位提示词模板（12 个 .txt 纯文本文件 + include_str! 编译 + 中英双语切换） |
 | `pigs-llm` | Anthropic / OpenAI Responses / OpenAI Chat 客户端与 SSE 流式 |
 | `pigs-tools` | 内置 `ToolHandler` 实现与默认注册表 |
 | `pigs-mcp` | MCP stdio 客户端与 tool bridge |
-| `pigs-cli` | 本地 REPL 宿主（二进制 `pigs-cli`） |
-| `pigs` | 相位化运行时（二进制 `pigs`）；Plan→执行者→Review+Goal；设计见 `crates/pigs/docs/理解与规划.md` |
+| `pigs-api` | 相位运行时（Pre→Executor→Post + 标记 PIGEND/PIGFAILED）+ 三格式 API 转换（OpenAI Chat / Anthropic / Responses）+ 进程内调度 |
+| `pigs-proxy` | 多协议 HTTP 代理 + 同渠道重试（10001 次）+ body 清洗 + 思考强度注入 + `-pig` 路由分流 + ProxyApiClient + dispatch_in_process |
+| `pigs-cli` | CLI REPL + Agent 循环 + 斜杠命令 + MCP + Hooks + 子代理（library，非产品 bin） |
+| `pigs` | 唯一产品二进制；默认模式（pigs-proxy 后台 + pigs-cli REPL 前台）；`--api`（仅代理）；`--cli`（仅 REPL） |
 | `pigs-mini-agent` | 教学用最简自包含 Agent；**禁止**被正式 crate 依赖，也**不要**依赖正式 crate |
 
 ## 构建和测试命令
@@ -57,22 +64,22 @@ cargo build              # 构建
 cargo clippy             # Lint 检查
 cargo test               # 运行测试
 cargo run -- --help      # 显示帮助
-cargo run                # 启动交互式 REPL
+cargo run                # 默认：API 代理 + CLI REPL
+cargo run -- --api       # 仅 API 代理
+cargo run -- --cli       # 仅 CLI REPL
 ```
 
 ## 架构边界
 
 - **pigs-core** 是零内部依赖的基础 crate，定义所有核心 trait（`ApiClient`, `ToolHandler`, `StreamCallback`）。不要在 core 中添加外部依赖。
-- **pigs-llm** 实现 `ApiClient` trait：Anthropic Messages、OpenAI Responses（默认 `api=openai` → `/v1/responses`）、OpenAI Chat Completions（`api=openai-chat`）。不内置第三方供应商品牌，用 `[[providers]]` 配置端点。
-- **协议参考绑定**（实现/加固时固定对照，勿凭空猜协议）：
-  - Anthropic Messages → `claw-code/rust/crates/api` + `pi/packages/ai/src/api/anthropic-messages.ts`
-  - OpenAI Chat Completions → `claw-code/.../openai_compat.rs` + `pi/.../openai-completions.ts`
-  - OpenAI Responses → `codex/codex-rs/codex-api` + `pi/.../openai-responses.ts`（接入形态可对照 `fugu/`）
-  - 共享辅助：`crates/pigs-llm/src/http_util.rs`
+- **pigs-llm** 实现 `ApiClient` trait：Anthropic Messages、OpenAI Responses、OpenAI Chat Completions + SSE 流式。
+- **pigs-prompts** 提示词模板外置为纯文本 `.txt` 文件，编译时 `include_str!` 嵌入，运行时 `.replace()` 填充变量。中英双语，默认 `zh`。
+- **pigs-api** 相位运行时：Pre→Executor→Post + 标记路由（PIGEND/PIGFAILED）。用户 system 透传，相位指令走 user payload。三格式 API 转换（OpenAI Chat / Anthropic / Responses）。
+- **pigs-proxy** 多协议 HTTP 代理：三协议端点（`/chat/completions` / `/v1/messages` / `/responses`）+ 同渠道重试 + body 清洗 + 思考强度注入 + `-pig` 路由分流。`ProxyApiClient` 实现 `ApiClient` trait，通过 `dispatch_in_process` 进程内调度（不走 HTTP loopback）。`build_phased_runtime` 构造相位运行时。
 - **pigs-tools** 实现 `ToolHandler` trait，每个工具一个文件，通过 `ToolRegistry` 统一管理；`grep/glob/list_files` 尊重 `.pigsignore`。
 - **pigs-mcp** 提供最小 MCP 客户端（stdio + Content-Length framing + initialize/tools.list/tools.call）。
-- **pigs-cli** 是本地 REPL 宿主（包名/二进制 `pigs-cli`）。子代理、MCP、斜杠命令等在此。日志 `~/.pigs/logs/`。默认语言 zh。
-- **pigs** 是相位化 Agent 运行时（包名/二进制 `pigs`），API 向：执行前→执行者→执行后；标记 `PIGEND`/`PIGFAILED`；与 cli 共享库 crate。设计见 `crates/pigs/docs/理解与规划.md`。**不是** wasm 交付。
+- **pigs-cli** 是 CLI REPL 库（非产品 bin）。子代理、MCP、斜杠命令等在此。日志 `~/.pigs/logs/`。默认语言 zh。通过 `run_cli_from` 供 pigs 二进制调用。
+- **pigs** 是唯一产品二进制。默认模式：pigs-proxy（后台）+ pigs-cli REPL（前台）。`--api`：仅代理。`--cli`：仅 REPL。端口默认 3927。
 - **pigs-mini-agent** 是教学 crate：自包含、可读优先。不要把产品级功能堆进它；不要让正式 crate 依赖它，也不要让它依赖 `pigs-core` 等正式 crate。
 
 ## 内置工具
@@ -209,9 +216,9 @@ cargo run                # 启动交互式 REPL
 
 ## 当前状态
 
-- 新 Agent **尚未开始**。不要自行发明特性或开始实现。
-- 参考克隆可能不完整——如果目录为空或缺失，可能仍在克隆中。使用前先 `ls` 检查内容。
-- 日期：2026-07-11。
+- 架构已基本确定：pigs-proxy（前置路由）+ pigs-api（相位运行时）+ pigs-cli（REPL）三层。
+- mini-proxy 已移植为 pigs-proxy，原 mini-proxy 目录可删除。
+- 日期：2026-07-13。
 <!-- ARIS-CODEX:BEGIN -->
 ## ARIS Codex Skill Scope
 ARIS skills installed in this project: 80 entries.
@@ -227,7 +234,8 @@ Do not edit or delete junctioned skills in place; update upstream or rerun:
 ## pigs 入口
 
 ```bash
-cargo run -p pigs                 # 本地 API :3927
-cargo run -p pigs -- --cli --     # REPL（转发 pigs-cli）
-cargo run -p pigs -- --once "你好"
+cargo run -p pigs                     # 默认：API 代理 + CLI REPL
+cargo run -p pigs -- --api            # 仅 API 代理
+cargo run -p pigs -- --cli            # 仅 CLI REPL
+cargo run -p pigs -- "你好"           # 一次性对话
 ```

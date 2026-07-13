@@ -18,6 +18,10 @@
 //! - `phased_prompts` — re-export pigs_prompts 的提示词函数
 //!   Re-export of pigs_prompts prompt functions
 
+/// 三种 API 格式的请求解析与响应构造。
+/// Request parsing and response construction for three API formats.
+pub mod format;
+
 /// OpenAI 兼容的本地 HTTP API 服务器。
 /// OpenAI-compatible local HTTP API server.
 pub mod server;

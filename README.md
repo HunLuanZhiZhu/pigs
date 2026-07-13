@@ -2,31 +2,68 @@
 
 一个通用 AI Agent，使用 Rust 多 crate workspace 构建。
 
+## 架构概览
+
+```
+客户端请求 (端口 3927)
+    │
+    ▼
+pigs-proxy (前置路由层)
+    │
+    ├── model 无 -pig 后缀 → 透传到上游 LLM（重试 + body 清洗 + 思考强度注入）
+    │
+    └── model 有 -pig 后缀 → 转给 pigs-api 相位运行时
+                                │
+                                ├── PRE（规划/分流）
+                                ├── Executor（信息收集/起草）
+                                └── POST（审阅/验收/路由）
+                                    │
+                                    │ 每个相位的 LLM 请求
+                                    │ 通过进程内调用回到 pigs-proxy
+                                    │ 自动享受重试
+                                    ▼
+                                上游 LLM
+```
+
+**核心设计**：
+
+- **单一端口**（默认 3927）同时服务三种 API 协议
+- **输入什么格式，输出什么格式**：OpenAI Chat / Anthropic Messages / OpenAI Responses
+- **模型 ID ×2**：每个配置的模型对外暴露两个 ID — `{model}`（透传）+ `{model}-pig`（相位化）
+- **相位运行时的 LLM 请求走 pigs-proxy 进程内调度**：三相位的每个 LLM 调用都自动享受重试（10001 次 + 业务错误码 + SSE error 检测）
+
 ## 功能
 
-- **交互式 REPL** — 支持 rustyline 行编辑的终端交互，SSE 流式输出
-- **多供应商多模型** — 配置 `[[providers]]` / `[[models]]`；线格式：`openai`=Responses(`/v1/responses`，Codex 同款)、`openai-chat`=Chat Completions、`anthropic`=Messages；每模型可设 `context_window`
+### 代理层（pigs-proxy）
+
+- **三协议支持** — `/chat/completions`（OpenAI）、`/v1/messages`（Anthropic）、`/responses`（OpenAI Responses），按路径自动区分
+- **同渠道重试** — HTTP 状态码范围 + 业务错误码双重判断，最多 10001 次，含 SSE 流中途 error 检测
+- **body 清洗** — 移除空 content 消息项，补全 Responses 协议缺失的 `type:"message"`
+- **思考强度注入** — 按协议强制覆盖到最高档（可配置 `passthrough` 透传）
+- **模型名映射** — `model_map` 支持客户端模型名 → 上游模型名转换
+- **API Key 模式** — `passthrough`（透传客户端 Key）或 `override`（用配置 Key 覆盖）
+
+### 相位运行时（pigs-api）
+
+- **三相位流程** — Pre（规划/分流）→ Executor（执行/起草）→ Post（审阅/验收）
+- **控制标记** — `PIGEND`（整轮结束）/ `PIGFAILED`（路径失败，回到 Pre 重规划）/ 无标记（默认回环）
+- **用户 system 透传** — 调用方的 system 消息原样传给 LLM，三相位不覆盖
+- **中英双语提示词** — `language = "zh"`（默认）或 `"en"`，提示词模板外置为纯文本文件（`pigs-prompts`）
+- **进程内调度** — LLM 请求通过 `dispatch_in_process` 走 pigs-proxy 重试，不走 HTTP loopback
+
+### CLI（pigs-cli）
+
+- **交互式 REPL** — rustyline 行编辑，SSE 流式输出
 - **工具调用循环** — 自动解析 LLM 响应中的工具调用并执行（内置工具 + MCP + 子代理）
 - **子代理** — `agent` 工具可委派子任务到独立上下文的只读子代理
 - **权限系统** — 5 级权限模式（ReadOnly / WorkspaceWrite / DangerFullAccess / Ask / Allow）
 - **会话持久化** — JSONL 格式存储，支持 `--resume` 恢复历史会话
 - **上下文压缩** — 自动检测 token 超限并摘要旧消息
-- **配置管理** — TOML 配置文件 + 环境变量覆盖 + 项目记忆（`CLAUDE.md` 优先，否则 `AGENTS.md`）+ `/reload` 热重载
 - **`.pigsignore`** — 与 .gitignore 相同格式，grep/glob/list_files 自动排除
-- **日志文件** — 默认写入 `~/.pigs/logs/pigs.log.YYYY-MM-DD`
-- **MCP 客户端** — stdio JSON-RPC，支持 `tools/list` + `tools/call`，`/mcp` 命令管理
-- **Skills** — 从 `~/.pigs/skills`、`~/.agents/skills`、`.pigs/skills`、`.agents/skills`、`skills/` 加载技能目录；system 仅注入索引，全文由工具 `skill` 按需加载
+- **MCP 客户端** — stdio JSON-RPC，支持 `tools/list` + `tools/call`
+- **Skills** — 从多个目录加载技能，system 仅注入索引，全文按需加载
 - **项目规则** — 从 `.pigs/rules/**/*.md` 注入项目级约束
-- **状态仪表盘** — `/status` 汇总 session/model/tools/mcp/cost
-- **Hooks** — PreToolUse / PostToolUse shell hooks（可按工具名匹配）
-- **并行工具执行** — 同一 turn 内多个工具可并发执行
-- **项目级配置** — `{workspace}/.pigs/config.toml` 覆盖全局配置
-- **JSON 输出** — 一次性模式支持 `--output json`
-- **写操作撤销** — 对 write/edit/apply_patch 自动快照并持久化到 `.pigs/undo/`，可用 `/undo` 回滚
-- **可配置压缩** — `compact_token_threshold` / `compact_keep_recent`
-- **会话导出** — `/export` 导出 markdown 会话记录
-- **会话自动命名** — 取首条用户消息生成标题，可用 `/title` 修改
-- **斜杠命令** — `/help`, `/model`, `/models`, `/mode`, `/tools`, `/todo`, `/status`, `/info`, `/cost`, `/title`, `/history`, `/mcp`, `/skills`, `/rules`, `/memory`, `/export`, `/undo`, `/hooks`, `/doctor`, `/init`, `/reload`, `/compact`, `/clear`, `/save`, `/sessions`, `/quit`
+- **斜杠命令** — `/help`, `/model`, `/models`, `/mode`, `/tools`, `/status`, `/cost`, `/history`, `/mcp`, `/skills`, `/rules`, `/memory`, `/export`, `/undo`, `/doctor`, `/reload`, `/quit` 等
 
 ## 快速开始
 
@@ -38,125 +75,92 @@ cargo build --release
 
 ### 配置
 
-创建 `~/.pigs/config.toml`（也可在 REPL 中执行 `/init`）：
+项目根目录创建 `config.toml`（首次运行自动生成默认配置）：
 
 ```toml
-model = "claude-sonnet-4-20250514"
+# ═══ pigs 顶层字段 ═══
+language = "zh"                    # UI / 回复语言：zh 或 en
 permission_mode = "workspace_write"
 max_turns = 50
 max_tokens = 4096
-temperature = 1.0
-log_to_file = true
-log_level = "info"
+temperature = 0.2
+compact_token_threshold = 100000
+compact_keep_recent = 10
 
-[openai]
-api_key = "sk-..."
-base_url = "https://api.openai.com/v1"
+# ═══ 服务器 ═══
+[server]
+listen = "127.0.0.1:3927"          # 本地监听地址
+clean_empty_content = true
 
-[anthropic]
-api_key = "sk-ant-..."
-base_url = "https://api.anthropic.com"
+# ═══ 日志 ═══
+[log]
+level = "info"
+format = "pretty"
+to_stdout = true
+to_file = "logs/pigs.log"
+rotate_size_mb = 50
+rotate_keep = 7
 
+# ═══ 供应商 ═══
+[[provider]]
+name = "AstronCodingPlan"
+api_key = ""                       # passthrough 模式可留空
+models = ["xopglm52", "auto"]      # 自动 ×2（每个 + -pig 版本）
+max_retries = 10000
+retry_on_code = [10007, 10008, 10009, 10010, 10012, 10110]
+key_mode = "passthrough"           # passthrough | override
 
+[provider.openai]                  # → /chat/completions
+thinking_effort = "xhigh"
+base_url = "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2"
 
+[provider.anthropic]               # → /v1/messages
+thinking_effort = "max"
+base_url = "https://maas-coding-api.cn-huabei-1.xf-yun.com/anthropic"
 
-# Multi-provider / multi-model catalog (optional)
-# [[providers]]
-# name = "openai"
-# api = "openai"          # Responses API (default for OpenAI)
-# api_key = "sk-..."
-# base_url = "https://api.openai.com/v1"
-#
-# [[providers]]
-# name = "deepseek"
-# api = "openai-chat"   # third-party often only supports Chat Completions
-# api_key = "sk-..."
-# base_url = "https://api.deepseek.com"
-#
-# [[providers]]
-# name = "ollama"
-# api = "openai"
-# api_key = "ollama"
-# base_url = "http://localhost:11434/v1"
-#
-# [[providers]]
-# name = "anthropic"
-# api = "anthropic"
-# api_key = "sk-ant-..."
-#
-# [[models]]
-# name = "sonnet"
-# provider = "anthropic"
-# model = "claude-sonnet-4-20250514"
-# context_window = 200000
-#
-# [[models]]
-# name = "ds-chat"
-# provider = "deepseek"
-# model = "deepseek-chat"
-# context_window = 65536
-# max_tokens = 4096
-#
-# Optional MCP servers (stdio)
-# [[mcp_servers]]
-# name = "filesystem"
-# command = "npx"
-# args = ["-y", "@modelcontextprotocol/server-filesystem", "."]
-# enabled = true
-
-# Optional tool hooks
-# [[hooks.pre_tool_use]]
-# matcher = "bash"
-# command = "echo pre-check $PIGS_TOOL_NAME"
-# timeout = 10
-# enabled = true
-#
-# [[hooks.post_tool_use]]
-# matcher = "*"
-# command = "echo done $PIGS_TOOL_NAME is_error=$PIGS_TOOL_IS_ERROR"
-# enabled = true
+[provider.responses]               # → /responses
+thinking_effort = "xhigh"
+path_mode = "full"
+base_url = "https://maas-coding-api.cn-huabei-1.xf-yun.com/v1/responses"
 ```
 
-或使用环境变量：
+### 运行
 
 ```bash
-export ANTHROPIC_API_KEY="sk-ant-..."
-export OPENAI_API_KEY="sk-..."
-export PIGS_MODEL="sonnet"  # 别名: opus, sonnet, haiku, gpt-4, gpt-4o, gpt-4o-mini
-export PIGS_LOG_LEVEL="info"
-export PIGS_LOG_TO_FILE="true"
-```
-
-### 使用
-
-```bash
-# 交互式 REPL
+# 默认：API 代理（后台）+ CLI REPL（前台）
 pigs
 
-# 一次性执行
-pigs "解释这个项目的架构"
+# 仅 API 代理（无 REPL）
+pigs --api
 
-# 指定模型和权限
-pigs --model gpt-4o --mode readonly "读取 README.md"
+# 仅 CLI（无 API 代理）
+pigs --cli
 
-# 第三方 OpenAI 兼容端点：配置 [openai].base_url + api_key，再指定对方 model id
-# pigs --model my-local-model "..."
+# 一次性对话
+pigs "分析这个项目"
 
-# 一次性 JSON 输出（脚本集成）
-pigs --output json "用三句话总结本仓库"
-
-# 恢复之前的会话
-pigs --resume <session-id>
-
-# 列出所有保存的会话
-pigs --list-sessions
-
-# 禁用工具（纯聊天模式）
-pigs --no-tools "写一首关于编程的诗"
-
-# 自定义系统提示词
-pigs --system-prompt "你是一个 Python 专家" "优化这段代码"
+# 指定模型
+pigs --model auto-pig "你好"
 ```
+
+### 对外服务端点
+
+```
+POST http://127.0.0.1:3927/chat/completions   → OpenAI Chat 协议
+POST http://127.0.0.1:3927/v1/messages        → Anthropic 协议
+POST http://127.0.0.1:3927/responses          → OpenAI Responses 协议
+GET  http://127.0.0.1:3927/v1/models          → 模型列表（×2）
+GET  http://127.0.0.1:3927/health             → 健康检查
+```
+
+### 模型 ID ×2
+
+每个配置的模型自动暴露两个 ID：
+
+| 模型 ID | 路径 | 说明 |
+|---|---|---|
+| `xopglm52` | 透传 | 直接转发到上游 LLM（带重试） |
+| `xopglm52-pig` | 相位化 | 走 Pre→Executor→Post 三相位 |
 
 ## 内置工具
 
@@ -173,7 +177,7 @@ pigs --system-prompt "你是一个 Python 专家" "优化这段代码"
 | `git_diff` | ReadOnly | 查看 git unstaged/staged 变更 |
 | `web_fetch` | ReadOnly | HTTP GET 抓取网页内容 |
 | `web_search` | ReadOnly | DuckDuckGo 即时搜索/摘要 |
-| `http_request` | ReadOnly | 通用 HTTP 请求（GET/POST/PUT/PATCH/DELETE/HEAD，支持 headers/json/body） |
+| `http_request` | ReadOnly | 通用 HTTP 请求 |
 | `ask_user` | ReadOnly | 结构化用户提问 |
 | `todo_write` | ReadOnly | 任务跟踪 |
 | `sleep` | ReadOnly | 暂停执行 |
@@ -181,137 +185,113 @@ pigs --system-prompt "你是一个 Python 专家" "优化这段代码"
 
 ## Crate 一览
 
-本仓库是 **一个产品运行时 + 一个教学 crate** 的 monorepo。  
-日常使用入口是 **`pigs-cli`（二进制 `pigs`）**；相位运行时是 **`pigs`（二进制 pigs）**；想理解 Agent 最小循环时读 **`pigs-mini-agent`**。
-
 ### 依赖分层
 
 ```
-Layer 0:  pigs-core
-Layer 1:  pigs-permissions, pigs-config, pigs-session
-Layer 2:  pigs-llm, pigs-tools, pigs-mcp
-Layer 3:  pigs              ← 相位运行时（二进制 pigs）
-          pigs-cli          ← 本地 REPL（library（非产品 bin））
-          pigs              ← 相位运行时（二进制 pigs）
+Layer 0:  pigs-core              ← 核心类型 + trait（零内部依赖）
+Layer 1:  pigs-permissions        ← 权限系统
+          pigs-config             ← 配置 + AGENTS.md + 语言
+          pigs-session            ← 会话持久化
+          pigs-prompts            ← 提示词模板（纯文本文件 + include_str!）
+Layer 2:  pigs-llm               ← LLM 客户端（OpenAI / Anthropic / DeepSeek / Ollama）
+          pigs-tools              ← 内置工具 + ToolRegistry + .pigsignore
+          pigs-mcp                ← MCP 客户端（stdio）
+Layer 3:  pigs-api               ← 相位运行时 + 三格式 API 转换
+          pigs-proxy              ← 多协议 HTTP 代理 + 重试 + 路由分流
+Layer 4:  pigs-cli               ← CLI REPL + Agent 循环（library）
+          pigs                    ← 产品二进制（API 代理 + CLI REPL）
 
-旁路（自包含，不依赖 pigs-*，也不被 pigs-* 依赖）:
-          pigs-mini-agent   ← 教学用最简 Agent
+旁路:     pigs-mini-agent         ← 教学用最简 Agent（自包含）
 ```
 
 ### 各 Crate 作用
 
 | Crate | 类型 | 作用 |
 |---|---|---|
-| **`pigs-core`** | 库 | 零内部依赖的基础层。定义消息模型（`Message` / `ContentBlock`）、工具抽象（`ToolHandler` / `ToolRegistry` / `ToolSpec`）、LLM 抽象（`ApiClient` / `ApiRequest` / `StreamEvent` / `StreamCallback`）、以及 `TokenUsage`。其他正式 crate 都依赖它。 |
-| **`pigs-permissions`** | 库 | 权限系统。`PermissionMode`（有序：ReadOnly &lt; WorkspaceWrite &lt; DangerFullAccess，外加 Ask / Allow）、`PermissionPolicy`、交互式 `PermissionPrompter`。决定工具在何种模式下可执行。 |
-| **`pigs-config`** | 库 | 配置与提示词素材。加载全局/项目 TOML、环境变量覆盖；解析项目记忆（`CLAUDE.md` 优先 / `AGENTS.md`）；加载 Skills、项目 Rules、跨会话 Memory；组装系统提示词相关片段。 |
-| **`pigs-session`** | 库 | 会话持久化。JSONL 读写、会话元数据与前缀匹配、自动标题、上下文压缩（`compact`）。会话文件默认在 `~/.pigs/sessions/`。 |
-| **`pigs-llm`** | 库 | API 格式：Anthropic Messages、OpenAI Responses（默认 `/v1/responses`）、OpenAI Chat Completions（`openai-chat`）。 |
-| **`pigs-tools`** | 库 | 内置工具实现（每个工具一个模块）+ 默认 `ToolRegistry` 装配 + `.pigsignore`。不包含需要 `ApiClient` 的子代理工具（子代理在 CLI 层）。 |
-| **`pigs-mcp`** | 库 | 最小 MCP 客户端：stdio + Content-Length framing + `initialize` / `tools/list` / `tools/call`。通过 `McpToolHandler` 把远端工具桥成 `ToolHandler`。 |
-| **`pigs-cli`** | 二进制 | 本地 REPL 宿主（二进制名 `pigs-cli`）。 |
-| **`pigs`** | 二进制 | 相位化 Agent 运行时（Plan→执行者→Review+Goal）。设计：`crates/pigs/docs/理解与规划.md`。 |
-| **`pigs-mini-agent`** | 教学库 | **教学用最简 Agent**（“Agent 的 nanoGPT”）。自包含：消息 / 工具 trait / 非流式 OpenAI 兼容 LLM / 4 个工具 / Agent 循环；附带章节文档与 `examples/chat`。**不依赖** `pigs-core` 等正式 crate，正式 crate 也**不得依赖**它。注释以中文为主（教学例外）。 |
+| **`pigs-core`** | 库 | 核心类型：`Message` / `ContentBlock` / `ApiClient` trait / `ToolHandler` trait / `ToolRegistry`。零内部依赖。 |
+| **`pigs-permissions`** | 库 | 权限系统：5 级 `PermissionMode` + `PermissionPolicy` + 交互式 `PermissionPrompter`。 |
+| **`pigs-config`** | 库 | 配置管理：TOML 加载 + 环境变量覆盖 + AGENTS.md 解析 + Skills/Rules/Memory 加载 + `Language` 枚举。 |
+| **`pigs-session`** | 库 | 会话持久化：JSONL 读写 + 自动压缩 + 会话元数据。 |
+| **`pigs-prompts`** | 库 | 相位提示词模板：12 个 `.txt` 纯文本文件 + `include_str!` 编译 + `Language` 中英切换 + `.replace()` 填充变量。 |
+| **`pigs-llm`** | 库 | LLM 客户端：OpenAI Responses / OpenAI Chat Completions / Anthropic Messages + SSE 流式。 |
+| **`pigs-tools`** | 库 | 内置工具实现（每工具一个文件）+ 默认 `ToolRegistry` + `.pigsignore`。 |
+| **`pigs-mcp`** | 库 | MCP 客户端：stdio + Content-Length framing + `tools/list` + `tools/call`。 |
+| **`pigs-api`** | 库 | 相位运行时（Pre→Executor→Post）+ 三格式 API 转换（OpenAI Chat / Anthropic / Responses）+ 标记路由 + 进度回调。 |
+| **`pigs-proxy`** | 库 | 多协议 HTTP 代理：三协议端点 + 同渠道重试 + body 清洗 + 思考强度注入 + `-pig` 路由分流 + `ProxyApiClient`（进程内调度）+ `dispatch_in_process`。 |
+| **`pigs-cli`** | 库 | CLI REPL + Agent 循环 + 斜杠命令 + MCP + Hooks + 子代理。产品二进制通过 `run_cli_from` 调用。 |
+| **`pigs`** | 二进制 | 唯一产品入口。默认模式：pigs-proxy（后台）+ pigs-cli REPL（前台）。`--api`：仅代理。`--cli`：仅 REPL。 |
+| **`pigs-mini-agent`** | 教学库 | 最简 Agent（"Agent 的 nanoGPT"）。自包含，不依赖 pigs-* crate。 |
 
-### 边界约定
+### 提示词模板
 
-- 正式产品能力只加在 Layer 0–3；不要把“完整 Agent 功能”堆进 `pigs-mini-agent`。
-- `pigs-mini-agent` 保持可读、自包含；与产品栈对照阅读，而不是替换 `pigs`。
-- 参考项目目录（`CoreCoder/`、`claw-code/`、`codex/`、`fugu/`、`oh-my-openagent/`、`oh-my-pi/` 等）是独立嵌套仓库，**不是** workspace members。详见 `docs/参考项目分析.md`。
+提示词外置为纯文本文件，方便人类查看和修改：
+
+```
+crates/pigs-prompts/prompts/
+├── pre_zh.txt           # PRE 相位指令（中文）
+├── pre_en.txt           # PRE 相位指令（英文）
+├── pre_user_zh.txt      # PRE user payload 模板
+├── pre_user_en.txt
+├── executor_zh.txt
+├── executor_en.txt
+├── executor_user_zh.txt
+├── executor_user_en.txt
+├── post_zh.txt
+├── post_en.txt
+├── post_user_zh.txt
+└── post_user_en.txt
+```
+
+编译时通过 `include_str!` 嵌入，运行时用 `.replace()` 填充变量。
 
 ## Workspace 结构
 
 ```
 pigs/
-├── Cargo.toml                 # workspace 根配置
-├── crates/                    # pigs 产品代码（见上文 Crate 一览）
-├── skills/                    # 可选技能目录
-├── .pigsignore
+├── Cargo.toml                 # workspace 根配置（13 个 crate）
+├── config.toml                # 统一配置文件
+├── crates/
+│   ├── pigs-core/             # 核心类型 + trait
+│   ├── pigs-permissions/      # 权限系统
+│   ├── pigs-config/           # 配置管理
+│   ├── pigs-session/          # 会话持久化
+│   ├── pigs-prompts/          # 提示词模板（纯文本 + include_str!）
+│   ├── pigs-llm/              # LLM 客户端
+│   ├── pigs-tools/            # 内置工具
+│   ├── pigs-mcp/              # MCP 客户端
+│   ├── pigs-api/              # 相位运行时 + 三格式 API 转换
+│   ├── pigs-proxy/            # 多协议 HTTP 代理 + 重试 + 路由
+│   ├── pigs-cli/              # CLI REPL（library）
+│   ├── pigs/                  # 产品二进制
+│   └── pigs-mini-agent/       # 教学用最简 Agent
 ├── docs/
 │   ├── agent-design.md        # 架构设计文档
-│   └── 参考项目分析.md          # 参考项目综合分析（13 个）
+│   └── 参考项目分析.md          # 参考项目综合分析
 └── 参考项目/（独立 git，不参与 cargo workspace）
-    ├── CoreCoder/ claw-code/ cline/ codex/
-    ├── deepseek-reasonix/ hermes-agent/ kilocode/
-    ├── openclaw/ opencode/ pi/
-    ├── fugu/                  # Sakana 多模型编排 · Codex 接入
-    ├── oh-my-openagent/       # 多 harness 插件式 Agent OS
-    └── oh-my-pi/              # Pi fork · TS+Rust · IDE 级工具
 ```
-
-### 教学 crate 用法
-
-```bash
-# 运行教学示例（需 OPENAI_API_KEY 或兼容端点）
-cargo run -p pigs-mini-agent --example chat
-
-# 阅读教学文档
-# crates/pigs-mini-agent/README.md
-# crates/pigs-mini-agent/docs/html/index.html
-```
-
-
-## 参考项目
-
-仓库中还克隆了多个独立 Agent 实现，供架构借鉴（**不参与** `cargo` 构建）。完整分析见 [`docs/参考项目分析.md`](docs/参考项目分析.md)。
-
-| 目录 | 语言 | 一句话 |
-|---|---|---|
-| `CoreCoder/` | Python | 极简教学 Agent（“coding agent 的 nanoGPT”） |
-| `claw-code/` | **Rust** | Claude Code 的 Rust 端口；crate 分层与安全设计 |
-| `cline/` | TypeScript | 多面 Agent + 分层 SDK |
-| `codex/` | **Rust** | OpenAI Codex CLI；Responses API 与沙箱 |
-| `deepseek-reasonix/` | Go | DeepSeek 向编程 Agent |
-| `hermes-agent/` | Python | 自我改进 / 技能闭环 |
-| `kilocode/` | TypeScript | 多 IDE；CLI fork 自 opencode |
-| `openclaw/` | TypeScript | 自托管助手；渠道与扩展 |
-| `opencode/` | TypeScript | 大型开源编程 Agent monorepo |
-| `pi/` | TypeScript | Agent harness 框架 |
-| `fugu/` | 配置/接入 | **Sakana Fugu**：多模型编排以单 model API 交付；Codex 安装包 |
-| `oh-my-openagent/` | TypeScript | **OmO**：多 harness 插件、Team Mode、ultrawork |
-| `oh-my-pi/` | TS + **Rust** | **omp**：Pi fork，LSP/DAP/工具质量与 Rust 热路径 |
-
-对 pigs 当前方向特别相关：
-
-- **fugu** — 专家团/协调器 +「一个 model 对外」的产品形态
-- **oh-my-openagent** — Team Mode / hooks / 多 harness 适配
-- **oh-my-pi** — 工具与 harness 质量、Rust 本地核心
-- **codex / claw-code** — Rust 实现与 OpenAI Responses 线格式
 
 ## 开发
 
 ```bash
-# 构建全部 members（含教学 crate）
+# 构建全部
 cargo build
 
 # 只构建产品入口
-cargo build -p pigs
 cargo build -p pigs
 
 # 运行测试
 cargo test
 
-# 仅测试教学 crate
-cargo test -p pigs-mini-agent
-
 # Lint 检查
 cargo clippy
 
-# 运行产品 CLI
-cargo run -p pigs -- --cli
-# 或
-cargo run -- --help
+# 运行产品
+cargo run -p pigs                    # 默认：API + CLI
+cargo run -p pigs -- --api           # 仅 API
+cargo run -p pigs -- --cli           # 仅 CLI
+cargo run -p pigs -- "你好"          # 一次性对话
 ```
 
 ## 许可证
 
 MIT
-
-
-## pigs 入口
-
-```bash
-cargo run -p pigs                 # 本地 API :3927
-cargo run -p pigs -- --cli --     # REPL（转发 pigs-cli）
-cargo run -p pigs -- --once "你好"
-```
