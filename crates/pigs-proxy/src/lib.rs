@@ -33,6 +33,62 @@ use std::sync::Arc;
 use axum::http::HeaderMap;
 use serde_json::Value;
 
+// Task-local 存储：当前请求的客户端认证头（`Authorization` / `x-api-key`）。
+// Task-local storage: the current request's client auth headers.
+//
+// `-pig` 路径是进程内调用（`dispatch_in_process`），没有 HTTP 请求头。
+// 但上游需要 API Key。通过 task-local 在 `handle_pig` 入口存入客户端
+// 的 auth 头，`dispatch_in_process` 读取后传给 `retry::dispatch`。
+//
+// The `-pig` path is an in-process call (`dispatch_in_process`) with no HTTP
+// headers. But upstream needs an API Key. This task-local stores the client's
+// auth headers at the `handle_pig` entry point; `dispatch_in_process` reads
+// them and passes them to `retry::dispatch`.
+tokio::task_local! {
+    /// 当前请求的客户端头（仅含 auth 相关头）。
+    /// The current request's client headers (auth-related only).
+    pub static CLIENT_HEADERS: HeaderMap;
+}
+
+/// 在 task-local 上下文中执行异步函数，注入客户端头。
+/// Run an async function within a task-local context that injects client headers.
+///
+/// 供 `handle_pig` / `stream_pig` 调用：把外部客户端的 `Authorization` /
+/// `x-api-key` 头存入 task-local，这样 `-pig` 路径的 `dispatch_in_process`
+/// 就能读取到 auth 头，传给上游。
+///
+/// Called by `handle_pig` / `stream_pig`: stores the external client's
+/// `Authorization` / `x-api-key` headers in task-local so that
+/// `dispatch_in_process` in the `-pig` path can read them and forward to upstream.
+pub async fn with_client_headers<F, R>(headers: HeaderMap, f: F) -> R
+where
+    F: std::future::Future<Output = R>,
+{
+    // 只保留 auth 相关的头，避免泄露无关信息
+    // Keep only auth-related headers to avoid leaking unrelated info
+    let auth_headers: HeaderMap = headers
+        .iter()
+        .filter(|(name, _)| {
+            let lower = name.as_str().to_lowercase();
+            lower == "authorization" || lower == "x-api-key" || lower == "anthropic-version"
+        })
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect();
+    CLIENT_HEADERS.scope(auth_headers, f).await
+}
+
+/// 获取当前 task-local 中的客户端头（如有）。
+/// Get the client headers from task-local (if any).
+///
+/// `dispatch_in_process` 调用此函数获取 auth 头。
+/// 如果不在 task-local 上下文中（如 CLI 直接调用），返回空 `HeaderMap`。
+///
+/// `dispatch_in_process` calls this to get auth headers.
+/// Returns an empty `HeaderMap` if not in a task-local context (e.g. CLI).
+pub fn current_client_headers() -> HeaderMap {
+    CLIENT_HEADERS.try_with(|h| h.clone()).unwrap_or_default()
+}
+
 /// 从 pigs-proxy 配置构建 PhasedRuntime（通过 ProxyApiClient 走 pigs-proxy 重试）。
 ///
 /// Build a PhasedRuntime from pigs-proxy config (via ProxyApiClient through pigs-proxy retry).
@@ -64,6 +120,7 @@ pub fn build_phased_runtime(
         tools: info_tool_registry(),
         limits,
         language,
+        is_pig: true,
     })
 }
 
@@ -136,8 +193,11 @@ pub async fn dispatch_in_process(
         serde_json::to_vec(&parsed).unwrap_or_else(|_| serde_json::to_vec(body).unwrap_or_default()),
     );
 
-    // 空请求头（进程内调用无客户端头）/ Empty headers (no client headers in-process)
-    let headers = HeaderMap::new();
+    // 从 task-local 获取客户端 auth 头（-pig HTTP 路径注入）；
+    // 如果不在 task-local 上下文中（如 CLI 直接调用），返回空。
+    // Get client auth headers from task-local (injected by -pig HTTP path);
+    // returns empty if not in a task-local context (e.g. CLI direct call).
+    let headers = current_client_headers();
 
     // 走重试调度 / Go through retry dispatch
     let outcome = retry::dispatch(client, &endpoint, protocol, &body_bytes, &headers).await;
@@ -178,7 +238,9 @@ pub async fn serve(
     config: config::Config,
     runtime: pigs_api::phased_runtime::PhasedRuntime,
 ) -> Result<()> {
-    log::init(&config.log)?;
+    // 注意：日志初始化由调用方负责，避免与 pigs-cli 的 init_logging 冲突。
+    // Logging initialization is the caller's responsibility, to avoid
+    // conflicting with pigs-cli's init_logging ("global default subscriber already set").
     tracing::info!("配置加载完成");
 
     // 启动时打印渠道信息 / Print provider info at startup

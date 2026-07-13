@@ -101,7 +101,7 @@ async fn handle(
     // Route: -pig suffix → phased runtime; no suffix → passthrough
     // ================================================================
     if client_model.ends_with("-pig") {
-        return handle_pig(&state, protocol, &client_model, &body).await;
+        return handle_pig(&state, protocol, &client_model, &body, headers).await;
     }
 
     handle_passthrough(&state, protocol, &client_model, &headers, parsed, &body).await
@@ -115,6 +115,7 @@ async fn handle_pig(
     protocol: Protocol,
     client_model: &str,
     body: &Bytes,
+    client_headers: HeaderMap,
 ) -> Response<Body> {
     // 剥离 -pig 后缀得到真实模型名 / Strip -pig suffix to get real model name
     let real_model = client_model.trim_end_matches("-pig");
@@ -155,19 +156,26 @@ async fn handle_pig(
     // 判断是否流式 / Check if streaming
     let is_stream = converted.stream;
 
+    // 把客户端 auth 头注入 task-local，供 dispatch_in_process 读取
+    // Inject client auth headers into task-local for dispatch_in_process
     if is_stream {
-        // 流式响应：用 pigs-api 的 SSE 流式逻辑
-        // Streaming: use pigs-api SSE streaming logic
-        // 简化处理：非流式执行后返回（流式后续完善）
-        // Simplified: execute non-streaming then return (streaming TODO)
+        // 流式响应：基于 ProgressSink 构造 SSE 流
+        // Streaming: build SSE stream based on ProgressSink
+        return crate::with_client_headers(client_headers.clone(), async {
+            stream_pig(state, protocol, client_model, converted, client_headers).await
+        })
+        .await;
     }
 
     // 非流式：执行相位对话 / Non-streaming: execute phased turn
-    let result = match pigs_api::phased_api_convert::run_converted_turn_arc(
-        &state.runtime,
-        &converted,
-        None,
-    )
+    let result = match crate::with_client_headers(client_headers, async {
+        pigs_api::phased_api_convert::run_converted_turn_arc(
+            &state.runtime,
+            &converted,
+            None,
+        )
+        .await
+    })
     .await
     {
         Ok(r) => r,
@@ -188,6 +196,126 @@ async fn handle_pig(
     resp.headers_mut().insert(
         axum::http::header::CONTENT_TYPE,
         axum::http::HeaderValue::from_static("application/json"),
+    );
+    resp
+}
+
+/// 处理 `-pig` 模型的流式请求：基于 `ProgressSink` 构造 SSE 流。
+///
+/// Handle streaming for `-pig` models: build SSE stream from `ProgressSink`.
+///
+/// `PhasedRuntime` 内部每个阶段的文本增量通过 `ProgressSink::TextDelta`
+/// 回调发出。这里把每个 `TextDelta` 转成对应协议的 SSE 帧，通过
+/// `tokio::sync::mpsc` channel 推送到 SSE body 流。
+///
+/// Each phase's text deltas are emitted via `ProgressSink::TextDelta`.
+/// This converts each `TextDelta` into a protocol-specific SSE frame and
+/// pushes it through a `tokio::sync::mpsc` channel into the SSE body stream.
+async fn stream_pig(
+    state: &AppState,
+    protocol: Protocol,
+    client_model: &str,
+    converted: pigs_api::phased_api_convert::ConvertedTurn,
+    client_headers: HeaderMap,
+) -> Response<Body> {
+    use pigs_api::format::ApiFormat;
+    use pigs_api::phased_runtime::{ProgressSink, TurnProgress};
+    use tokio::sync::mpsc;
+
+    let format = match protocol {
+        Protocol::OpenAI => ApiFormat::OpenAIChat,
+        Protocol::Anthropic => ApiFormat::Anthropic,
+        Protocol::Responses => ApiFormat::OpenAIResponses,
+    };
+
+    let id = uuid::Uuid::new_v4().to_string();
+    let created = chrono::Utc::now().timestamp();
+    let model = client_model.to_string();
+
+    // 创建无界 channel 用于 SSE 帧 / Create unbounded channel for SSE frames
+    let (tx, rx) = mpsc::unbounded_channel::<String>();
+
+    // 发送首帧（role chunk / message_start）
+    // Send the first frame (role chunk / message_start)
+    let _ = tx.send(format.role_chunk(&id, created, &model));
+
+    // 创建 ProgressSink：把 TextDelta 转成 SSE 帧推入 channel
+    // Create ProgressSink: convert TextDelta into SSE frames and push to channel
+    // 需要 clone id/model/format 给 sink 闭包，因为它们也被 spawn 的任务使用
+    // Clone id/model/format for the sink closure since they're also used by the spawned task
+    let tx_clone = tx.clone();
+    let id_sink = id.clone();
+    let model_sink = model.clone();
+    let sink: ProgressSink = std::sync::Arc::new(move |p: TurnProgress| {
+        if let TurnProgress::TextDelta { text, .. } = p {
+            if !text.is_empty() {
+                let chunk = format.content_chunk(&id_sink, created, &model_sink, &text);
+                let _ = tx_clone.send(chunk);
+            }
+        }
+        // 其他进度事件在此模式下忽略（可后续扩展为 pigs.phase 等 SSE 事件）
+        // Other progress events are ignored in this mode (could be extended
+        // to emit pigs.phase / pigs.tool SSE events in the future).
+    });
+
+    // 后台任务：执行相位对话，完成后发送结束帧
+    // Background task: run the phased turn, then send the stop frame
+    let runtime = std::sync::Arc::clone(&state.runtime);
+    let converted = std::sync::Arc::new(converted);
+    let converted_clone = std::sync::Arc::clone(&converted);
+    let id_task = id.clone();
+    let model_task = model.clone();
+    tokio::spawn(async move {
+        // 在 task-local 上下文中执行，传递客户端 auth 头给 dispatch_in_process
+        // Execute within task-local context, forwarding client auth headers to dispatch_in_process
+        let result = crate::with_client_headers(client_headers, async {
+            pigs_api::phased_api_convert::run_converted_turn_arc(
+                &runtime,
+                &converted_clone,
+                Some(sink),
+            )
+            .await
+        })
+        .await;
+
+        // 无论成功或失败，都发送结束帧
+        // Always send the stop frame, regardless of success or failure
+        let _ = tx.send(format.stop_chunk(&id_task, created, &model_task));
+        if let Some(sentinel) = format.done_sentinel() {
+            let _ = tx.send(sentinel);
+        }
+
+        match result {
+            Ok(_) => {}
+            Err(e) => {
+                tracing::error!(error = %e, "phased turn failed during streaming");
+            }
+        }
+        // tx drop 后 rx 会结束 / rx ends when tx is dropped
+        drop(tx);
+    });
+
+    // 构建 SSE body 流 / Build the SSE body stream
+    let stream = futures_util::stream::unfold(rx, |mut rx| async move {
+        match rx.recv().await {
+            Some(frame) => {
+                let chunk = format!("data: {frame}\n\n");
+                Some((Ok::<Bytes, std::io::Error>(Bytes::from(chunk)), rx))
+            }
+            None => None,
+        }
+    });
+
+    let body = Body::from_stream(stream);
+    let mut resp = Response::new(body);
+    *resp.status_mut() = StatusCode::OK;
+    resp.headers_mut().insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("text/event-stream"),
+    );
+    resp.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-cache"),
     );
     resp
 }

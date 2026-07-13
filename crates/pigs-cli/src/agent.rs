@@ -7,13 +7,13 @@ use tracing::{debug, info, warn};
 
 use pigs_config::AppConfig;
 use pigs_core::{
-    ApiClient, ApiError, ApiRequest, ContentBlock, Message,
-    StreamCallback, StreamEvent, TokenUsage,
+    ApiClient, Message,
+    StreamCallback, StreamEvent,
 };
 use pigs_config::{ApiFormat, Language, ResolvedModel};
 use pigs_llm::{create_client_for_endpoint, Provider as LlmProvider};
-use pigs_permissions::{CliPermissionPrompter, PermissionMode, PermissionOutcome, PermissionPolicy, PermissionPrompter};
-use pigs_session::{compact_session, CompactConfig, Session};
+use pigs_permissions::{PermissionMode, PermissionOutcome, PermissionPolicy, PermissionPrompter};
+use pigs_session::{CompactConfig, Session};
 use pigs_mcp::{McpClient, McpServerConfig, McpToolHandler};
 use pigs_tools::create_default_registry_with_todos;
 use pigs_tools::todo_write::TodoList;
@@ -68,7 +68,26 @@ impl Agent {
     }
 
     /// Create a new agent from config and CLI args.
-    pub fn new(mut config: AppConfig, args: CliArgs) -> anyhow::Result<Self> {
+    ///
+    /// Equivalent to `new_with_client(config, args, None)` — the agent
+    /// builds its own direct `pigs-llm` client.
+    pub fn new(config: AppConfig, args: CliArgs) -> anyhow::Result<Self> {
+        Self::new_with_client(config, args, None)
+    }
+
+    /// Create a new agent with an optionally injected `ApiClient`.
+    ///
+    /// When `injected_client` is `Some`, it replaces the default `pigs-llm`
+    /// direct client. This is used by the `pigs` binary to route CLI LLM
+    /// requests through `pigs-proxy`'s `ProxyApiClient` → `dispatch_in_process`.
+    ///
+    /// 当 `injected_client` 为 `Some` 时，替换默认的 `pigs-llm` 直连客户端。
+    /// `pigs` 二进制借此将 CLI 的 LLM 请求统一经过 `pigs-proxy` 的重试逻辑。
+    pub fn new_with_client(
+        mut config: AppConfig,
+        args: CliArgs,
+        injected_client: Option<Arc<dyn ApiClient>>,
+    ) -> anyhow::Result<Self> {
         // Apply CLI overrides
         if let Some(model) = &args.model {
             config.model = model.clone();
@@ -97,7 +116,12 @@ impl Agent {
             .resolve_model(&config.model)
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
         let model = resolved.remote_model.clone();
-        let api_client = Self::create_api_client(&resolved)?;
+        // 使用注入的客户端，或构建默认的 pigs-llm 直连客户端
+        // Use injected client, or build the default pigs-llm direct client
+        let api_client = match injected_client {
+            Some(c) => c,
+            None => Self::create_api_client(&resolved)?,
+        };
 
         // Create or resume session
         let sessions_dir = AppConfig::sessions_dir();
@@ -145,6 +169,8 @@ impl Agent {
         };
 
         // Register the sub-agent tool (needs the API client)
+        // Currently disabled behind the `sub_agent` feature flag.
+        #[cfg(feature = "sub_agent")]
         tool_registry.register(Box::new(crate::agent_tool::AgentTool::new(Arc::clone(&api_client))));
         // On-demand skill loader (claw-code style)
         if !args.no_tools {
@@ -199,153 +225,25 @@ impl Agent {
 
     /// Run a single turn of the agent loop.
     /// Returns the assistant's final text response.
+    ///
+    /// 所有模型统一走 `PhasedRuntime`：
+    /// All models route through `PhasedRuntime`:
+    /// - `-pig` 模型：完整 Pre→Executor→Post 三阶段编排
+    /// - 非 `-pig` 模型：单次 LLM 调用（直发路径，不做编排）
+    ///
+    /// 无论哪条路径，LLM 请求都经过 `self.api_client`（通常为
+    /// `ProxyApiClient`）→ `dispatch_in_process` → retry 逻辑。
     pub async fn run_turn(&mut self, user_input: &str) -> anyhow::Result<String> {
-        // If the current model is a `-pig` variant, route through PhasedRuntime.
-        let is_pig = self
-            .resolved_model()
-            .map(|r| r.is_pig)
-            .unwrap_or(false);
-        if is_pig {
-            return self.run_turn_phased(user_input).await;
-        }
-
-        // Add user message
-        self.session.add_message(Message::user(user_input));
-
-        let mut prompter = CliPermissionPrompter::new();
-
-        let mut iteration: u32 = 0;
-        let mut total_usage = TokenUsage::default();
-        let mut final_text = String::new();
-
-        loop {
-            iteration += 1;
-            if iteration > self.max_turns {
-                warn!(iteration, "Max turns reached, stopping");
-                final_text = format!("(Agent reached max turn limit of {})", self.max_turns);
-                break;
-            }
-
-            // Check for auto-compaction
-            let compact_config = self.compact_config(false);
-            compact_session(&mut self.session, &compact_config);
-
-            // Build API request
-            let tool_defs = if self.no_tools {
-                Vec::new()
-            } else {
-                self.tool_registry.definitions()
-            };
-
-            let request = ApiRequest::new(self.api_client.model(), self.session.messages.clone())
-                .with_system_prompt(&self.system_prompt)
-                .with_tools(tool_defs)
-                .with_max_tokens(
-                    self.resolved_model()
-                        .ok()
-                        .and_then(|m| m.max_tokens)
-                        .unwrap_or(self.config.max_tokens),
-                )
-                .with_temperature(
-                    self.resolved_model()
-                        .ok()
-                        .and_then(|m| m.temperature)
-                        .unwrap_or(self.config.temperature),
-                );
-
-            // Call the LLM with streaming
-            debug!(iteration, "Sending request to LLM");
-
-            // Print a marker for the start of the response
-            let is_first_iteration = iteration == 1;
-            if is_first_iteration {
-                println!();
-            }
-
-            let stream_callback = StreamPrinter::new();
-            let response = match self
-                .api_client
-                .send_message_streaming(request, &stream_callback)
-                .await
-            {
-                Ok(r) => r,
-                Err(ApiError::ContextWindowExceeded(msg)) => {
-                    warn!("Context window exceeded, compacting and retrying");
-                    compact_session(
-                        &mut self.session,
-                        &CompactConfig {
-                            token_threshold: 1000,
-                            keep_recent: 2,
-                            summary_message_chars: 300,
-                            force: true,
-                        },
-                    );
-                    if self.session.messages.len() <= 3 {
-                        return Err(anyhow::anyhow!(
-                            "Context window exceeded even after compaction: {msg}"
-                        ));
-                    }
-                    continue;
-                }
-                Err(e) => {
-                    return Err(anyhow::anyhow!("LLM API error: {e}"));
-                }
-            };
-
-            // Track usage
-            if let Some(usage) = &response.usage {
-                total_usage.add(usage);
-                self.session.add_usage(usage);
-            }
-
-            // Add assistant message
-            let assistant_message = Message::assistant(response.content.clone());
-            self.session.add_message(assistant_message);
-
-            // Extract text content for display (streaming callback already printed it)
-            let text = response.text_content();
-            if !text.is_empty() {
-                if !final_text.is_empty() {
-                    final_text.push_str("\n\n");
-                }
-                final_text.push_str(&text);
-                // Add a newline after streamed text
-                println!();
-            }
-
-            // Extract tool uses
-            let tool_uses: Vec<(String, String, serde_json::Value)> = response
-                .content
-                .iter()
-                .filter_map(|b| match b {
-                    ContentBlock::ToolUse { id, name, input } => {
-                        Some((id.clone(), name.clone(), input.clone()))
-                    }
-                    _ => None,
-                })
-                .collect();
-
-            // If no tool uses, the turn is complete
-            if tool_uses.is_empty() {
-                info!(iteration, total_usage = %total_usage, "Turn complete");
-                break;
-            }
-
-            // Execute tools: authorize sequentially, then run allowed tools
-            // in parallel when there are multiple.
-            self.execute_tool_batch(&tool_uses, &mut prompter).await;
-        }
-
-        // Save session
-        if let Err(e) = self.session.save(&self.sessions_dir) {
-            warn!("Failed to save session: {e}");
-        }
-
-        Ok(final_text)
+        self.run_turn_phased(user_input).await
     }
 
     /// Authorize and execute a batch of tool calls.
     /// Permissions/prompter run sequentially; authorized tools may run concurrently.
+    //
+    // Currently unused — the old non-pig direct loop has been replaced by the
+    // unified PhasedRuntime path. Retained for future re-enablement of
+    // per-tool permission checks / hooks / snapshots in the phased path.
+    #[allow(dead_code)]
     async fn execute_tool_batch(
         &mut self,
         tool_uses: &[(String, String, serde_json::Value)],
@@ -509,6 +407,9 @@ impl Agent {
     }
 
     /// Execute an already-authorized tool with lifecycle hooks.
+    //
+    // Currently unused — see `execute_tool_batch`.
+    #[allow(dead_code)]
     async fn execute_authorized_tool(
         &self,
         tool_name: &str,
@@ -657,6 +558,12 @@ impl Agent {
         self.rebuild_prompt_context();
     }
 
+    /// Build a compaction config from the resolved model's threshold.
+    //
+    // Currently unused — the old non-pig direct loop (which used this for
+    // auto-compaction) has been replaced by the unified PhasedRuntime path.
+    // Retained for potential future reuse.
+    #[allow(dead_code)]
     fn compact_config(&self, force: bool) -> CompactConfig {
         let threshold = self
             .resolved_model()
@@ -692,9 +599,15 @@ impl Agent {
 
     /// Run a turn through the phased runtime (Pre → Executor → Post).
     ///
-    /// Used when the current model is a `-pig` variant. The agent's local
-    /// tool registry is injected into the PhasedRuntime so that bash,
-    /// read_file, MCP tools, etc. are available during execution.
+    /// Run a single turn through the `PhasedRuntime`.
+    ///
+    /// 所有模型统一走此路径：
+    /// All models route through this path:
+    /// - `-pig` 模型：完整 Pre→Executor→Post 三阶段编排
+    /// - 非 `-pig` 模型：单次 LLM 调用（`is_pig=false`，PhasedRuntime 直发）
+    ///
+    /// The agent's local tool registry is injected into the PhasedRuntime so
+    /// that bash, read_file, MCP tools, etc. are available during execution.
     async fn run_turn_phased(&mut self, user_input: &str) -> anyhow::Result<String> {
         let resolved = self.resolved_model()?;
         let limits = crate::phased_runtime::RuntimeLimits {
@@ -703,11 +616,15 @@ impl Agent {
             ..Default::default()
         };
 
-        let mut runtime = crate::phased_runtime::PhasedRuntime::from_resolved(
-            resolved,
+        // 用注入的 api_client 构建 PhasedRuntime（不再内部建 pigs-llm 客户端）
+        // Build PhasedRuntime with the injected api_client (no internal pigs-llm client)
+        let mut runtime = crate::phased_runtime::PhasedRuntime::from_client(
+            Arc::clone(&self.api_client),
+            resolved.remote_model.clone(),
+            resolved.is_pig,
             limits,
             self.language,
-        )?;
+        );
 
         // Inject the agent's full tool registry (bash, read_file, MCP, etc.)
         let agent_tools = std::mem::replace(&mut self.tool_registry, pigs_core::ToolRegistry::new());
@@ -757,7 +674,7 @@ impl Agent {
         });
 
         let result = runtime
-            .run_turn_with_progress(&messages, Some(sink))
+            .run_turn_with_progress(&messages, Some(sink), None)
             .await;
 
         // Restore agent's tools.
@@ -1026,9 +943,15 @@ fn truncate_str(s: &str, max: usize) -> String {
 }
 
 /// A stream callback that prints text deltas to stdout in real time.
+//
+// Currently unused — the old non-pig direct loop (which used this for
+// streaming display) has been replaced by the unified PhasedRuntime path.
+// Retained for potential future reuse.
+#[allow(dead_code)]
 struct StreamPrinter;
 
 impl StreamPrinter {
+    #[allow(dead_code)]
     fn new() -> Self {
         StreamPrinter
     }

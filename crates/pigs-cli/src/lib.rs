@@ -5,6 +5,9 @@
 //! doctor, i18n, and session logic lives here.
 
 pub mod agent;
+/// 子 Agent 工具 —— 临时禁用，需 `sub_agent` feature 开启。
+/// Sub-agent tool — currently disabled, requires `sub_agent` feature.
+#[cfg(feature = "sub_agent")]
 pub mod agent_tool;
 pub mod cli;
 pub mod command_aliases;
@@ -27,6 +30,7 @@ pub use pigs_api::phased_phase;
 pub use pigs_api::phased_markers;
 
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use clap::Parser;
 use tracing_subscriber::{
@@ -55,7 +59,29 @@ pub async fn run_cli() -> ExitCode {
 /// `args` should include the program name as the first element (e.g.
 /// `["pigs", "--list-sessions"]`).
 pub async fn run_cli_from(args: Vec<String>) -> ExitCode {
-    match run_from(&args).await {
+    match run_from(&args, None).await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("Error: {e:#}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Like [`run_cli_from`] but with an injected `ApiClient`.
+///
+/// 当 `api_client` 为 `Some` 时，Agent 使用它代替内部创建的 `pigs-llm` 直连客户端。
+/// `pigs` 二进制借此将 CLI 的 LLM 请求统一经过 `pigs-proxy` 的
+/// `ProxyApiClient` → `dispatch_in_process` 重试逻辑。
+///
+/// When `api_client` is `Some`, the agent uses it instead of building its own
+/// direct `pigs-llm` client. The `pigs` binary uses this to route CLI LLM
+/// requests through `pigs-proxy`'s `ProxyApiClient` → `dispatch_in_process`.
+pub async fn run_cli_with_client(
+    args: Vec<String>,
+    api_client: Option<Arc<dyn pigs_core::ApiClient>>,
+) -> ExitCode {
+    match run_from(&args, api_client).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("Error: {e:#}");
@@ -66,15 +92,21 @@ pub async fn run_cli_from(args: Vec<String>) -> ExitCode {
 
 async fn run() -> anyhow::Result<()> {
     let args = cli::CliArgs::parse();
-    run_with_args(args).await
+    run_with_args(args, None).await
 }
 
-async fn run_from(args: &[String]) -> anyhow::Result<()> {
+async fn run_from(
+    args: &[String],
+    injected_client: Option<Arc<dyn pigs_core::ApiClient>>,
+) -> anyhow::Result<()> {
     let parsed = clap::Parser::parse_from(args.iter().map(|s| s.as_str()));
-    run_with_args(parsed).await
+    run_with_args(parsed, injected_client).await
 }
 
-async fn run_with_args(args: cli::CliArgs) -> anyhow::Result<()> {
+async fn run_with_args(
+    args: cli::CliArgs,
+    injected_client: Option<Arc<dyn pigs_core::ApiClient>>,
+) -> anyhow::Result<()> {
 
     if args.list_sessions {
         let sessions = agent::Agent::list_sessions()?;
@@ -117,7 +149,7 @@ async fn run_with_args(args: cli::CliArgs) -> anyhow::Result<()> {
 
     let _log_guard = init_logging(&config)?;
 
-    let mut agent = agent::Agent::new(config, args)?;
+    let mut agent = agent::Agent::new_with_client(config, args, injected_client)?;
     agent.connect_configured_mcp().await?;
 
     if let Some(prompt) = agent.one_shot_prompt.clone() {
@@ -183,11 +215,11 @@ fn init_logging(
             .with_ansi(false)
             .with_writer(non_blocking);
 
-        tracing_subscriber::registry()
+        let _ = tracing_subscriber::registry()
             .with(env_filter)
             .with(console_layer)
             .with(file_layer)
-            .init();
+            .try_init();
 
         tracing::info!(
             logs_dir = %logs_dir.display(),
@@ -196,10 +228,10 @@ fn init_logging(
 
         Ok(Some(guard))
     } else {
-        tracing_subscriber::registry()
+        let _ = tracing_subscriber::registry()
             .with(env_filter)
             .with(console_layer)
-            .init();
+            .try_init();
         Ok(None)
     }
 }

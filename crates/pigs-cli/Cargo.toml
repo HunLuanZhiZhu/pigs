@@ -11,6 +11,11 @@ name = "pigs_cli"
 path = "src/lib.rs"
 
 
+[features]
+# 子 Agent 工具（AgentTool）—— 默认禁用，需显式启用。
+# Sub-agent tool (AgentTool) — disabled by default, opt-in.
+sub_agent = []
+
 [dependencies]
 pigs-core = { workspace = true }
 pigs-llm = { workspace = true }

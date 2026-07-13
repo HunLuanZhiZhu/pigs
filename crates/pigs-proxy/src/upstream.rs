@@ -50,16 +50,31 @@ impl UpstreamClient {
                     .header("anthropic-version", "2023-06-01"),
             };
         } else {
+            // Passthrough: 首先尝试从客户端头提取 auth key
+            // Passthrough: first try to extract auth key from client headers
             let mut has_anthropic_version = false;
+            let mut has_auth = false;
             for (name, value) in client_headers.iter() {
                 let name_lower = name.as_str().to_lowercase();
                 if name_lower == "authorization" || name_lower == "x-api-key" {
                     req = req.header(name, value);
+                    has_auth = true;
                 }
                 if name_lower == "anthropic-version" {
                     has_anthropic_version = true;
                 }
             }
+
+            // 回退：客户端头中没有 auth key 时，用 endpoint 的 api_key
+            // Fallback: if client headers had no auth key, use ep.api_key
+            if !has_auth && !ep.api_key.is_empty() {
+                req = match protocol {
+                    Protocol::OpenAI | Protocol::Responses => req.bearer_auth(&ep.api_key),
+                    Protocol::Anthropic => req
+                        .header("x-api-key", &ep.api_key),
+                };
+            }
+
             if protocol == Protocol::Anthropic && !has_anthropic_version {
                 req = req.header("anthropic-version", "2023-06-01");
             }

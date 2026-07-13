@@ -192,14 +192,11 @@ async fn main() -> anyhow::Result<()> {
     // --- --api 模式：仅 API 服务器（后台守护进程） ---
     // --- --api mode: API-only server (background daemon) ---
     //
-    // 此模式下 pigs-cli 不参与，因此在此处初始化 tracing。
-    // 默认（API+CLI）和 --cli 模式则让 pigs-cli 的 init_logging 处理，
-    // 以避免 "global default subscriber already set" panic。
-    // In this mode pigs-cli is not involved, so we init tracing here.
-    // Default (API+CLI) and --cli modes let pigs-cli's init_logging handle it
-    // to avoid the "global default subscriber already set" panic.
+    // 此模式下 pigs-cli 不参与。日志由 run_api_only 内部的
+    // pigs_proxy::log::init 统一初始化（从配置文件读取级别/格式/文件输出等）。
+    // In this mode pigs-cli is not involved. Logging is initialized by
+    // run_api_only via pigs_proxy::log::init (reads level/format/file from config).
     if args.api {
-        init_tracing();
         return run_api_only(&args).await;
     }
 
@@ -235,6 +232,17 @@ async fn run_api_and_cli(args: &Args) -> anyhow::Result<()> {
     // 从 pigs-proxy 配置构建 PhasedRuntime（通过 ProxyApiClient 走 pigs-proxy 重试）
     // Build PhasedRuntime from pigs-proxy config (via ProxyApiClient through pigs-proxy retry)
     let proxy_config_arc = std::sync::Arc::new(proxy_config.clone());
+
+    // 构建 CLI 用的 ProxyApiClient（与 HTTP 服务器共用同一套重试逻辑）
+    // Build ProxyApiClient for CLI (shares the same retry logic as the HTTP server)
+    let cli_client: std::sync::Arc<dyn pigs_core::ApiClient> = std::sync::Arc::new(
+        pigs_proxy::proxy_client::ProxyApiClient::new(
+            std::sync::Arc::clone(&proxy_config_arc),
+            pigs_proxy::protocol::Protocol::OpenAI,
+            "pigs".to_string(),
+        ),
+    );
+
     let runtime = pigs_proxy::build_phased_runtime(
         proxy_config_arc,
         "pigs",
@@ -250,6 +258,10 @@ async fn run_api_and_cli(args: &Args) -> anyhow::Result<()> {
     eprintln!("[pigs] /quit to exit (proxy will stop too)");
     eprintln!();
 
+    // 初始化日志（pigs-cli 也会 try_init，此处先初始化避免 proxy 日志丢失）
+    // Initialize logging first (pigs-cli will also try_init; this avoids losing proxy logs)
+    let _ = pigs_proxy::log::init(&proxy_config.log);
+
     // 后台启动 pigs-proxy 服务器 / Spawn pigs-proxy server in background
     let proxy_config_clone = proxy_config.clone();
     let api_handle = tokio::spawn(async move {
@@ -258,10 +270,11 @@ async fn run_api_and_cli(args: &Args) -> anyhow::Result<()> {
         }
     });
 
-    // 前台运行 pigs-cli REPL / Run pigs-cli REPL in foreground
+    // 前台运行 pigs-cli REPL，注入 ProxyApiClient
+    // Run pigs-cli REPL in foreground, injecting ProxyApiClient
     let mut full_args = vec!["pigs".to_string()];
     full_args.extend(args.cli_args.iter().cloned());
-    let code = pigs_cli::run_cli_from(full_args).await;
+    let code = pigs_cli::run_cli_with_client(full_args, Some(cli_client)).await;
 
     // REPL 退出 → 中止代理服务器 / REPL exited → abort proxy server
     api_handle.abort();
@@ -288,6 +301,10 @@ async fn run_api_only(_args: &Args) -> anyhow::Result<()> {
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("config.toml"));
     let proxy_config = ProxyConfig::load(config_path.as_path())
+        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+
+    // --api 模式无 pigs-cli，需自行初始化日志 / Init logging (no pigs-cli in --api mode)
+    pigs_proxy::log::init(&proxy_config.log)
         .map_err(|e| anyhow::anyhow!(e.to_string()))?;
 
     // 构建 PhasedRuntime（-pig 路由用，走 pigs-proxy 重试）/ Build PhasedRuntime
@@ -338,10 +355,12 @@ fn print_describe() {
 ///
 /// Initialize the tracing log subscriber.
 ///
-/// 仅在 --api 模式下调用，因为 pigs-cli 有自己的日志初始化逻辑。
-/// 使用环境变量 PIGS_LOG 或 RUST_LOG 控制级别，默认 info。
-/// Only called in --api mode, since pigs-cli has its own logging init.
-/// Uses env var PIGS_LOG or RUST_LOG for level control, defaults to info.
+/// 当前未使用——`--api` 模式的日志由 `run_api_only` 内部的
+/// `pigs_proxy::log::init` 统一初始化。保留以备将来需要简单的
+/// 环境变量控制日志时复用。
+/// Currently unused — `--api` mode logging is initialized by `run_api_only`
+/// via `pigs_proxy::log::init`. Retained for potential future reuse.
+#[allow(dead_code)]
 fn init_tracing() {
     // 尝试从环境变量读取日志级别过滤，失败则默认 "info"
     // Try to read log level filter from env var, default to "info" on failure

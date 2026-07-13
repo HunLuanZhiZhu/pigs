@@ -215,11 +215,14 @@ impl ApiFormat {
         }
     }
 
-    /// 流结束哨兵帧（OpenAI Chat 用 `data: [DONE]`，其余为空串）。
-    /// Stream-end sentinel frame (OpenAI Chat uses `data: [DONE]`; others empty).
+    /// 流结束哨兵内容（OpenAI Chat 用 `[DONE]`，其余协议无哨兵）。
+    /// Stream-end sentinel content (OpenAI Chat uses `[DONE]`; others have none).
+    ///
+    /// 返回纯内容，由调用方统一加 `data: ` 前缀和 `\n\n` 后缀。
+    /// Returns the raw content; the caller adds the `data: ` prefix and `\n\n` suffix.
     pub fn done_sentinel(&self) -> Option<String> {
         match self {
-            Self::OpenAIChat => Some("data: [DONE]\n\n".into()),
+            Self::OpenAIChat => Some("[DONE]".into()),
             _ => None,
         }
     }

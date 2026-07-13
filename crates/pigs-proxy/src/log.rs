@@ -51,6 +51,10 @@ pub fn init(cfg: &LogConfig) -> Result<()> {
     }
 
     let subscriber = tracing_subscriber::registry().with(layers);
-    subscriber.init();
+    // 使用 try_init 避免与已设置的全场 subscriber 冲突（如 pigs-cli 的 init_logging）。
+    // Use try_init to avoid panicking when a global subscriber is already set
+    // (e.g. by pigs-cli's init_logging).
+    subscriber.try_init()
+        .map_err(|e| anyhow::anyhow!("failed to set global trace subscriber: {e}"))?;
     Ok(())
 }

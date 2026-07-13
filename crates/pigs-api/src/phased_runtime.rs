@@ -132,6 +132,15 @@ pub struct PhasedRuntime {
     /// 相位提示词 / payload 语言（默认 zh）。
     /// Phase prompt / payload language (`zh` default via config).
     pub language: Language,
+    /// 是否启用相位编排。
+    /// Whether phased orchestration is enabled.
+    ///
+    /// - `true`: 完整 Pre→Executor→Post 循环（`-pig` 模型）
+    /// - `false`: 单次 LLM 调用，不做编排（非 `-pig` 模型）
+    ///
+    /// When `true`: full Pre→Executor→Post loop (`-pig` models).
+    /// When `false`: single LLM call, no orchestration (non-`-pig` models).
+    pub is_pig: bool,
 }
 
 impl PhasedRuntime {
@@ -141,6 +150,7 @@ impl PhasedRuntime {
         let resolved = config
             .resolve_model(&config.model)
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        let is_pig = resolved.is_pig;
         Self::from_resolved(
             resolved,
             RuntimeLimits {
@@ -150,6 +160,10 @@ impl PhasedRuntime {
             },
             config.language_or_default(),
         )
+        .map(|mut rt| {
+            rt.is_pig = is_pig;
+            rt
+        })
     }
 
     /// 从已解析的模型配置构建运行时（直连上游 LLM）。
@@ -175,6 +189,7 @@ impl PhasedRuntime {
         .map_err(|e| anyhow::anyhow!(e.to_string()))?;
         // 包装模型名 = 原名 + "-pig" / Wrapped model name = original + "-pig"
         let wrapped_model = format!("{}-pig", resolved.name);
+        let is_pig = resolved.is_pig;
         Ok(Self {
             api,
             remote_model: resolved.remote_model,
@@ -182,7 +197,42 @@ impl PhasedRuntime {
             tools: info_tool_registry(),
             limits,
             language,
+            is_pig,
         })
+    }
+
+    /// 从外部 ApiClient 构建运行时（供 CLI 用，注入 ProxyApiClient）。
+    /// Build runtime from an external ApiClient (for CLI, injects ProxyApiClient).
+    ///
+    /// 与 `from_resolved` 不同，此构造函数**不**内部创建 `pigs-llm` 客户端，
+    /// 而是接受调用方传入的 `Arc<dyn ApiClient>`（通常是 `ProxyApiClient`）。
+    /// 这样所有 LLM 请求统一经过 `pigs-proxy` 的 `dispatch_in_process` 重试逻辑。
+    ///
+    /// Unlike `from_resolved`, this constructor does **not** create an internal
+    /// `pigs-llm` client. Instead it accepts a caller-provided `Arc<dyn ApiClient>`
+    /// (typically `ProxyApiClient`). This routes all LLM requests through
+    /// `pigs-proxy`'s `dispatch_in_process` retry logic.
+    pub fn from_client(
+        api: Arc<dyn ApiClient>,
+        remote_model: String,
+        is_pig: bool,
+        limits: RuntimeLimits,
+        language: Language,
+    ) -> Self {
+        let wrapped_model = if is_pig {
+            format!("{remote_model}-pig")
+        } else {
+            remote_model.clone()
+        };
+        Self {
+            api,
+            remote_model,
+            wrapped_model,
+            tools: info_tool_registry(),
+            limits,
+            language,
+            is_pig,
+        }
     }
 
     /// 运行一轮相位对话（无进度回调）。
@@ -192,7 +242,7 @@ impl PhasedRuntime {
         &self,
         messages: &[Message],
     ) -> anyhow::Result<TurnResult> {
-        self.run_turn_with_progress(messages, None).await
+        self.run_turn_with_progress(messages, None, None).await
     }
 
     /// 在调用方的完整消息数组上运行一轮相位对话。
@@ -205,6 +255,11 @@ impl PhasedRuntime {
     /// 3. 每相位 clone base_history 并追加相位特定 user 消息：
     ///    `{用户原问题} + {相位指令 + 产物}`。
     ///
+    /// `model_override` 用于覆盖 `self.remote_model`。HTTP 路径需要此参数：
+    /// 一个共享的 `PhasedRuntime` 实例可能服务不同的 `-pig` 模型请求
+    /// （如 `xopglm52-pig`、`auto-pig`），每次请求的真实模型名不同，
+    /// 必须从客户端请求中动态传入。CLI 路径传 `None`，使用启动时配置的模型名。
+    ///
     /// Run a phased turn on the caller's complete message array.
     ///
     /// `messages` is the **unmodified** caller array — it may include a
@@ -215,11 +270,22 @@ impl PhasedRuntime {
     /// 2. Treats the remaining messages (minus the last user) as history.
     /// 3. Per phase, clones history and appends a phase-specific user
     ///    message: `{original user question} + {phase instructions + products}`.
+    ///
+    /// `model_override` overrides `self.remote_model`. Required by the HTTP
+    /// path: a single shared `PhasedRuntime` may serve different `-pig` model
+    /// requests (e.g. `xopglm52-pig`, `auto-pig`), each with a different real
+    /// model name that must come from the client request. The CLI path passes
+    /// `None` to use the model configured at startup.
     pub async fn run_turn_with_progress(
         &self,
         messages: &[Message],
         progress: Option<ProgressSink>,
+        model_override: Option<&str>,
     ) -> anyhow::Result<TurnResult> {
+        // 确定本轮使用的模型名：优先用覆盖值，否则用启动时配置的值
+        // Determine the model name for this turn: override takes precedence,
+        // otherwise fall back to the configured remote_model.
+        let effective_model = model_override.unwrap_or(&self.remote_model);
         // 将调用方消息拆分为：system_prompt, base_history, user_question
         // Split caller messages into: system_prompt, base_history, user_question.
         let mut system_parts: Vec<String> = Vec::new();
@@ -255,6 +321,44 @@ impl PhasedRuntime {
             }
         };
         let mut events = Vec::new();
+
+        // ================================================================
+        // 非-pig 模式：单次 LLM 调用，不做相位编排
+        // Non-pig mode: single LLM call, no phased orchestration
+        // ================================================================
+        if !self.is_pig {
+            events.push(ev("phase_start", Some("direct"), None));
+            emit(TurnProgress::PhaseStart { phase: "direct".into() });
+            // payload = 纯用户原问题（不追加相位提示词）
+            // payload = plain user question (no phase instructions appended)
+            let payload = user_question.clone();
+            let text = self
+                .run_phase(
+                    Phase::Pre,
+                    &base_history,
+                    &payload,
+                    &system_prompt,
+                    progress.as_ref(),
+                    effective_model,
+                )
+                .await?;
+            let final_text = strip_markers(&text);
+            events.push(ev("turn_end", Some("direct"), Some(final_text.clone())));
+            emit(TurnProgress::TurnEnd {
+                ended_with: "DIRECT".into(),
+                final_text: final_text.clone(),
+            });
+            return Ok(TurnResult {
+                final_text,
+                events,
+                ended_with: "DIRECT".into(),
+            });
+        }
+
+        // ================================================================
+        // -pig 模式：完整 Pre→Executor→Post 相位编排
+        // -pig mode: full Pre→Executor→Post phased orchestration
+        // ================================================================
         // 本轮相位间传递的产物 / Products passed between phases this turn
         let mut pre_output = String::new();           // PRE 计划 / GOAL
         let mut executor_draft = String::new();        // Executor 草稿
@@ -288,6 +392,7 @@ impl PhasedRuntime {
                             &payload,
                             &system_prompt,
                             progress.as_ref(),
+                            effective_model,
                         )
                         .await?;
                     events.push(ev("phase_output", Some("pre"), Some(text.clone())));
@@ -347,6 +452,7 @@ impl PhasedRuntime {
                             &payload,
                             &system_prompt,
                             progress.as_ref(),
+                            effective_model,
                         )
                         .await?;
                     events.push(ev("phase_output", Some("executor"), Some(text.clone())));
@@ -382,6 +488,7 @@ impl PhasedRuntime {
                             &payload,
                             &system_prompt,
                             progress.as_ref(),
+                            effective_model,
                         )
                         .await?;
                     events.push(ev("phase_output", Some("post"), Some(text.clone())));
@@ -456,6 +563,7 @@ impl PhasedRuntime {
         user_payload: &str,
         system: &str,
         progress: Option<&ProgressSink>,
+        model: &str,
     ) -> anyhow::Result<String> {
         // 构建消息：base_history + 本相位 user payload
         // Build messages: base_history + this phase's user payload
@@ -478,7 +586,7 @@ impl PhasedRuntime {
             }
 
             // 构建 LLM 请求 / Build LLM request
-            let request = ApiRequest::new(self.remote_model.clone(), messages.clone())
+            let request = ApiRequest::new(model.to_string(), messages.clone())
                 .with_system_prompt(system)     // 用户原 system，透传
                 .with_tools(tool_defs.clone())
                 .with_max_tokens(self.limits.max_tokens)

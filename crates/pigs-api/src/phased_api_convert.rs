@@ -183,13 +183,26 @@ fn content_to_text(content: Option<&serde_json::Value>) -> String {
 
 /// 在共享相位运行时上执行一轮转换后的对话。
 /// Run one converted turn on the shared phased runtime.
+///
+/// 从 `converted.model` 中剥离 `-pig` 后缀，得到真实模型名，
+/// 传入 `run_turn_with_progress` 作为 `model_override`。
+/// 这样一个共享的 `PhasedRuntime` 实例可以服务不同的 `-pig` 模型请求。
+///
+/// Strips the `-pig` suffix from `converted.model` to get the real model name,
+/// passing it to `run_turn_with_progress` as `model_override`. This lets a
+/// single shared `PhasedRuntime` serve different `-pig` model requests.
 pub async fn run_converted_turn(
     runtime: &PhasedRuntime,
     converted: &ConvertedTurn,
     progress: Option<ProgressSink>,
 ) -> anyhow::Result<TurnResult> {
+    // 剥离 -pig 后缀得到真实模型名 / Strip -pig suffix to get the real model name
+    let real_model = converted
+        .model
+        .strip_suffix("-pig")
+        .unwrap_or(&converted.model);
     runtime
-        .run_turn_with_progress(&converted.messages, progress)
+        .run_turn_with_progress(&converted.messages, progress, Some(real_model))
         .await
 }
 

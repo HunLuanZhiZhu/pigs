@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
-description = "Phased agent HTTP API server + phased runtime modules (OpenAI-compatible)"
+description = "Phased agent runtime modules (OpenAI-compatible request/response)"
 
 [lib]
 name = "pigs_api"
@@ -26,8 +26,6 @@ async-trait = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 futures-util = { workspace = true }
-axum = { version = "0.7", features = ["json", "tokio"] }
-tower-http = { version = "0.5", features = ["cors"] }
 
 [lints]
 workspace = true

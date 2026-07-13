@@ -3,6 +3,10 @@
 //! This tool creates a temporary agent with its own conversation context,
 //! limited tools, and a specific task. The sub-agent runs to completion and
 //! returns its final output.
+//!
+//! 临时禁用：此模块在 `sub_agent` feature 开启时才编译。
+//! Currently disabled: this module only compiles when the `sub_agent` feature is enabled.
+#![cfg(feature = "sub_agent")]
 
 use std::future::Future;
 use std::pin::Pin;
