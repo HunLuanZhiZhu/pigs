@@ -62,7 +62,11 @@ pub fn print_models(config: &AppConfig, current_selection: &str, _current_remote
                 .unwrap_or_else(|| AppConfig::default_context_window_for(remote));
 
             // Raw (direct) model
-            let mark_raw = if current_selection == m.name { "*" } else { " " };
+            let mark_raw = if current_selection == m.name {
+                "*"
+            } else {
+                " "
+            };
             let notes = m.notes.as_deref().unwrap_or("");
             println!(
                 "{mark_raw}{:<23} {:<22} {:<14} {:>10} {notes}",
@@ -71,7 +75,11 @@ pub fn print_models(config: &AppConfig, current_selection: &str, _current_remote
 
             // -pig (phased) variant
             let pig_name = format!("{}-pig", m.name);
-            let mark_pig = if current_selection == pig_name { "*" } else { " " };
+            let mark_pig = if current_selection == pig_name {
+                "*"
+            } else {
+                " "
+            };
             let pig_notes = "phased (pre→executor→post)";
             println!(
                 "{mark_pig}{:<23} {:<22} {:<14} {:>10} {pig_notes}",
@@ -144,10 +152,7 @@ pub fn print_model_status(agent: &Agent) {
             } else {
                 " "
             };
-            println!(
-                "  {mark} {}  →  {}  [{}]",
-                m.name, remote, m.provider
-            );
+            println!("  {mark} {}  →  {}  [{}]", m.name, remote, m.provider);
         }
         println!();
     }
@@ -213,11 +218,7 @@ pub fn handle_model_command(agent: &mut Agent, arg: &str) -> anyhow::Result<()> 
 
     // `/model list` convenience → same as /models
     if matches!(lower.as_str(), "list" | "ls" | "liebiao") || arg == "列表" || arg == "目录" {
-        print_models(
-            &agent.config,
-            &agent.config.model,
-            agent.api_client.model(),
-        );
+        print_models(&agent.config, &agent.config.model, agent.api_client.model());
         return Ok(());
     }
 
@@ -352,11 +353,7 @@ pub fn run_model_add_wizard(agent: &mut Agent) -> anyhow::Result<()> {
             ApiFormat::Anthropic => "https://api.anthropic.com".into(),
         });
     let base_url = match prompt_line(
-        if zh {
-            "3/7 Base URL"
-        } else {
-            "3/7 Base URL"
-        },
+        if zh { "3/7 Base URL" } else { "3/7 Base URL" },
         Some(&default_url),
     )? {
         None => {

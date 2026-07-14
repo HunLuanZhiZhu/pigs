@@ -57,7 +57,9 @@ pub fn format_rules_for_prompt(rules: &[RuleDoc]) -> String {
         return String::new();
     }
     let mut out = String::from("\n\n--- Project Rules ---\n\n");
-    out.push_str("Follow these project-specific rules unless the user explicitly overrides them.\n\n");
+    out.push_str(
+        "Follow these project-specific rules unless the user explicitly overrides them.\n\n",
+    );
     for rule in rules {
         out.push_str(&format!("### Rule: {}\n\n{}\n\n", rule.name, rule.body));
     }

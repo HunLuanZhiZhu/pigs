@@ -106,7 +106,7 @@ impl Tool for EditFileTool {
         // 4. 如果 old_string 和 new_string 相同，没有意义
         if old_string == new_string {
             return Err(MiniAgentError::ToolError(
-                "old_string 和 new_string 相同，无需替换".into()
+                "old_string 和 new_string 相同，无需替换".into(),
             ));
         }
 
@@ -134,9 +134,9 @@ impl Tool for EditFileTool {
                 let new_content = content.replacen(old_string, new_string, 1);
 
                 // 写入修改后的文件
-                fs::write(path, &new_content)
-                    .await
-                    .map_err(|e| MiniAgentError::ToolError(format!("写入文件失败 '{path}': {e}")))?;
+                fs::write(path, &new_content).await.map_err(|e| {
+                    MiniAgentError::ToolError(format!("写入文件失败 '{path}': {e}"))
+                })?;
 
                 // 返回成功信息
                 Ok(format!(

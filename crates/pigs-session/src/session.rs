@@ -164,9 +164,10 @@ impl Session {
         let content = std::fs::read_to_string(&path)
             .map_err(|e| SessionError::Read(format!("Failed to read session file: {e}")))?;
 
-        let line = content.lines().next().ok_or_else(|| {
-            SessionError::Parse("Session file is empty".to_string())
-        })?;
+        let line = content
+            .lines()
+            .next()
+            .ok_or_else(|| SessionError::Parse("Session file is empty".to_string()))?;
 
         let mut session: Session = serde_json::from_str(line)
             .map_err(|e| SessionError::Parse(format!("Failed to parse session JSON: {e}")))?;
@@ -176,14 +177,21 @@ impl Session {
     }
 
     /// Delete a session file by id (supports full id or unique prefix).
-    pub fn delete(sessions_dir: &Path, session_id_or_prefix: &str) -> Result<PathBuf, SessionError> {
+    pub fn delete(
+        sessions_dir: &Path,
+        session_id_or_prefix: &str,
+    ) -> Result<PathBuf, SessionError> {
         let path = Self::resolve_session_path(sessions_dir, session_id_or_prefix)?;
-        std::fs::remove_file(&path).map_err(|e| SessionError::Write(format!("Failed to delete session: {e}")))?;
+        std::fs::remove_file(&path)
+            .map_err(|e| SessionError::Write(format!("Failed to delete session: {e}")))?;
         Ok(path)
     }
 
     /// Resolve a session file path from full id or unique prefix.
-    pub fn resolve_session_path(sessions_dir: &Path, session_id_or_prefix: &str) -> Result<PathBuf, SessionError> {
+    pub fn resolve_session_path(
+        sessions_dir: &Path,
+        session_id_or_prefix: &str,
+    ) -> Result<PathBuf, SessionError> {
         let direct = Self::file_path(sessions_dir, session_id_or_prefix);
         if direct.exists() {
             return Ok(direct);
@@ -226,8 +234,8 @@ impl Session {
             .map_err(|e| SessionError::Read(format!("Failed to read sessions directory: {e}")))?;
 
         for entry in entries {
-            let entry =
-                entry.map_err(|e| SessionError::Read(format!("Failed to read directory entry: {e}")))?;
+            let entry = entry
+                .map_err(|e| SessionError::Read(format!("Failed to read directory entry: {e}")))?;
             let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
                 continue;
@@ -293,7 +301,6 @@ impl Session {
         (total_chars as u64) / 4
     }
 }
-
 
 /// Build a short title from free-form user text.
 pub fn auto_title_from_text(text: &str) -> String {
@@ -391,10 +398,8 @@ mod tests {
 
     #[test]
     fn test_delete_and_prefix_load() {
-        let temp_dir = std::env::temp_dir().join(format!(
-            "pigs_test_sessions_del_{}",
-            std::process::id()
-        ));
+        let temp_dir =
+            std::env::temp_dir().join(format!("pigs_test_sessions_del_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&temp_dir);
 
         let mut session = Session::new("test-model");

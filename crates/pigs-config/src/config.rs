@@ -28,7 +28,6 @@ pub struct ProviderConfig {
     pub base_url: Option<String>,
 }
 
-
 /// Wire API format for a named provider endpoint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -435,12 +434,8 @@ impl AppConfig {
                 self.models.push(m);
             }
         }
-        self.hooks
-            .pre_tool_use
-            .extend(project.hooks.pre_tool_use);
-        self.hooks
-            .post_tool_use
-            .extend(project.hooks.post_tool_use);
+        self.hooks.pre_tool_use.extend(project.hooks.pre_tool_use);
+        self.hooks.post_tool_use.extend(project.hooks.post_tool_use);
     }
 
     /// Load configuration from a specific file path.
@@ -560,8 +555,9 @@ impl AppConfig {
     /// Save configuration to a specific path (creates parent dirs).
     pub fn save_to(&self, path: &Path) -> Result<(), ConfigError> {
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| ConfigError::Read(format!("Failed to create config directory: {e}")))?;
+            std::fs::create_dir_all(parent).map_err(|e| {
+                ConfigError::Read(format!("Failed to create config directory: {e}"))
+            })?;
         }
         let content = toml::to_string_pretty(self)
             .map_err(|e| ConfigError::Parse(format!("Failed to serialize config: {e}")))?;
@@ -610,8 +606,9 @@ impl AppConfig {
     pub fn ensure_config_dir() -> Result<(), ConfigError> {
         let config_path = Self::config_path();
         if let Some(parent) = config_path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| ConfigError::Read(format!("Failed to create config directory: {e}")))?;
+            std::fs::create_dir_all(parent).map_err(|e| {
+                ConfigError::Read(format!("Failed to create config directory: {e}"))
+            })?;
         }
         let sessions_dir = Self::sessions_dir();
         std::fs::create_dir_all(&sessions_dir)
@@ -718,14 +715,7 @@ impl AppConfig {
 
         if let Some((prov_name, remote)) = selection.split_once('/') {
             if let Some(provider) = providers.iter().find(|p| p.name == prov_name) {
-                return self.resolve_with_provider(
-                    selection,
-                    remote,
-                    provider,
-                    None,
-                    None,
-                    None,
-                );
+                return self.resolve_with_provider(selection, remote, provider, None, None, None);
             }
         }
 
@@ -771,20 +761,17 @@ impl AppConfig {
                 .iter()
                 .find(|p| p.name == "anthropic" || p.api.eq_ignore_ascii_case("anthropic"))
         } else {
-            providers
-                .iter()
-                .find(|p| p.name == "openai")
-                .or_else(|| {
-                    providers.iter().find(|p| {
-                        let api = p.api.to_ascii_lowercase();
-                        api == "openai"
-                            || api == "responses"
-                            || api == "openai-chat"
-                            || api == "chat"
-                            || api == "completions"
-                            || api == "openai-compatible"
-                    })
+            providers.iter().find(|p| p.name == "openai").or_else(|| {
+                providers.iter().find(|p| {
+                    let api = p.api.to_ascii_lowercase();
+                    api == "openai"
+                        || api == "responses"
+                        || api == "openai-chat"
+                        || api == "chat"
+                        || api == "completions"
+                        || api == "openai-compatible"
                 })
+            })
         }
         .ok_or_else(|| ConfigError::Invalid("no suitable provider configured".into()))?;
 
@@ -870,10 +857,7 @@ impl AppConfig {
             is_pig: false,
         })
     }
-
 }
-
-
 
 #[cfg(test)]
 mod tests {

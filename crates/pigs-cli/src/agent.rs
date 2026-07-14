@@ -6,15 +6,12 @@ use std::sync::Arc;
 use tracing::{debug, info, warn};
 
 use pigs_config::AppConfig;
-use pigs_core::{
-    ApiClient, Message,
-    StreamCallback, StreamEvent,
-};
 use pigs_config::{ApiFormat, Language, ResolvedModel};
+use pigs_core::{ApiClient, Message, StreamCallback, StreamEvent};
 use pigs_llm::{create_client_for_endpoint, Provider as LlmProvider};
+use pigs_mcp::{McpClient, McpServerConfig, McpToolHandler};
 use pigs_permissions::{PermissionMode, PermissionOutcome, PermissionPolicy, PermissionPrompter};
 use pigs_session::{CompactConfig, Session};
-use pigs_mcp::{McpClient, McpServerConfig, McpToolHandler};
 use pigs_tools::create_default_registry_with_todos;
 use pigs_tools::todo_write::TodoList;
 
@@ -48,7 +45,6 @@ pub struct Agent {
 }
 
 impl Agent {
-
     fn llm_provider_from_api(api: ApiFormat) -> LlmProvider {
         match api {
             ApiFormat::OpenAI => LlmProvider::OpenAI,
@@ -136,7 +132,9 @@ impl Agent {
         let workspace_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
         // Build permission policy
-        let permission_mode = config.permission_mode_parsed().map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        let permission_mode = config
+            .permission_mode_parsed()
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
         let mut policy = PermissionPolicy::new(permission_mode);
         for (name, required) in pigs_tools::tool_permission_modes() {
             policy = policy.with_tool_requirement(name, required);
@@ -171,12 +169,14 @@ impl Agent {
         // Register the sub-agent tool (needs the API client)
         // Currently disabled behind the `sub_agent` feature flag.
         #[cfg(feature = "sub_agent")]
-        tool_registry.register(Box::new(crate::agent_tool::AgentTool::new(Arc::clone(&api_client))));
+        tool_registry.register(Box::new(crate::agent_tool::AgentTool::new(Arc::clone(
+            &api_client,
+        ))));
         // On-demand skill loader (claw-code style)
         if !args.no_tools {
-            tool_registry.register(Box::new(crate::skill_tool::SkillTool::new(std::sync::Arc::clone(
-                &skill_catalog,
-            ))));
+            tool_registry.register(Box::new(crate::skill_tool::SkillTool::new(
+                std::sync::Arc::clone(&skill_catalog),
+            )));
         }
 
         // MCP client (stdio servers)
@@ -323,7 +323,8 @@ impl Agent {
 
             if !is_error {
                 if let Some(batch) = pre_snapshots.get_mut(idx).and_then(|b| b.take()) {
-                    if let Ok(path) = crate::snapshots::persist_batch(&self.workspace_root, &batch) {
+                    if let Ok(path) = crate::snapshots::persist_batch(&self.workspace_root, &batch)
+                    {
                         debug!(path = %path.display(), "Write snapshot saved");
                     }
                     self.snapshots.push(batch);
@@ -351,7 +352,9 @@ impl Agent {
         match tool_name {
             "write_file" | "edit_file" => {
                 if let Some(path) = tool_input.get("path").and_then(|v| v.as_str()) {
-                    files.push(crate::snapshots::capture_file_snapshot(std::path::Path::new(path)));
+                    files.push(crate::snapshots::capture_file_snapshot(
+                        std::path::Path::new(path),
+                    ));
                 }
             }
             "apply_patch" => {
@@ -361,7 +364,9 @@ impl Agent {
                             let path = rest.split("	").next().unwrap_or(rest).trim();
                             let path = path.strip_prefix("b/").unwrap_or(path);
                             if path != "/dev/null" && !path.is_empty() {
-                                files.push(crate::snapshots::capture_file_snapshot(std::path::Path::new(path)));
+                                files.push(crate::snapshots::capture_file_snapshot(
+                                    std::path::Path::new(path),
+                                ));
                             }
                         }
                     }
@@ -627,7 +632,8 @@ impl Agent {
         );
 
         // Inject the agent's full tool registry (bash, read_file, MCP, etc.)
-        let agent_tools = std::mem::replace(&mut self.tool_registry, pigs_core::ToolRegistry::new());
+        let agent_tools =
+            std::mem::replace(&mut self.tool_registry, pigs_core::ToolRegistry::new());
         runtime.tools = agent_tools;
 
         // Build the complete message array as an API caller would:
@@ -684,16 +690,18 @@ impl Agent {
 
         // If no text was streamed (e.g. PRE short-circuit without stream_visible),
         // print the final text explicitly.
-        if !text_printed.load(std::sync::atomic::Ordering::Relaxed) && !result.final_text.is_empty() {
+        if !text_printed.load(std::sync::atomic::Ordering::Relaxed) && !result.final_text.is_empty()
+        {
             println!("{}", result.final_text);
         }
         println!(); // newline after streamed text
 
         // Update session: add user + assistant for multi-turn continuity.
         self.session.add_message(Message::user(user_input));
-        self.session.add_message(Message::assistant(vec![pigs_core::ContentBlock::Text {
-            text: result.final_text.clone(),
-        }]));
+        self.session
+            .add_message(Message::assistant(vec![pigs_core::ContentBlock::Text {
+                text: result.final_text.clone(),
+            }]));
 
         eprintln!(
             "[pigs] ended_with={} phases={}",
@@ -732,7 +740,8 @@ impl Agent {
     /// Delete a saved session by id or unique prefix.
     pub fn delete_session(session_id_or_prefix: &str) -> anyhow::Result<std::path::PathBuf> {
         let sessions_dir = AppConfig::sessions_dir();
-        Session::delete(&sessions_dir, session_id_or_prefix).map_err(|e| anyhow::anyhow!(e.to_string()))
+        Session::delete(&sessions_dir, session_id_or_prefix)
+            .map_err(|e| anyhow::anyhow!(e.to_string()))
     }
 
     /// Switch current in-memory session to a saved one.
@@ -743,7 +752,6 @@ impl Agent {
         self.session = session;
         Ok(())
     }
-
 
     /// Connect all enabled MCP servers from config and register their tools.
     pub async fn connect_configured_mcp(&mut self) -> anyhow::Result<()> {
@@ -775,10 +783,7 @@ impl Agent {
                         tools = count,
                         "Connected MCP server from config"
                     );
-                    println!(
-                        "Connected MCP server '{}' ({} tools)",
-                        entry.name, count
-                    );
+                    println!("Connected MCP server '{}' ({} tools)", entry.name, count);
                 }
                 Err(e) => {
                     warn!(server = %entry.name, error = %e, "Failed to connect MCP server");
@@ -899,7 +904,11 @@ fn format_tool_input(tool_name: &str, input: &serde_json::Value) -> String {
             .and_then(|v| v.as_str())
             .map(|s| truncate_str(s, 80)),
         "todo_write" => {
-            let count = input.get("todos").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
+            let count = input
+                .get("todos")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len())
+                .unwrap_or(0);
             Some(format!("{count} items"))
         }
         "ask_user" => input
@@ -911,13 +920,26 @@ fn format_tool_input(tool_name: &str, input: &serde_json::Value) -> String {
             .and_then(|v| v.as_f64())
             .map(|n| format!("{n:.1}s")),
         "git_diff" => {
-            let staged = input.get("staged").and_then(|v| v.as_bool()).unwrap_or(false);
+            let staged = input
+                .get("staged")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             let path = input.get("path").and_then(|v| v.as_str()).unwrap_or(".");
-            Some(format!("{}:{path}", if staged { "staged" } else { "unstaged" }))
+            Some(format!(
+                "{}:{path}",
+                if staged { "staged" } else { "unstaged" }
+            ))
         }
         "apply_patch" => {
-            let dry = input.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
-            Some(if dry { "dry-run".into() } else { "apply".into() })
+            let dry = input
+                .get("dry_run")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            Some(if dry {
+                "dry-run".into()
+            } else {
+                "apply".into()
+            })
         }
         "skill" => input
             .get("name")
@@ -965,9 +987,9 @@ impl StreamCallback for StreamPrinter {
                 print!("{text}");
                 let _ = std::io::stdout().flush();
             }
-            StreamEvent::Done { stop_reason: Some(reason) }
-                if reason != "stop" && reason != "end_turn" =>
-            {
+            StreamEvent::Done {
+                stop_reason: Some(reason),
+            } if reason != "stop" && reason != "end_turn" => {
                 debug!(stop_reason = %reason, "Stream done");
             }
             _ => {}

@@ -12,32 +12,6 @@
 
 use pigs_config::Language;
 
-// --- Phase system prompts (static, no variable substitution) ---
-
-/// PRE 相位 system prompt / PRE phase system prompt.
-pub fn pre_prompt(lang: Language) -> &'static str {
-    match lang {
-        Language::Zh => include_str!("../prompts/pre_zh.txt"),
-        Language::En => include_str!("../prompts/pre_en.txt"),
-    }
-}
-
-/// EXECUTOR 相位 system prompt / EXECUTOR phase system prompt.
-pub fn executor_prompt(lang: Language) -> &'static str {
-    match lang {
-        Language::Zh => include_str!("../prompts/executor_zh.txt"),
-        Language::En => include_str!("../prompts/executor_en.txt"),
-    }
-}
-
-/// POST 相位 system prompt / POST phase system prompt.
-pub fn post_prompt(lang: Language) -> &'static str {
-    match lang {
-        Language::Zh => include_str!("../prompts/post_zh.txt"),
-        Language::En => include_str!("../prompts/post_en.txt"),
-    }
-}
-
 // --- Phase user payloads (variable substitution via .replace()) ---
 
 /// PRE 相位 user payload / PRE phase user payload.
@@ -57,44 +31,23 @@ pub fn pre_user_payload(lang: Language, failure_paths: &[String]) -> String {
 ///
 /// Variables: `{pre_output}` — PRE phase output text;
 /// `{post_feedback}` — POST feedback block (empty → omitted).
-pub fn executor_user_payload(
-    lang: Language,
-    pre_output: &str,
-    post_feedback: &str,
-) -> String {
+pub fn executor_user_payload(lang: Language, pre_output: &str, _post_feedback: &str) -> String {
     let template = match lang {
         Language::Zh => include_str!("../prompts/executor_user_zh.txt"),
         Language::En => include_str!("../prompts/executor_user_en.txt"),
     };
-    let feedback_block = if post_feedback.is_empty() {
-        String::new()
-    } else {
-        match lang {
-            Language::Zh => format!("--- POST 反馈（请据此修订）---\n{post_feedback}"),
-            Language::En => format!("--- POST feedback (revise accordingly) ---\n{post_feedback}"),
-        }
-    };
-    template
-        .replace("{pre_output}", pre_output)
-        .replace("{post_feedback}", &feedback_block)
+    template.replace("{pre_output}", pre_output)
 }
 
 /// POST 相位 user payload / POST phase user payload.
 ///
 /// Variables: `{pre_output}` — PRE phase output text;
 /// `{executor_draft}` — EXECUTOR phase draft text.
-pub fn post_user_payload(
-    lang: Language,
-    pre_output: &str,
-    executor_draft: &str,
-) -> String {
-    let template = match lang {
-        Language::Zh => include_str!("../prompts/post_user_zh.txt"),
-        Language::En => include_str!("../prompts/post_user_en.txt"),
-    };
-    template
-        .replace("{pre_output}", pre_output)
-        .replace("{executor_draft}", executor_draft)
+pub fn post_user_payload(lang: Language, _pre_output: &str, _executor_draft: &str) -> String {
+    match lang {
+        Language::Zh => include_str!("../prompts/post_user_zh.txt").to_string(),
+        Language::En => include_str!("../prompts/post_user_en.txt").to_string(),
+    }
 }
 
 // --- Helpers ---
@@ -103,26 +56,24 @@ pub fn post_user_payload(
 fn format_failure_paths(lang: Language, paths: &[String]) -> String {
     if paths.is_empty() {
         match lang {
-            Language::Zh => "（无失败路径）".to_string(),
-            Language::En => "(no failure paths)".to_string(),
+            Language::Zh => String::new(),
+            Language::En => String::new(),
         }
     } else {
         match lang {
             Language::Zh => {
-                let mut s = String::new();
-                s.push_str("本轮此前失败路径（请避免重复）：\n");
-                for (i, f) in paths.iter().enumerate() {
-                    s.push_str(&format!("{}. {f}\n", i + 1));
+                let mut text = String::from("这个任务执行中曾失败过\n");
+                for (index, failure) in paths.iter().enumerate() {
+                    text.push_str(&format!("第 {} 次失败：\n{}\n", index + 1, failure));
                 }
-                s.trim_end().to_string()
+                text.trim_end().to_string()
             }
             Language::En => {
-                let mut s = String::new();
-                s.push_str("Previous failure path(s) for this turn (avoid repeating):\n");
-                for (i, f) in paths.iter().enumerate() {
-                    s.push_str(&format!("{}. {f}\n", i + 1));
+                let mut text = String::from("This task previously failed during execution.\n");
+                for (index, failure) in paths.iter().enumerate() {
+                    text.push_str(&format!("Failure {}:\n{}\n", index + 1, failure));
                 }
-                s.trim_end().to_string()
+                text.trim_end().to_string()
             }
         }
     }
@@ -135,67 +86,44 @@ mod tests {
     use super::*;
 
     #[test]
-    fn zh_prompts_contain_chinese_and_markers() {
-        let p = pre_prompt(Language::Zh);
-        assert!(p.contains("PRE"));
-        assert!(p.contains("PIGEND"));
-        assert!(p.contains("简体中文") || p.contains("中文"));
+    fn zh_payloads_match_the_documented_phase_contract() {
+        let pre = pre_user_payload(Language::Zh, &["失败输出".into()]);
+        assert!(pre.starts_with("以上是本任务要求"));
+        assert!(pre.contains("第 1 次失败：\n失败输出"));
+        assert!(pre.contains("严格按要求输出这5个问题的回答"));
+        assert!(pre.contains("本任务需要哪些项目内部信息？"));
+        assert!(pre.contains("当且仅当1）-4）均不需要或极其简单"));
+        assert!(pre.trim_end().ends_with("PIGEND`"));
 
-        let e = executor_prompt(Language::Zh);
-        assert!(e.contains("EXECUTOR") || e.contains("草稿"));
+        let executor = executor_user_payload(Language::Zh, "完整 PRE", "ignored");
+        assert!(executor.starts_with("以下是对本次任务在"));
+        assert!(executor.contains("完整 PRE"));
+        assert!(executor
+            .trim_end()
+            .ends_with("按照执行计划全力完成任务目标"));
+        assert!(!executor.contains("POST 反馈"));
 
-        let post = post_prompt(Language::Zh);
+        let post = post_user_payload(Language::Zh, "ignored", "ignored");
+        assert!(post.starts_with("根据设定的目标，独立验收结果"));
         assert!(post.contains("PIGEND"));
-        assert!(post.contains("PIGFAILED"));
+        assert!(post.contains("PIGFAIL"));
+        assert!(!post.contains("PRE 计划"));
+        assert!(!post.contains("EXECUTOR 草稿"));
     }
 
     #[test]
-    fn en_prompts_contain_english_and_markers() {
-        let p = pre_prompt(Language::En);
-        assert!(p.contains("PRE phase"));
-        assert!(p.contains("PIGEND"));
+    fn english_payloads_are_semantically_equivalent() {
+        let pre = pre_user_payload(Language::En, &[]);
+        assert!(pre.contains("five questions"));
+        assert!(pre.contains("project-internal information"));
+        assert!(pre.contains("PIGEND"));
 
-        let post = post_prompt(Language::En);
-        assert!(post.contains("PIGFAILED"));
-    }
+        let executor = executor_user_payload(Language::En, "complete PRE", "ignored");
+        assert!(executor.contains("complete PRE"));
+        assert!(executor.contains("fully complete the task goal"));
 
-    #[test]
-    fn payloads_switch_with_language() {
-        let zh = pre_user_payload(Language::Zh, &[]);
-        assert!(zh.contains("PRE"));
-        let en = pre_user_payload(Language::En, &[]);
-        assert!(en.contains("PRE phase"));
-    }
-
-    #[test]
-    fn failure_paths_filled() {
-        let p = pre_user_payload(Language::Zh, &["path A".into(), "path B".into()]);
-        assert!(p.contains("path A"));
-        assert!(p.contains("path B"));
-        assert!(p.contains("1."));
-        assert!(p.contains("2."));
-    }
-
-    #[test]
-    fn executor_payload_fills_vars() {
-        let p = executor_user_payload(Language::Zh, "my plan", "fix this");
-        assert!(p.contains("my plan"));
-        assert!(p.contains("fix this"));
-        assert!(p.contains("POST 反馈"));
-    }
-
-    #[test]
-    fn executor_payload_empty_feedback() {
-        let p = executor_user_payload(Language::En, "my plan", "");
-        assert!(p.contains("my plan"));
-        // No feedback header should appear when feedback is empty.
-        assert!(!p.contains("POST feedback"));
-    }
-
-    #[test]
-    fn post_payload_fills_vars() {
-        let p = post_user_payload(Language::Zh, "the plan", "the draft");
-        assert!(p.contains("the plan"));
-        assert!(p.contains("the draft"));
+        let post = post_user_payload(Language::En, "ignored", "ignored");
+        assert!(post.contains("independently verify"));
+        assert!(post.contains("PIGFAIL"));
     }
 }

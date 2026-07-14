@@ -133,10 +133,9 @@ impl OpenAiResponsesClient {
             return Err(self.map_http_error(response).await);
         }
 
-        let parsed: ResponsesResponse = response
-            .json()
-            .await
-            .map_err(|e| ApiError::InvalidResponse(format!("Failed to parse response JSON: {e}")))?;
+        let parsed: ResponsesResponse = response.json().await.map_err(|e| {
+            ApiError::InvalidResponse(format!("Failed to parse response JSON: {e}"))
+        })?;
 
         Ok(convert_non_stream_response(parsed))
     }
@@ -181,7 +180,8 @@ impl OpenAiResponsesClient {
         let mut response_model = self.model.clone();
 
         while let Some(chunk_result) = stream.next().await {
-            let chunk = chunk_result.map_err(|e| ApiError::Network(format!("SSE read error: {e}")))?;
+            let chunk =
+                chunk_result.map_err(|e| ApiError::Network(format!("SSE read error: {e}")))?;
             buffer.push_str(&String::from_utf8_lossy(&chunk));
 
             while let Some(pos) = buffer.find("\n\n") {
@@ -324,7 +324,11 @@ impl OpenAiResponsesClient {
         }
 
         // Flush accumulated plain text if not already pushed as ContentBlock::Text
-        if !text_acc.is_empty() && !content.iter().any(|b| matches!(b, ContentBlock::Text { .. })) {
+        if !text_acc.is_empty()
+            && !content
+                .iter()
+                .any(|b| matches!(b, ContentBlock::Text { .. }))
+        {
             content.insert(0, ContentBlock::text(text_acc));
         } else if !text_acc.is_empty() {
             // If we only streamed deltas and never got a final message item, ensure text exists.
@@ -335,7 +339,9 @@ impl OpenAiResponsesClient {
 
         // Emit tool end events for completed tools
         for (id, (name, args)) in &tool_args {
-            if content.iter().any(|b| matches!(b, ContentBlock::ToolUse { id: tid, .. } if tid == id))
+            if content
+                .iter()
+                .any(|b| matches!(b, ContentBlock::ToolUse { id: tid, .. } if tid == id))
             {
                 continue;
             }
@@ -446,8 +452,7 @@ fn extend_input_from_message(input: &mut Vec<ResponsesInputItem>, msg: &Message)
                 });
             }
             for (id, name, args) in msg.tool_uses() {
-                let arguments =
-                    serde_json::to_string(args).unwrap_or_else(|_| "{}".to_string());
+                let arguments = serde_json::to_string(args).unwrap_or_else(|_| "{}".to_string());
                 input.push(ResponsesInputItem::FunctionCall {
                     r#type: "function_call".into(),
                     name: name.to_string(),
@@ -503,7 +508,10 @@ fn handle_output_item(
                 if text_acc.is_empty() {
                     *text_acc = parts.clone();
                 }
-                if !content.iter().any(|b| matches!(b, ContentBlock::Text { .. })) {
+                if !content
+                    .iter()
+                    .any(|b| matches!(b, ContentBlock::Text { .. }))
+                {
                     content.push(ContentBlock::text(parts));
                 }
             }
@@ -544,9 +552,10 @@ fn handle_output_item(
             } else {
                 let input =
                     serde_json::from_str(&entry.1).unwrap_or_else(|_| serde_json::json!({}));
-                if !content.iter().any(|b| {
-                    matches!(b, ContentBlock::ToolUse { id, .. } if id == &call_id)
-                }) {
+                if !content
+                    .iter()
+                    .any(|b| matches!(b, ContentBlock::ToolUse { id, .. } if id == &call_id))
+                {
                     content.push(ContentBlock::tool_use(&call_id, &entry.0, input));
                 }
                 callback.on_event(&StreamEvent::ToolUseEnd { id: call_id });
@@ -672,14 +681,8 @@ enum ResponsesInputItem {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(untagged)]
 enum ResponsesContentPart {
-    InputText {
-        r#type: String,
-        text: String,
-    },
-    OutputText {
-        r#type: String,
-        text: String,
-    },
+    InputText { r#type: String, text: String },
+    OutputText { r#type: String, text: String },
 }
 
 #[derive(Debug, Serialize)]
@@ -774,7 +777,12 @@ mod tests {
         assert_eq!(body.instructions, "you are pigs");
         assert!(body.stream);
         assert_eq!(body.input.len(), 3);
-        assert!(body.tools.as_ref().unwrap().iter().any(|t| t.name == "bash"));
+        assert!(body
+            .tools
+            .as_ref()
+            .unwrap()
+            .iter()
+            .any(|t| t.name == "bash"));
         let json = serde_json::to_value(&body).unwrap();
         assert!(json.get("input").is_some());
         assert_eq!(json["tool_choice"], "auto");

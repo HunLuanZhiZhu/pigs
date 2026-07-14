@@ -84,14 +84,9 @@ impl Tool for WriteFileTool {
             // 如果父目录不存在，自动创建
             // create_dir_all 会递归创建所有不存在的父目录
             if !parent.exists() {
-                fs::create_dir_all(parent)
-                    .await
-                    .map_err(|e| {
-                        MiniAgentError::ToolError(format!(
-                            "创建目录失败 '{}': {e}",
-                            parent.display()
-                        ))
-                    })?;
+                fs::create_dir_all(parent).await.map_err(|e| {
+                    MiniAgentError::ToolError(format!("创建目录失败 '{}': {e}", parent.display()))
+                })?;
             }
         }
 
@@ -143,7 +138,8 @@ mod tests {
     #[tokio::test]
     async fn test_create_parent_dirs() {
         let tmp_dir = tempfile::tempdir().unwrap();
-        let file_path = tmp_dir.path()
+        let file_path = tmp_dir
+            .path()
             .join("dir1")
             .join("dir2")
             .join("dir3")
@@ -196,7 +192,9 @@ mod tests {
         assert!(result.is_err());
 
         // 缺少 content
-        let result = tool.execute(serde_json::json!({"path": "/tmp/test.txt"})).await;
+        let result = tool
+            .execute(serde_json::json!({"path": "/tmp/test.txt"}))
+            .await;
         assert!(result.is_err());
     }
 }

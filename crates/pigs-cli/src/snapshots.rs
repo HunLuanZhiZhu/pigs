@@ -156,7 +156,6 @@ pub fn load_batch(path: &Path) -> Result<SnapshotBatch, String> {
     serde_json::from_str(&text).map_err(|e| e.to_string())
 }
 
-
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]

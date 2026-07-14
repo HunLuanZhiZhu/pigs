@@ -19,7 +19,9 @@
 //! 读代码 → 改代码 → 运行命令验证。这是 CoreCoder 行为规则的核心。
 
 use crate::tool::ToolRegistry;
-use crate::tools::{bash::BashTool, edit_file::EditFileTool, read_file::ReadFileTool, write_file::WriteFileTool};
+use crate::tools::{
+    bash::BashTool, edit_file::EditFileTool, read_file::ReadFileTool, write_file::WriteFileTool,
+};
 
 // === 工具子模块声明 ===
 // 每个子模块实现一个具体的工具，都实现了 `Tool` trait。

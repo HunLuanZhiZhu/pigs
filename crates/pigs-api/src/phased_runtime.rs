@@ -19,9 +19,7 @@ use tracing::{debug, info, warn};
 
 use crate::phased_markers::{detect_marker, strip_markers, Marker};
 use crate::phased_phase::Phase;
-use crate::phased_prompts::{
-    executor_user_payload, post_user_payload, pre_user_payload,
-};
+use crate::phased_prompts::{executor_user_payload, post_user_payload, pre_user_payload};
 use crate::phased_tools::info_tool_registry;
 
 /// 运行时限制参数。
@@ -71,9 +69,16 @@ pub enum TurnProgress {
     /// 工具调用开始 / Tool call started.
     ToolStart { phase: String, name: String },
     /// 工具调用结束 / Tool call ended.
-    ToolEnd { phase: String, name: String, is_error: bool },
+    ToolEnd {
+        phase: String,
+        name: String,
+        is_error: bool,
+    },
     /// 整轮结束 / Turn ended.
-    TurnEnd { ended_with: String, final_text: String },
+    TurnEnd {
+        ended_with: String,
+        final_text: String,
+    },
 }
 
 /// 进度回调类型：Arc 包装的闭包。
@@ -238,10 +243,7 @@ impl PhasedRuntime {
     /// 运行一轮相位对话（无进度回调）。
     /// Run a phased turn (no progress callback).
     #[allow(dead_code)]
-    pub async fn run_turn(
-        &self,
-        messages: &[Message],
-    ) -> anyhow::Result<TurnResult> {
+    pub async fn run_turn(&self, messages: &[Message]) -> anyhow::Result<TurnResult> {
         self.run_turn_with_progress(messages, None, None).await
     }
 
@@ -328,7 +330,9 @@ impl PhasedRuntime {
         // ================================================================
         if !self.is_pig {
             events.push(ev("phase_start", Some("direct"), None));
-            emit(TurnProgress::PhaseStart { phase: "direct".into() });
+            emit(TurnProgress::PhaseStart {
+                phase: "direct".into(),
+            });
             // payload = 纯用户原问题（不追加相位提示词）
             // payload = plain user question (no phase instructions appended)
             let payload = user_question.clone();
@@ -360,13 +364,13 @@ impl PhasedRuntime {
         // -pig mode: full Pre→Executor→Post phased orchestration
         // ================================================================
         // 本轮相位间传递的产物 / Products passed between phases this turn
-        let mut pre_output = String::new();           // PRE 计划 / GOAL
-        let mut executor_draft = String::new();        // Executor 草稿
+        let mut pre_output = String::new(); // PRE 计划 / GOAL
+        let mut executor_draft = String::new(); // Executor 草稿
         let mut failure_paths: Vec<String> = Vec::new(); // 失败路径记录
-        let mut executor_loops: u32 = 0;               // Executor ← Post 回环计数
-        let mut pre_replans: u32 = 0;                  // PRE 重规划计数
-        let mut phase = Phase::Pre;                    // 当前相位
-        let mut last_post_feedback = String::new();    // POST 给 Executor 的反馈
+        let mut executor_loops: u32 = 0; // Executor ← Post 回环计数
+        let mut pre_replans: u32 = 0; // PRE 重规划计数
+        let mut phase = Phase::Pre; // 当前相位
+        let mut last_post_feedback = String::new(); // POST 给 Executor 的反馈
 
         loop {
             match phase {
@@ -377,7 +381,9 @@ impl PhasedRuntime {
                 Phase::Pre => {
                     info!(phase = "pre", "starting pre phase");
                     events.push(ev("phase_start", Some("pre"), None));
-                    emit(TurnProgress::PhaseStart { phase: "pre".into() });
+                    emit(TurnProgress::PhaseStart {
+                        phase: "pre".into(),
+                    });
                     // payload = 用户原问题 + PRE 相位指令（含失败路径）
                     // payload = user question first, then phase instructions.
                     let payload = format!(
@@ -396,15 +402,25 @@ impl PhasedRuntime {
                         )
                         .await?;
                     events.push(ev("phase_output", Some("pre"), Some(text.clone())));
-                    emit(TurnProgress::PhaseOutput { phase: "pre".into(), text: text.clone() });
+                    emit(TurnProgress::PhaseOutput {
+                        phase: "pre".into(),
+                        text: text.clone(),
+                    });
                     // 解析控制标记 / Parse control markers
                     match detect_marker(&text) {
                         // PIGEND → 整轮直接结束（简单路径）
                         Some(Marker::End) => {
                             let final_text = strip_markers(&text);
                             events.push(ev("turn_end", Some("pre"), Some(final_text.clone())));
-                            emit(TurnProgress::TurnEnd { ended_with: "PIGEND".into(), final_text: final_text.clone() });
-                            return Ok(TurnResult { final_text, events, ended_with: "PIGEND".into() });
+                            emit(TurnProgress::TurnEnd {
+                                ended_with: "PIGEND".into(),
+                                final_text: final_text.clone(),
+                            });
+                            return Ok(TurnResult {
+                                final_text,
+                                events,
+                                ended_with: "PIGEND".into(),
+                            });
                         }
                         // PIGFAILED → 记录失败路径，重规划
                         Some(Marker::Failed) => {
@@ -434,16 +450,14 @@ impl PhasedRuntime {
                 Phase::Executor => {
                     info!(phase = "executor", "starting executor phase");
                     events.push(ev("phase_start", Some("executor"), None));
-                    emit(TurnProgress::PhaseStart { phase: "executor".into() });
+                    emit(TurnProgress::PhaseStart {
+                        phase: "executor".into(),
+                    });
                     // payload = 用户原问题 + Executor 指令 + PRE 产物 + POST 反馈
                     let payload = format!(
                         "{}\n\n{}",
                         user_question,
-                        executor_user_payload(
-                            self.language,
-                            &pre_output,
-                            &last_post_feedback,
-                        )
+                        executor_user_payload(self.language, &pre_output, &last_post_feedback,)
                     );
                     let text = self
                         .run_phase(
@@ -456,7 +470,10 @@ impl PhasedRuntime {
                         )
                         .await?;
                     events.push(ev("phase_output", Some("executor"), Some(text.clone())));
-                    emit(TurnProgress::PhaseOutput { phase: "executor".into(), text: text.clone() });
+                    emit(TurnProgress::PhaseOutput {
+                        phase: "executor".into(),
+                        text: text.clone(),
+                    });
                     // 不解析标记：PRE 之后总是进入 POST。
                     // No marker parsing: after PRE, always go to POST.
                     executor_draft = text;
@@ -470,16 +487,14 @@ impl PhasedRuntime {
                 Phase::Post => {
                     info!(phase = "post", "starting post phase");
                     events.push(ev("phase_start", Some("post"), None));
-                    emit(TurnProgress::PhaseStart { phase: "post".into() });
+                    emit(TurnProgress::PhaseStart {
+                        phase: "post".into(),
+                    });
                     // payload = 用户原问题 + POST 指令 + PRE 产物 + Executor 草稿
                     let payload = format!(
                         "{}\n\n{}",
                         user_question,
-                        post_user_payload(
-                            self.language,
-                            &pre_output,
-                            &executor_draft,
-                        )
+                        post_user_payload(self.language, &pre_output, &executor_draft,)
                     );
                     let text = self
                         .run_phase(
@@ -492,15 +507,25 @@ impl PhasedRuntime {
                         )
                         .await?;
                     events.push(ev("phase_output", Some("post"), Some(text.clone())));
-                    emit(TurnProgress::PhaseOutput { phase: "post".into(), text: text.clone() });
+                    emit(TurnProgress::PhaseOutput {
+                        phase: "post".into(),
+                        text: text.clone(),
+                    });
                     // 解析控制标记 / Parse control markers
                     match detect_marker(&text) {
                         // PIGEND → 整轮正常结束
                         Some(Marker::End) => {
                             let final_text = strip_markers(&text);
                             events.push(ev("turn_end", Some("post"), Some(final_text.clone())));
-                            emit(TurnProgress::TurnEnd { ended_with: "PIGEND".into(), final_text: final_text.clone() });
-                            return Ok(TurnResult { final_text, events, ended_with: "PIGEND".into() });
+                            emit(TurnProgress::TurnEnd {
+                                ended_with: "PIGEND".into(),
+                                final_text: final_text.clone(),
+                            });
+                            return Ok(TurnResult {
+                                final_text,
+                                events,
+                                ended_with: "PIGEND".into(),
+                            });
                         }
                         // PIGFAILED → 路径失败，清空产物，回到 PRE 重规划
                         Some(Marker::Failed) => {
@@ -587,7 +612,7 @@ impl PhasedRuntime {
 
             // 构建 LLM 请求 / Build LLM request
             let request = ApiRequest::new(model.to_string(), messages.clone())
-                .with_system_prompt(system)     // 用户原 system，透传
+                .with_system_prompt(system) // 用户原 system，透传
                 .with_tools(tool_defs.clone())
                 .with_max_tokens(self.limits.max_tokens)
                 .with_temperature(self.limits.temperature);
@@ -710,7 +735,6 @@ impl StreamCallback for CollectingCallback {
         }
     }
 }
-
 
 /// 构造 TurnEvent 的辅助函数。
 /// Helper to construct a TurnEvent.

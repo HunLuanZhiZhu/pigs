@@ -1,6 +1,8 @@
-PRE phase instructions above.
-
---- Turn supplements ---
+The text above is the task requirement.
 {failure_paths}
-
-Follow the PRE phase instructions. End with PIGEND alone on a line only if fully done.
+Do not execute the task in this response. Analyze it before execution and answer exactly these five questions:
+1. What project-internal information is needed, including file paths, keywords, or other lookup methods?
+2. What external information is needed, such as machine state, network information, user clarification, or model knowledge?
+3. What is the execution plan for the task?
+4. What is the task goal used to decide whether it is complete?
+5. Only when questions 1 through 4 need nothing or are extremely simple, classify this as a simple task, give the reason, and end the response with `PIGEND`.

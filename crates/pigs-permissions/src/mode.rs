@@ -21,7 +21,9 @@ impl PermissionMode {
     pub fn description(&self) -> &'static str {
         match self {
             PermissionMode::ReadOnly => "Read-only — tools that do not modify state",
-            PermissionMode::WorkspaceWrite => "Workspace write — file modifications within workspace",
+            PermissionMode::WorkspaceWrite => {
+                "Workspace write — file modifications within workspace"
+            }
             PermissionMode::DangerFullAccess => "Full access — all tools including shell commands",
         }
     }
@@ -76,7 +78,10 @@ mod tests {
 
     #[test]
     fn test_from_str() {
-        assert_eq!(PermissionMode::from_str("readonly").unwrap(), PermissionMode::ReadOnly);
+        assert_eq!(
+            PermissionMode::from_str("readonly").unwrap(),
+            PermissionMode::ReadOnly
+        );
         assert_eq!(
             PermissionMode::from_str("workspace_write").unwrap(),
             PermissionMode::WorkspaceWrite
@@ -90,7 +95,11 @@ mod tests {
 
     #[test]
     fn test_as_str_roundtrip() {
-        for mode in &[PermissionMode::ReadOnly, PermissionMode::WorkspaceWrite, PermissionMode::DangerFullAccess] {
+        for mode in &[
+            PermissionMode::ReadOnly,
+            PermissionMode::WorkspaceWrite,
+            PermissionMode::DangerFullAccess,
+        ] {
             let s = mode.as_str();
             let parsed = PermissionMode::from_str(s).unwrap();
             assert_eq!(mode, &parsed);

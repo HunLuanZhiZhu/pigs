@@ -54,10 +54,7 @@ impl ToolHandler for ListFilesTool {
         input: serde_json::Value,
     ) -> Pin<Box<dyn Future<Output = Result<ToolResult, ToolError>> + Send + 'a>> {
         Box::pin(async move {
-            let path = input
-                .get("path")
-                .and_then(|v| v.as_str())
-                .unwrap_or(".");
+            let path = input.get("path").and_then(|v| v.as_str()).unwrap_or(".");
 
             let recursive = input
                 .get("recursive")

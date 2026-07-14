@@ -117,8 +117,7 @@ async fn run_hook(
     tool_output: Option<&str>,
     is_error: bool,
 ) -> Result<i32, String> {
-    let input_json =
-        serde_json::to_string(tool_input).unwrap_or_else(|_| "{}".to_string());
+    let input_json = serde_json::to_string(tool_input).unwrap_or_else(|_| "{}".to_string());
 
     #[cfg(target_os = "windows")]
     let (program, flag) = ("cmd", "/C");
@@ -134,7 +133,10 @@ async fn run_hook(
         .env("PIGS_HOOK_EVENT", event)
         .env("PIGS_TOOL_NAME", tool_name)
         .env("PIGS_TOOL_INPUT", input_json)
-        .env("PIGS_TOOL_IS_ERROR", if is_error { "true" } else { "false" });
+        .env(
+            "PIGS_TOOL_IS_ERROR",
+            if is_error { "true" } else { "false" },
+        );
 
     if let Some(output) = tool_output {
         // Bound env size for very large tool outputs
@@ -150,10 +152,13 @@ async fn run_hook(
         .spawn()
         .map_err(|e| format!("Failed to spawn hook command: {e}"))?;
 
-    let output = tokio::time::timeout(Duration::from_secs(hook.timeout.max(1)), child.wait_with_output())
-        .await
-        .map_err(|_| format!("Hook timed out after {}s", hook.timeout))?
-        .map_err(|e| format!("Hook process failed: {e}"))?;
+    let output = tokio::time::timeout(
+        Duration::from_secs(hook.timeout.max(1)),
+        child.wait_with_output(),
+    )
+    .await
+    .map_err(|_| format!("Hook timed out after {}s", hook.timeout))?
+    .map_err(|e| format!("Hook process failed: {e}"))?;
 
     let code = output.status.code().unwrap_or(-1);
     if !output.stdout.is_empty() {

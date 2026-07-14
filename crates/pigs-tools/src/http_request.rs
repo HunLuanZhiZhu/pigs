@@ -169,7 +169,11 @@ impl ToolHandler for HttpRequestTool {
             };
 
             let mut out = String::new();
-            out.push_str(&format!("HTTP {} {}\n", status.as_u16(), status.canonical_reason().unwrap_or("")));
+            out.push_str(&format!(
+                "HTTP {} {}\n",
+                status.as_u16(),
+                status.canonical_reason().unwrap_or("")
+            ));
             out.push_str(&format!("URL: {url}\n"));
             out.push_str(&format!("Method: {method}\n"));
             out.push_str(&format!("Version: {version}\n\n"));

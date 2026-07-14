@@ -10,20 +10,22 @@ pub fn init(cfg: &LogConfig) -> Result<()> {
         .or_else(|_| EnvFilter::try_new(&cfg.level))
         .unwrap_or_else(|_| EnvFilter::new("info"));
 
-    let mut layers: Vec<Box<dyn tracing_subscriber::Layer<tracing_subscriber::Registry> + Send + Sync + 'static>> =
-        Vec::new();
+    let mut layers: Vec<
+        Box<dyn tracing_subscriber::Layer<tracing_subscriber::Registry> + Send + Sync + 'static>,
+    > = Vec::new();
 
     if cfg.to_stdout {
-        let l: Box<dyn tracing_subscriber::Layer<_> + Send + Sync + 'static> = match cfg.format.as_str() {
-            "json" => tracing_subscriber::fmt::layer()
-                .json()
-                .with_filter(filter.clone())
-                .boxed(),
-            _ => tracing_subscriber::fmt::layer()
-                .pretty()
-                .with_filter(filter.clone())
-                .boxed(),
-        };
+        let l: Box<dyn tracing_subscriber::Layer<_> + Send + Sync + 'static> =
+            match cfg.format.as_str() {
+                "json" => tracing_subscriber::fmt::layer()
+                    .json()
+                    .with_filter(filter.clone())
+                    .boxed(),
+                _ => tracing_subscriber::fmt::layer()
+                    .pretty()
+                    .with_filter(filter.clone())
+                    .boxed(),
+            };
         layers.push(l);
     }
 
@@ -54,7 +56,8 @@ pub fn init(cfg: &LogConfig) -> Result<()> {
     // 使用 try_init 避免与已设置的全场 subscriber 冲突（如 pigs-cli 的 init_logging）。
     // Use try_init to avoid panicking when a global subscriber is already set
     // (e.g. by pigs-cli's init_logging).
-    subscriber.try_init()
+    subscriber
+        .try_init()
         .map_err(|e| anyhow::anyhow!("failed to set global trace subscriber: {e}"))?;
     Ok(())
 }

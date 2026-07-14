@@ -1,8 +1,3 @@
-EXECUTOR phase instructions above.
-
---- PRE plan/GOAL ---
+The following is the complete analysis of 1. internal information, 2. external information, 3. execution plan, 4. task goal, and 5. task difficulty:
 {pre_output}
-
-{post_feedback}
-
-Produce the best draft answer after any needed tools.
+After obtaining the required internal and external information, follow the execution plan and fully complete the task goal.

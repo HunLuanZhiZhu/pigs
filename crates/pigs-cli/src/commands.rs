@@ -30,10 +30,8 @@ pub async fn handle_command(agent: &mut Agent, line: &str) -> anyhow::Result<Com
     let cmd = canonicalize_command(raw_cmd);
 
     // Bare `/中文` (or pinyin `/zhongwen`) with no args → switch language to zh.
-    let bare_chinese_switch = matches!(
-        raw_cmd,
-        "中文" | "zhongwen" | "Zhongwen" | "ZHONGWEN"
-    ) && arg.is_empty();
+    let bare_chinese_switch =
+        matches!(raw_cmd, "中文" | "zhongwen" | "Zhongwen" | "ZHONGWEN") && arg.is_empty();
 
     match cmd {
         "help" => {
@@ -133,40 +131,36 @@ pub async fn handle_command(agent: &mut Agent, line: &str) -> anyhow::Result<Com
                 canonicalize_sessions_sub(sub_raw)
             };
             match sub {
-                "list" => {
-                    match Agent::list_sessions() {
-                        Ok(sessions) => {
-                            if sessions.is_empty() {
-                                println!("No saved sessions.");
-                            } else {
+                "list" => match Agent::list_sessions() {
+                    Ok(sessions) => {
+                        if sessions.is_empty() {
+                            println!("No saved sessions.");
+                        } else {
+                            println!(
+                                "{:<10} {:<24} {:<18} {:<6} {:<16}",
+                                "ID", "Title", "Model", "Msgs", "Updated"
+                            );
+                            println!("{}", "-".repeat(80));
+                            for s in sessions.iter().take(20) {
+                                let short_id = &s.session_id[..8.min(s.session_id.len())];
+                                let updated = s.updated_at.format("%Y-%m-%d %H:%M");
+                                let title =
+                                    s.title.clone().unwrap_or_else(|| "(untitled)".to_string());
+                                let title = if title.chars().count() > 22 {
+                                    let t: String = title.chars().take(19).collect();
+                                    format!("{t}...")
+                                } else {
+                                    title
+                                };
                                 println!(
-                                    "{:<10} {:<24} {:<18} {:<6} {:<16}",
-                                    "ID", "Title", "Model", "Msgs", "Updated"
+                                    "{short_id:<10} {title:<24} {:<18} {:<6} {updated}",
+                                    s.model, s.message_count
                                 );
-                                println!("{}", "-".repeat(80));
-                                for s in sessions.iter().take(20) {
-                                    let short_id = &s.session_id[..8.min(s.session_id.len())];
-                                    let updated = s.updated_at.format("%Y-%m-%d %H:%M");
-                                    let title = s
-                                        .title
-                                        .clone()
-                                        .unwrap_or_else(|| "(untitled)".to_string());
-                                    let title = if title.chars().count() > 22 {
-                                        let t: String = title.chars().take(19).collect();
-                                        format!("{t}...")
-                                    } else {
-                                        title
-                                    };
-                                    println!(
-                                        "{short_id:<10} {title:<24} {:<18} {:<6} {updated}",
-                                        s.model, s.message_count
-                                    );
-                                }
                             }
                         }
-                        Err(e) => eprintln!("Failed to list sessions: {e}"),
                     }
-                }
+                    Err(e) => eprintln!("Failed to list sessions: {e}"),
+                },
                 "rm" => {
                     let id = parts.get(1).map(|s| s.trim()).unwrap_or("");
                     if id.is_empty() {
@@ -297,7 +291,9 @@ pub async fn handle_command(agent: &mut Agent, line: &str) -> anyhow::Result<Com
                         let total = todos.len();
                         let completed = todos
                             .iter()
-                            .filter(|t| matches!(t.status, pigs_tools::todo_write::TodoStatus::Completed))
+                            .filter(|t| {
+                                matches!(t.status, pigs_tools::todo_write::TodoStatus::Completed)
+                            })
                             .count();
                         println!("Todo list ({completed}/{total} completed):");
                         println!("{}", "-".repeat(60));
@@ -312,7 +308,12 @@ pub async fn handle_command(agent: &mut Agent, line: &str) -> anyhow::Result<Com
                                 pigs_tools::todo_write::TodoPriority::Medium => "MED ",
                                 pigs_tools::todo_write::TodoPriority::Low => "LOW ",
                             };
-                            println!("  {} {priority_tag}  {}. {}", status_icon, i + 1, item.content);
+                            println!(
+                                "  {} {priority_tag}  {}. {}",
+                                status_icon,
+                                i + 1,
+                                item.content
+                            );
                         }
                     }
                 }
@@ -324,7 +325,11 @@ pub async fn handle_command(agent: &mut Agent, line: &str) -> anyhow::Result<Com
         "status" => {
             println!("Pigs status");
             println!("{}", "-".repeat(60));
-            println!("Session:    {} ({})", agent.session.display_title(), agent.session.short_id());
+            println!(
+                "Session:    {} ({})",
+                agent.session.display_title(),
+                agent.session.short_id()
+            );
             println!("Model:      {}", agent.api_client.model());
             println!(
                 "{}:   {} ({})",
@@ -360,7 +365,10 @@ pub async fn handle_command(agent: &mut Agent, line: &str) -> anyhow::Result<Com
                 println!("            {}", servers.join(", "));
             }
             println!("Workspace:  {}", agent.workspace_root.display());
-            println!("Logs:       {}", pigs_config::AppConfig::logs_dir().display());
+            println!(
+                "Logs:       {}",
+                pigs_config::AppConfig::logs_dir().display()
+            );
             Ok(CommandResult::Continue)
         }
 
@@ -371,7 +379,14 @@ pub async fn handle_command(agent: &mut Agent, line: &str) -> anyhow::Result<Com
             println!("Messages:     {}", agent.session.message_count());
             println!("Est. tokens:  {}", agent.session.estimated_tokens());
             println!("Usage:        {}", agent.session.total_usage);
-            println!("Tools:        {}", if agent.no_tools { "disabled" } else { "enabled" });
+            println!(
+                "Tools:        {}",
+                if agent.no_tools {
+                    "disabled"
+                } else {
+                    "enabled"
+                }
+            );
             println!("Max turns:    {}", agent.max_turns);
             println!("Skills:       {}", agent.skills.len());
             Ok(CommandResult::Continue)
@@ -652,7 +667,11 @@ pub async fn handle_command(agent: &mut Agent, line: &str) -> anyhow::Result<Com
         }
 
         "models" => {
-            crate::models::print_models(&agent.config, &agent.config.model, agent.api_client.model());
+            crate::models::print_models(
+                &agent.config,
+                &agent.config.model,
+                agent.api_client.model(),
+            );
             Ok(CommandResult::Continue)
         }
 
@@ -849,8 +868,14 @@ async fn handle_mcp_command(agent: &mut Agent, arg: &str) -> anyhow::Result<()> 
                     for t in tools {
                         println!(
                             "  - mcp_{}_{}  ({})",
-                            t.server_name.replace(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-', "_"),
-                            t.name.replace(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-', "_"),
+                            t.server_name.replace(
+                                |c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-',
+                                "_"
+                            ),
+                            t.name.replace(
+                                |c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-',
+                                "_"
+                            ),
                             t.server_name
                         );
                     }
@@ -898,9 +923,9 @@ async fn handle_mcp_command(agent: &mut Agent, arg: &str) -> anyhow::Result<()> 
             }
             let name = parts[1];
             match agent.disconnect_mcp_server(name).await {
-                Ok(()) => println!(
-                    "Disconnected MCP server '{name}'. (Tools remain until restart.)"
-                ),
+                Ok(()) => {
+                    println!("Disconnected MCP server '{name}'. (Tools remain until restart.)")
+                }
                 Err(e) => eprintln!("Failed to disconnect '{name}': {e}"),
             }
         }

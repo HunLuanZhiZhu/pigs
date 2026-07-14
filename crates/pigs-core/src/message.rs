@@ -29,9 +29,7 @@ impl std::fmt::Display for MessageRole {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentBlock {
     /// Plain text content.
-    Text {
-        text: String,
-    },
+    Text { text: String },
     /// A tool-use request from the assistant.
     ToolUse {
         id: String,
@@ -54,7 +52,11 @@ impl ContentBlock {
     }
 
     /// Create a tool-use content block.
-    pub fn tool_use(id: impl Into<String>, name: impl Into<String>, input: serde_json::Value) -> Self {
+    pub fn tool_use(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        input: serde_json::Value,
+    ) -> Self {
         ContentBlock::ToolUse {
             id: id.into(),
             name: name.into(),
@@ -63,7 +65,11 @@ impl ContentBlock {
     }
 
     /// Create a tool-result content block.
-    pub fn tool_result(tool_use_id: impl Into<String>, output: impl Into<String>, is_error: bool) -> Self {
+    pub fn tool_result(
+        tool_use_id: impl Into<String>,
+        output: impl Into<String>,
+        is_error: bool,
+    ) -> Self {
         ContentBlock::ToolResult {
             tool_use_id: tool_use_id.into(),
             output: output.into(),
@@ -131,7 +137,11 @@ impl Message {
     }
 
     /// Create a tool result message.
-    pub fn tool_result(tool_use_id: impl Into<String>, output: impl Into<String>, is_error: bool) -> Self {
+    pub fn tool_result(
+        tool_use_id: impl Into<String>,
+        output: impl Into<String>,
+        is_error: bool,
+    ) -> Self {
         Message {
             role: MessageRole::Tool,
             content: vec![ContentBlock::tool_result(tool_use_id, output, is_error)],
@@ -153,7 +163,9 @@ impl Message {
         self.content
             .iter()
             .filter_map(|b| match b {
-                ContentBlock::ToolUse { id, name, input } => Some((id.as_str(), name.as_str(), input)),
+                ContentBlock::ToolUse { id, name, input } => {
+                    Some((id.as_str(), name.as_str(), input))
+                }
                 _ => None,
             })
             .collect()

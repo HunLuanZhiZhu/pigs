@@ -99,11 +99,19 @@ pub fn run_doctor(agent: &Agent) -> Vec<CheckItem> {
     });
 
     // Git availability
-    let git_ok = Command::new("git").arg("--version").output().map(|o| o.status.success()).unwrap_or(false);
+    let git_ok = Command::new("git")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
     items.push(CheckItem {
         name: "git binary".into(),
         ok: git_ok,
-        detail: if git_ok { "available".into() } else { "not found in PATH (git_diff tool limited)".into() },
+        detail: if git_ok {
+            "available".into()
+        } else {
+            "not found in PATH (git_diff tool limited)".into()
+        },
     });
 
     // Workspace write probe
@@ -148,7 +156,11 @@ pub fn print_doctor_report(items: &[CheckItem]) {
     println!("{}", "-".repeat(60));
     for item in items {
         let mark = if item.ok { "OK " } else { "ERR" };
-        if item.ok { ok_n += 1; } else { warn_n += 1; }
+        if item.ok {
+            ok_n += 1;
+        } else {
+            warn_n += 1;
+        }
         println!("[{mark}] {:<28} {}", item.name, item.detail);
     }
     println!("{}", "-".repeat(60));
@@ -201,7 +213,11 @@ mod tests {
             .iter()
             .find(|i| i.name == "Tool registry")
             .expect("tool registry check present");
-        assert!(tool_check.ok, "tools should be registered: {}", tool_check.detail);
+        assert!(
+            tool_check.ok,
+            "tools should be registered: {}",
+            tool_check.detail
+        );
         assert!(
             tool_check.detail.contains("tools registered"),
             "detail={}",

@@ -97,25 +97,26 @@ impl Tool for BashTool {
 
         // 3. 构建命令并执行
         let mut cmd = Command::new(program);
-        cmd.arg(flag).arg(command);           // 传递命令字符串
-        cmd.stdout(Stdio::piped());           // 捕获 stdout
-        cmd.stderr(Stdio::piped());           // 捕获 stderr
-        cmd.stdin(Stdio::null());             // 不需要标准输入
+        cmd.arg(flag).arg(command); // 传递命令字符串
+        cmd.stdout(Stdio::piped()); // 捕获 stdout
+        cmd.stderr(Stdio::piped()); // 捕获 stderr
+        cmd.stdin(Stdio::null()); // 不需要标准输入
 
         // 4. 异步启动命令
-        let child = cmd.spawn().map_err(|e| {
-            MiniAgentError::ToolError(format!("启动命令失败: {e}"))
-        })?;
+        let child = cmd
+            .spawn()
+            .map_err(|e| MiniAgentError::ToolError(format!("启动命令失败: {e}")))?;
 
         // 5. 使用 tokio::time::timeout 设置超时
-        let output = tokio::time::timeout(Duration::from_secs(TIMEOUT_SECS), child.wait_with_output())
-            .await
-            .map_err(|_| {
-                MiniAgentError::ToolError(format!(
-                    "命令执行超时（{TIMEOUT_SECS} 秒）: {command}"
-                ))
-            })?
-            .map_err(|e| MiniAgentError::ToolError(format!("等待命令完成失败: {e}")))?;
+        let output =
+            tokio::time::timeout(Duration::from_secs(TIMEOUT_SECS), child.wait_with_output())
+                .await
+                .map_err(|_| {
+                    MiniAgentError::ToolError(format!(
+                        "命令执行超时（{TIMEOUT_SECS} 秒）: {command}"
+                    ))
+                })?
+                .map_err(|e| MiniAgentError::ToolError(format!("等待命令完成失败: {e}")))?;
 
         // 6. 解析输出
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();

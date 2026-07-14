@@ -12,6 +12,13 @@ use std::time::Duration;
 
 pub struct UpstreamClient {
     http: Client,
+    loopback_http: Client,
+}
+
+impl Default for UpstreamClient {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl UpstreamClient {
@@ -20,7 +27,15 @@ impl UpstreamClient {
             .timeout(Duration::from_secs(600))
             .build()
             .expect("构建 HTTP 客户端失败");
-        Self { http }
+        let loopback_http = Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(600))
+            .build()
+            .expect("构建 loopback HTTP 客户端失败");
+        Self {
+            http,
+            loopback_http,
+        }
     }
 
     fn upstream_url(&self, ep: &Endpoint, protocol: Protocol) -> String {
@@ -39,7 +54,18 @@ impl UpstreamClient {
         client_headers: &HeaderMap,
     ) -> Result<UpstreamResponse> {
         let url = self.upstream_url(ep, protocol);
-        let mut req = self.http.request(Method::POST, &url);
+        let client = reqwest::Url::parse(&url)
+            .ok()
+            .and_then(|url| url.host_str().map(str::to_owned))
+            .filter(|host| {
+                host == "localhost"
+                    || host
+                        .parse::<std::net::IpAddr>()
+                        .is_ok_and(|ip| ip.is_loopback())
+            })
+            .map(|_| &self.loopback_http)
+            .unwrap_or(&self.http);
+        let mut req = client.request(Method::POST, &url);
 
         let use_override = matches!(ep.key_mode, KeyMode::Override) && !ep.api_key.is_empty();
         if use_override {
@@ -70,8 +96,7 @@ impl UpstreamClient {
             if !has_auth && !ep.api_key.is_empty() {
                 req = match protocol {
                     Protocol::OpenAI | Protocol::Responses => req.bearer_auth(&ep.api_key),
-                    Protocol::Anthropic => req
-                        .header("x-api-key", &ep.api_key),
+                    Protocol::Anthropic => req.header("x-api-key", &ep.api_key),
                 };
             }
 
@@ -84,8 +109,13 @@ impl UpstreamClient {
             let name_lower = name.as_str().to_lowercase();
             if matches!(
                 name_lower.as_str(),
-                "authorization" | "x-api-key" | "anthropic-version" | "host"
-                    | "content-length" | "connection" | "transfer-encoding"
+                "authorization"
+                    | "x-api-key"
+                    | "anthropic-version"
+                    | "host"
+                    | "content-length"
+                    | "connection"
+                    | "transfer-encoding"
             ) {
                 continue;
             }
@@ -125,7 +155,10 @@ pub struct UpstreamResponse {
     // 非流式：完整 body
     pub body_bytes: Option<Bytes>,
     // 流式：预读的 chunks + 剩余 stream
-    pub preloaded: Option<(Vec<Bytes>, Box<dyn futures_util::Stream<Item = Result<Bytes, reqwest::Error>> + Send + Unpin>)>,
+    pub preloaded: Option<(
+        Vec<Bytes>,
+        Box<dyn futures_util::Stream<Item = Result<Bytes, reqwest::Error>> + Send + Unpin>,
+    )>,
 }
 
 impl UpstreamResponse {
@@ -135,11 +168,7 @@ impl UpstreamResponse {
         // 非流式
         if self.body_bytes.is_none() && !self.is_stream {
             if let Some(resp) = self.resp.take() {
-                self.body_bytes = Some(
-                    resp.bytes()
-                        .await
-                        .unwrap_or_else(|_| Bytes::new()),
-                );
+                self.body_bytes = Some(resp.bytes().await.unwrap_or_else(|_| Bytes::new()));
             }
             return;
         }
@@ -179,8 +208,9 @@ impl UpstreamResponse {
                 }
 
                 // 保留剩余 stream（用于转发时拼合）
-                let remaining: Box<dyn futures_util::Stream<Item = Result<Bytes, reqwest::Error>> + Send + Unpin> =
-                    Box::new(stream);
+                let remaining: Box<
+                    dyn futures_util::Stream<Item = Result<Bytes, reqwest::Error>> + Send + Unpin,
+                > = Box::new(stream);
                 self.preloaded = Some((chunks, remaining));
             }
         }
@@ -262,7 +292,9 @@ impl UpstreamResponse {
         if let Some((chunks, remaining)) = self.preloaded {
             // 把已读 chunks 作为即时流，剩余 stream 接在后面
             let chunk_stream = stream::iter(chunks.into_iter().map(Ok::<Bytes, std::io::Error>));
-            let combined = chunk_stream.chain(remaining.map(|r| r.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))));
+            let combined = chunk_stream.chain(
+                remaining.map(|r| r.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))),
+            );
             let body = Body::from_stream(combined);
             return builder.body(body).unwrap();
         }

@@ -59,10 +59,7 @@ impl ToolHandler for GlobTool {
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| ToolError::InvalidInput("missing 'pattern' field".into()))?;
 
-            let base_path = input
-                .get("path")
-                .and_then(|v| v.as_str())
-                .unwrap_or(".");
+            let base_path = input.get("path").and_then(|v| v.as_str()).unwrap_or(".");
 
             let base = Path::new(base_path);
             let ignore_patterns = crate::ignore::IgnorePatterns::load(base);
@@ -117,7 +114,9 @@ impl ToolHandler for GlobTool {
             }
 
             if results.is_empty() {
-                Ok(ToolResult::success("No files found matching the pattern.".to_string()))
+                Ok(ToolResult::success(
+                    "No files found matching the pattern.".to_string(),
+                ))
             } else {
                 let output = format!("Found {} file(s):\n{}", results.len(), results.join("\n"));
                 Ok(ToolResult::success(output))

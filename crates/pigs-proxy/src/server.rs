@@ -22,8 +22,8 @@ use crate::protocol::Protocol;
 use crate::retry::{dispatch, DispatchOutcome};
 use crate::upstream::UpstreamClient;
 use axum::body::Body;
-use axum::extract::{Path, State};
-use axum::http::{HeaderMap, Response, StatusCode};
+use axum::extract::{OriginalUri, Path, State};
+use axum::http::{HeaderMap, Method, Response, StatusCode};
 use axum::routing::{any, get, post};
 use axum::Router;
 use bytes::Bytes;
@@ -40,9 +40,10 @@ pub struct AppState {
     /// 上游 HTTP 客户端（透传用）。
     /// Upstream HTTP client (for passthrough).
     pub client: Arc<UpstreamClient>,
-    /// 相位化运行时（`-pig` 模型用）。
-    /// Phased runtime (for `-pig` models).
-    pub runtime: Arc<pigs_api::phased_runtime::PhasedRuntime>,
+    /// Protocol-native HTTP phased runtime for `-pig` models.
+    pub runtime: Arc<pigs_api::http_runtime::HttpPhasedRuntime>,
+    /// Random token required on internal HTTP loopback requests.
+    pub internal_phase_token: Arc<str>,
 }
 
 /// 构建 axum 路由树。
@@ -63,6 +64,8 @@ pub fn build(state: AppState) -> Router {
 async fn handle(
     State(state): State<AppState>,
     Path(path): Path<String>,
+    OriginalUri(uri): OriginalUri,
+    method: Method,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response<Body> {
@@ -96,15 +99,39 @@ async fn handle(
         "收到请求"
     );
 
-    // ================================================================
-    // 路由分流：-pig 后缀 → 相位运行时；无后缀 → 透传
-    // Route: -pig suffix → phased runtime; no suffix → passthrough
-    // ================================================================
-    if client_model.ends_with("-pig") {
-        return handle_pig(&state, protocol, &client_model, &body, headers).await;
+    let internal_loopback = headers
+        .get(crate::loopback::INTERNAL_PHASE_HEADER)
+        .is_some_and(|value| value.as_bytes() == state.internal_phase_token.as_bytes());
+    if headers.contains_key(crate::loopback::INTERNAL_PHASE_HEADER) && !internal_loopback {
+        return error_response(StatusCode::FORBIDDEN, "invalid internal phase token");
     }
 
-    handle_passthrough(&state, protocol, &client_model, &headers, parsed, &body).await
+    if client_model.ends_with("-pig") && !internal_loopback {
+        return handle_pig(
+            &state,
+            protocol,
+            &client_model,
+            method,
+            uri.path_and_query()
+                .map(|value| value.as_str())
+                .unwrap_or(uri.path()),
+            &body,
+            headers,
+        )
+        .await;
+    }
+
+    let mut passthrough_headers = headers;
+    passthrough_headers.remove(crate::loopback::INTERNAL_PHASE_HEADER);
+    handle_passthrough(
+        &state,
+        protocol,
+        &client_model,
+        &passthrough_headers,
+        parsed,
+        &body,
+    )
+    .await
 }
 
 /// 处理 `-pig` 模型：走 pigs-api 相位运行时。
@@ -114,210 +141,173 @@ async fn handle_pig(
     state: &AppState,
     protocol: Protocol,
     client_model: &str,
+    method: Method,
+    path_and_query: &str,
     body: &Bytes,
     client_headers: HeaderMap,
 ) -> Response<Body> {
-    // 剥离 -pig 后缀得到真实模型名 / Strip -pig suffix to get real model name
-    let real_model = client_model.trim_end_matches("-pig");
-
-    tracing::info!(
-        client_model = %client_model,
-        real_model = %real_model,
-        "→ 相位化运行时"
-    );
-
-    // 将请求体解析为 ConvertedTurn / Parse request body into ConvertedTurn
-    let format = match protocol {
-        Protocol::OpenAI => pigs_api::format::ApiFormat::OpenAIChat,
-        Protocol::Anthropic => pigs_api::format::ApiFormat::Anthropic,
-        Protocol::Responses => pigs_api::format::ApiFormat::OpenAIResponses,
+    let api_protocol = match protocol {
+        Protocol::OpenAI => pigs_api::protocol::Protocol::OpenAiChat,
+        Protocol::Anthropic => pigs_api::protocol::Protocol::AnthropicMessages,
+        Protocol::Responses => pigs_api::protocol::Protocol::OpenAiResponses,
     };
-
     let json_body: Value = match serde_json::from_slice(body) {
-        Ok(v) => v,
-        Err(e) => {
+        Ok(value) => value,
+        Err(error) => {
             return error_response(
                 StatusCode::BAD_REQUEST,
-                &format!("invalid JSON: {e}"),
+                &format!("invalid JSON request: {error}"),
             );
         }
     };
-
-    let converted = match format.parse_request(&json_body) {
-        Ok(c) => c,
-        Err(e) => {
+    let headers = client_headers
+        .iter()
+        .map(|(name, value)| pigs_api::protocol::HeaderPair::new(name.as_str(), value.as_bytes()))
+        .collect();
+    let envelope = match pigs_api::protocol::ProtocolCodec::new(api_protocol).parse_request(
+        method.as_str(),
+        path_and_query,
+        headers,
+        json_body,
+    ) {
+        Ok(request) => request,
+        Err(error) => {
             return error_response(
                 StatusCode::BAD_REQUEST,
-                &format!("invalid request: {e}"),
+                &format!("invalid request: {error}"),
             );
         }
     };
-
-    // 判断是否流式 / Check if streaming
-    let is_stream = converted.stream;
-
-    // 把客户端 auth 头注入 task-local，供 dispatch_in_process 读取
-    // Inject client auth headers into task-local for dispatch_in_process
+    let is_stream = envelope.stream;
     if is_stream {
-        // 流式响应：基于 ProgressSink 构造 SSE 流
-        // Streaming: build SSE stream based on ProgressSink
-        return crate::with_client_headers(client_headers.clone(), async {
-            stream_pig(state, protocol, client_model, converted, client_headers).await
-        })
-        .await;
+        return stream_runtime(
+            Arc::clone(&state.runtime),
+            envelope,
+            api_protocol,
+            client_model.to_owned(),
+        );
     }
-
-    // 非流式：执行相位对话 / Non-streaming: execute phased turn
-    let result = match crate::with_client_headers(client_headers, async {
-        pigs_api::phased_api_convert::run_converted_turn_arc(
-            &state.runtime,
-            &converted,
-            None,
-        )
-        .await
-    })
-    .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            return error_response(
-                StatusCode::BAD_GATEWAY,
-                &format!("turn failed: {e:#}"),
-            );
+    let result = match state.runtime.run(envelope).await {
+        Ok(result) => result,
+        Err(error) => {
+            let status = runtime_error_status(&error);
+            return protocol_error_response(status, api_protocol, &error.to_string());
         }
     };
-
-    // 按请求格式构造响应 / Build response in the request's format
-    let resp_json = format.build_response(&result, &state.runtime.wrapped_model);
-    let resp_body = serde_json::to_vec(&resp_json).unwrap_or_default();
-
-    let mut resp = Response::new(Body::from(resp_body));
-    *resp.status_mut() = StatusCode::OK;
-    resp.headers_mut().insert(
-        axum::http::header::CONTENT_TYPE,
-        axum::http::HeaderValue::from_static("application/json"),
-    );
-    resp
+    json_response(pigs_api::output::encode_json(
+        api_protocol,
+        client_model,
+        &result,
+    ))
 }
 
-/// 处理 `-pig` 模型的流式请求：基于 `ProgressSink` 构造 SSE 流。
-///
-/// Handle streaming for `-pig` models: build SSE stream from `ProgressSink`.
-///
-/// `PhasedRuntime` 内部每个阶段的文本增量通过 `ProgressSink::TextDelta`
-/// 回调发出。这里把每个 `TextDelta` 转成对应协议的 SSE 帧，通过
-/// `tokio::sync::mpsc` channel 推送到 SSE body 流。
-///
-/// Each phase's text deltas are emitted via `ProgressSink::TextDelta`.
-/// This converts each `TextDelta` into a protocol-specific SSE frame and
-/// pushes it through a `tokio::sync::mpsc` channel into the SSE body stream.
-async fn stream_pig(
-    state: &AppState,
-    protocol: Protocol,
-    client_model: &str,
-    converted: pigs_api::phased_api_convert::ConvertedTurn,
-    client_headers: HeaderMap,
+fn runtime_error_status(error: &pigs_api::http_runtime::RuntimeError) -> StatusCode {
+    match error {
+        pigs_api::http_runtime::RuntimeError::UnknownContinuation(_)
+        | pigs_api::http_runtime::RuntimeError::MissingToolResults { .. } => StatusCode::CONFLICT,
+        pigs_api::http_runtime::RuntimeError::Codec(_) => StatusCode::BAD_REQUEST,
+        pigs_api::http_runtime::RuntimeError::Orchestration(_) => StatusCode::UNPROCESSABLE_ENTITY,
+        _ => StatusCode::BAD_GATEWAY,
+    }
+}
+
+fn stream_runtime(
+    runtime: Arc<pigs_api::http_runtime::HttpPhasedRuntime>,
+    envelope: pigs_api::protocol::HttpRequestEnvelope,
+    protocol: pigs_api::protocol::Protocol,
+    client_model: String,
 ) -> Response<Body> {
-    use pigs_api::format::ApiFormat;
-    use pigs_api::phased_runtime::{ProgressSink, TurnProgress};
+    use std::sync::Mutex;
     use tokio::sync::mpsc;
 
-    let format = match protocol {
-        Protocol::OpenAI => ApiFormat::OpenAIChat,
-        Protocol::Anthropic => ApiFormat::Anthropic,
-        Protocol::Responses => ApiFormat::OpenAIResponses,
-    };
+    let (sender, receiver) = mpsc::unbounded_channel::<String>();
+    let encoder = Arc::new(Mutex::new(pigs_api::output::StreamingEncoder::new(
+        protocol,
+        client_model,
+    )));
+    if let Ok(mut encoder) = encoder.lock() {
+        for frame in encoder.start() {
+            let _ = sender.send(frame);
+        }
+    }
 
-    let id = uuid::Uuid::new_v4().to_string();
-    let created = chrono::Utc::now().timestamp();
-    let model = client_model.to_string();
-
-    // 创建无界 channel 用于 SSE 帧 / Create unbounded channel for SSE frames
-    let (tx, rx) = mpsc::unbounded_channel::<String>();
-
-    // 发送首帧（role chunk / message_start）
-    // Send the first frame (role chunk / message_start)
-    let _ = tx.send(format.role_chunk(&id, created, &model));
-
-    // 创建 ProgressSink：把 TextDelta 转成 SSE 帧推入 channel
-    // Create ProgressSink: convert TextDelta into SSE frames and push to channel
-    // 需要 clone id/model/format 给 sink 闭包，因为它们也被 spawn 的任务使用
-    // Clone id/model/format for the sink closure since they're also used by the spawned task
-    let tx_clone = tx.clone();
-    let id_sink = id.clone();
-    let model_sink = model.clone();
-    let sink: ProgressSink = std::sync::Arc::new(move |p: TurnProgress| {
-        if let TurnProgress::TextDelta { text, .. } = p {
-            if !text.is_empty() {
-                let chunk = format.content_chunk(&id_sink, created, &model_sink, &text);
-                let _ = tx_clone.send(chunk);
+    let progress_encoder = Arc::clone(&encoder);
+    let progress_sender = sender.clone();
+    let progress: pigs_api::http_runtime::PhaseProgressSink = Arc::new(move |event| {
+        if let Ok(mut encoder) = progress_encoder.lock() {
+            let frames = match event {
+                pigs_api::http_runtime::PhaseProgress::PhaseStart => encoder.phase_start(),
+                pigs_api::http_runtime::PhaseProgress::TextDelta(text) => encoder.text_delta(&text),
+                pigs_api::http_runtime::PhaseProgress::PhaseEnd => encoder.phase_end(),
+            };
+            for frame in frames {
+                let _ = progress_sender.send(frame);
             }
         }
-        // 其他进度事件在此模式下忽略（可后续扩展为 pigs.phase 等 SSE 事件）
-        // Other progress events are ignored in this mode (could be extended
-        // to emit pigs.phase / pigs.tool SSE events in the future).
     });
-
-    // 后台任务：执行相位对话，完成后发送结束帧
-    // Background task: run the phased turn, then send the stop frame
-    let runtime = std::sync::Arc::clone(&state.runtime);
-    let converted = std::sync::Arc::new(converted);
-    let converted_clone = std::sync::Arc::clone(&converted);
-    let id_task = id.clone();
-    let model_task = model.clone();
     tokio::spawn(async move {
-        // 在 task-local 上下文中执行，传递客户端 auth 头给 dispatch_in_process
-        // Execute within task-local context, forwarding client auth headers to dispatch_in_process
-        let result = crate::with_client_headers(client_headers, async {
-            pigs_api::phased_api_convert::run_converted_turn_arc(
-                &runtime,
-                &converted_clone,
-                Some(sink),
-            )
+        let result = runtime.run_with_progress(envelope, progress).await;
+        let frames = if let Ok(mut encoder) = encoder.lock() {
+            match result {
+                Ok(result) => encoder.finish(&result),
+                Err(error) => [encoder.abort_phase(), encoder.error(&error.to_string())].concat(),
+            }
+        } else {
+            pigs_api::output::encode_sse_error(protocol, "stream encoder is unavailable")
+        };
+        for frame in frames {
+            let _ = sender.send(frame);
+        }
+    });
+
+    let stream = futures_util::stream::unfold(receiver, |mut receiver| async move {
+        receiver
+            .recv()
             .await
-        })
-        .await;
-
-        // 无论成功或失败，都发送结束帧
-        // Always send the stop frame, regardless of success or failure
-        let _ = tx.send(format.stop_chunk(&id_task, created, &model_task));
-        if let Some(sentinel) = format.done_sentinel() {
-            let _ = tx.send(sentinel);
-        }
-
-        match result {
-            Ok(_) => {}
-            Err(e) => {
-                tracing::error!(error = %e, "phased turn failed during streaming");
-            }
-        }
-        // tx drop 后 rx 会结束 / rx ends when tx is dropped
-        drop(tx);
+            .map(|frame| (Ok::<Bytes, std::io::Error>(Bytes::from(frame)), receiver))
     });
-
-    // 构建 SSE body 流 / Build the SSE body stream
-    let stream = futures_util::stream::unfold(rx, |mut rx| async move {
-        match rx.recv().await {
-            Some(frame) => {
-                let chunk = format!("data: {frame}\n\n");
-                Some((Ok::<Bytes, std::io::Error>(Bytes::from(chunk)), rx))
-            }
-            None => None,
-        }
-    });
-
-    let body = Body::from_stream(stream);
-    let mut resp = Response::new(body);
-    *resp.status_mut() = StatusCode::OK;
-    resp.headers_mut().insert(
+    let mut response = Response::new(Body::from_stream(stream));
+    *response.status_mut() = StatusCode::OK;
+    response.headers_mut().insert(
         axum::http::header::CONTENT_TYPE,
         axum::http::HeaderValue::from_static("text/event-stream"),
     );
-    resp.headers_mut().insert(
+    response.headers_mut().insert(
         axum::http::header::CACHE_CONTROL,
         axum::http::HeaderValue::from_static("no-cache"),
     );
-    resp
+    response
+}
+
+fn json_response(value: Value) -> Response<Body> {
+    let body = serde_json::to_vec(&value).unwrap_or_default();
+    let mut response = Response::new(Body::from(body));
+    *response.status_mut() = StatusCode::OK;
+    response.headers_mut().insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("application/json"),
+    );
+    response
+}
+
+fn protocol_error_response(
+    status: StatusCode,
+    protocol: pigs_api::protocol::Protocol,
+    message: &str,
+) -> Response<Body> {
+    let body = match protocol {
+        pigs_api::protocol::Protocol::OpenAiChat
+        | pigs_api::protocol::Protocol::OpenAiResponses => serde_json::json!({
+            "error": {"message": message, "type": "pigs_phase_error"}
+        }),
+        pigs_api::protocol::Protocol::AnthropicMessages => serde_json::json!({
+            "type": "error",
+            "error": {"type": "pigs_phase_error", "message": message}
+        }),
+    };
+    let mut response = json_response(body);
+    *response.status_mut() = status;
+    response
 }
 
 /// 处理透传请求：原始 mini-proxy 代理逻辑。
@@ -337,7 +327,10 @@ async fn handle_passthrough(
             tracing::warn!(?protocol, model = %client_model, "无可用渠道");
             return error_response(
                 StatusCode::NOT_FOUND,
-                &format!("未找到匹配的渠道：协议 {:?}，模型 {}", protocol, client_model),
+                &format!(
+                    "未找到匹配的渠道：协议 {:?}，模型 {}",
+                    protocol, client_model
+                ),
             );
         }
     };
@@ -514,17 +507,15 @@ pub fn clean_empty_messages(parsed: &mut Value, protocol: Protocol) {
         let content = item.get("content");
         match content {
             Some(Value::String(s)) => !s.trim().is_empty(),
-            Some(Value::Array(a)) => {
-                a.iter().any(|c| {
-                    if let Some(t) = c.get("text").and_then(|t| t.as_str()) {
-                        !t.trim().is_empty()
-                    } else if let Some(t) = c.get("content").and_then(|t| t.as_str()) {
-                        !t.trim().is_empty()
-                    } else {
-                        true
-                    }
-                })
-            }
+            Some(Value::Array(a)) => a.iter().any(|c| {
+                if let Some(t) = c.get("text").and_then(|t| t.as_str()) {
+                    !t.trim().is_empty()
+                } else if let Some(t) = c.get("content").and_then(|t| t.as_str()) {
+                    !t.trim().is_empty()
+                } else {
+                    true
+                }
+            }),
             None => true,
             _ => true,
         }

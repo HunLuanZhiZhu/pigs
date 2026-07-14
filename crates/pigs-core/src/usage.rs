@@ -16,7 +16,12 @@ pub struct TokenUsage {
 impl TokenUsage {
     /// Create a new usage record.
     pub fn new(input: u64, output: u64) -> Self {
-        TokenUsage { input_tokens: input, output_tokens: output, cache_read_tokens: None, total_cost: None }
+        TokenUsage {
+            input_tokens: input,
+            output_tokens: output,
+            cache_read_tokens: None,
+            total_cost: None,
+        }
     }
 
     /// Total tokens (input + output).
@@ -88,7 +93,11 @@ pub fn model_pricing_per_million(model: &str) -> Option<(f64, f64)> {
 
 impl std::fmt::Display for TokenUsage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "input={}, output={}", self.input_tokens, self.output_tokens)?;
+        write!(
+            f,
+            "input={}, output={}",
+            self.input_tokens, self.output_tokens
+        )?;
         if let Some(cached) = self.cache_read_tokens {
             write!(f, ", cached={cached}")?;
         }
@@ -124,12 +133,16 @@ mod tests {
     #[test]
     fn test_estimate_cost_for_model() {
         let usage = TokenUsage::new(1_000_000, 0);
-        let cost = usage.estimate_cost_for_model("claude-sonnet-4-20250514").unwrap();
+        let cost = usage
+            .estimate_cost_for_model("claude-sonnet-4-20250514")
+            .unwrap();
         assert!((cost - 3.0).abs() < 0.001);
         let gpt = usage.estimate_cost_for_model("gpt-4o").unwrap();
         assert!((gpt - 2.50).abs() < 0.001);
         // Non-catalog models (including third-party OpenAI-compatible ids) have no built-in price.
         assert!(usage.estimate_cost_for_model("llama3.2").is_none());
-        assert!(usage.estimate_cost_for_model("totally-unknown-model-xyz").is_none());
+        assert!(usage
+            .estimate_cost_for_model("totally-unknown-model-xyz")
+            .is_none());
     }
 }

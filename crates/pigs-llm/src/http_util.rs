@@ -80,7 +80,10 @@ mod tests {
 
     #[test]
     fn context_window_detection() {
-        let err = map_http_status(400, "This model's maximum context length is 128000 tokens".into());
+        let err = map_http_status(
+            400,
+            "This model's maximum context length is 128000 tokens".into(),
+        );
         assert!(matches!(err, ApiError::ContextWindowExceeded(_)));
     }
 

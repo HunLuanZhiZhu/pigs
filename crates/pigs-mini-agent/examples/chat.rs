@@ -30,7 +30,7 @@
 
 use std::io::{self, Write};
 
-use pigs_mini_agent::{Agent, LlmClient, create_default_tools};
+use pigs_mini_agent::{create_default_tools, Agent, LlmClient};
 
 /// 终端聊天 Agent 入口。
 ///

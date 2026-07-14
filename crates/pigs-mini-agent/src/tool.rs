@@ -283,7 +283,9 @@ mod tests {
     async fn test_execute_unknown_tool() {
         let registry = ToolRegistry::new();
         // 执行不存在的工具应该返回错误
-        let result = registry.execute("不存在的工具", serde_json::json!({})).await;
+        let result = registry
+            .execute("不存在的工具", serde_json::json!({}))
+            .await;
         assert!(result.is_err());
         // 验证错误类型
         match result {

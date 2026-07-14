@@ -109,7 +109,8 @@ impl ApiFormat {
                     "delta": {"role": "assistant"},
                     "finish_reason": null
                 }]
-            }).to_string(),
+            })
+            .to_string(),
             Self::Anthropic => format!(
                 "event: message_start\ndata: {}\n\n",
                 serde_json::json!({
@@ -156,7 +157,8 @@ impl ApiFormat {
                     "delta": {"content": content},
                     "finish_reason": null
                 }]
-            }).to_string(),
+            })
+            .to_string(),
             Self::Anthropic => format!(
                 "event: content_block_delta\ndata: {}\n\n",
                 serde_json::json!({
@@ -188,7 +190,8 @@ impl ApiFormat {
                     "delta": {},
                     "finish_reason": "stop"
                 }]
-            }).to_string(),
+            })
+            .to_string(),
             Self::Anthropic => format!(
                 "event: message_delta\ndata: {}\n\nevent: message_stop\ndata: {}\n\n",
                 serde_json::json!({
@@ -267,7 +270,9 @@ fn parse_anthropic(body: &Value) -> Result<ConvertedTurn, ConvertError> {
     let messages_arr = body
         .get("messages")
         .and_then(|v| v.as_array())
-        .ok_or_else(|| ConvertError::Invalid("anthropic request missing 'messages' array".into()))?;
+        .ok_or_else(|| {
+            ConvertError::Invalid("anthropic request missing 'messages' array".into())
+        })?;
 
     if messages_arr.is_empty() {
         return Err(ConvertError::Invalid("messages must not be empty".into()));
@@ -356,10 +361,7 @@ fn parse_openai_responses(body: &Value) -> Result<ConvertedTurn, ConvertError> {
             .unwrap_or("message");
         match item_type {
             "message" => {
-                let role = item
-                    .get("role")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("user");
+                let role = item.get("role").and_then(|v| v.as_str()).unwrap_or("user");
                 let text = resp_extract_message_text(item);
                 if role == "assistant" {
                     out.push(Message::assistant(vec![ContentBlock::Text { text }]));
@@ -503,7 +505,9 @@ fn build_openai_responses_response(result: &TurnResult, model: &str) -> Value {
 
 /// 从消息列表中分离最后一条非 system 消息和前面的 history。
 /// Split the last non-system message from the rest as history.
-fn split_last_user(messages: &[pigs_core::Message]) -> Result<(Vec<pigs_core::Message>, pigs_core::Message), ConvertError> {
+fn split_last_user(
+    messages: &[pigs_core::Message],
+) -> Result<(Vec<pigs_core::Message>, pigs_core::Message), ConvertError> {
     // 从后往前找第一条非 system 消息 / find last non-system message from the end
     let idx = messages
         .iter()
@@ -555,9 +559,18 @@ mod tests {
 
     #[test]
     fn from_path_recognizes_three_endpoints() {
-        assert_eq!(ApiFormat::from_path("/chat/completions"), Some(ApiFormat::OpenAIChat));
-        assert_eq!(ApiFormat::from_path("/v1/messages"), Some(ApiFormat::Anthropic));
-        assert_eq!(ApiFormat::from_path("/responses"), Some(ApiFormat::OpenAIResponses));
+        assert_eq!(
+            ApiFormat::from_path("/chat/completions"),
+            Some(ApiFormat::OpenAIChat)
+        );
+        assert_eq!(
+            ApiFormat::from_path("/v1/messages"),
+            Some(ApiFormat::Anthropic)
+        );
+        assert_eq!(
+            ApiFormat::from_path("/responses"),
+            Some(ApiFormat::OpenAIResponses)
+        );
         assert_eq!(ApiFormat::from_path("/unknown"), None);
     }
 

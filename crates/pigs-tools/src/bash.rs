@@ -64,10 +64,7 @@ impl ToolHandler for BashTool {
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| ToolError::InvalidInput("missing 'command' field".into()))?;
 
-            let timeout_secs = input
-                .get("timeout")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(120);
+            let timeout_secs = input.get("timeout").and_then(|v| v.as_u64()).unwrap_or(120);
 
             let cwd = input.get("cwd").and_then(|v| v.as_str());
 
@@ -93,12 +90,13 @@ impl ToolHandler for BashTool {
                 .spawn()
                 .map_err(|e| ToolError::ExecutionFailed(format!("Failed to spawn process: {e}")))?;
 
-            let output = tokio::time::timeout(Duration::from_secs(timeout_secs), child.wait_with_output())
-                .await
-                .map_err(|_| ToolError::Timeout(timeout_secs))?;
+            let output =
+                tokio::time::timeout(Duration::from_secs(timeout_secs), child.wait_with_output())
+                    .await
+                    .map_err(|_| ToolError::Timeout(timeout_secs))?;
 
-            let output = output
-                .map_err(|e| ToolError::ExecutionFailed(format!("Process failed: {e}")))?;
+            let output =
+                output.map_err(|e| ToolError::ExecutionFailed(format!("Process failed: {e}")))?;
 
             let stdout = String::from_utf8_lossy(&output.stdout).to_string();
             let stderr = String::from_utf8_lossy(&output.stderr).to_string();

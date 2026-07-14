@@ -61,7 +61,9 @@ impl ToolHandler for SleepTool {
                 tokio::time::sleep(Duration::from_secs_f64(clamped)).await;
             }
 
-            Ok(ToolResult::success(format!("Slept for {clamped:.1} seconds")))
+            Ok(ToolResult::success(format!(
+                "Slept for {clamped:.1} seconds"
+            )))
         })
     }
 }

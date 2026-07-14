@@ -11,7 +11,9 @@ pub mod message;
 pub mod tool;
 pub mod usage;
 
-pub use api::{ApiError, ApiRequest, ApiResponse, ApiClient, ApiFuture, StreamCallback, StreamEvent};
+pub use api::{
+    ApiClient, ApiError, ApiFuture, ApiRequest, ApiResponse, StreamCallback, StreamEvent,
+};
 pub use message::{ContentBlock, Message, MessageRole};
 pub use tool::{ToolError, ToolHandler, ToolRegistry, ToolResult, ToolSpec};
 pub use usage::TokenUsage;

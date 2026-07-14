@@ -46,9 +46,8 @@ use pigs_proxy::config::Config as ProxyConfig;
 // ---------------------------------------------------------------------------
 
 use std::path::PathBuf;
-use std::str::FromStr;
 
-use clap::Parser;              // 命令行参数解析 / Command-line argument parsing
+use clap::Parser; // 命令行参数解析 / Command-line argument parsing
 use tracing_subscriber::EnvFilter; // tracing 日志级别过滤 / Tracing log level filtering
 
 // ---------------------------------------------------------------------------
@@ -226,8 +225,8 @@ async fn run_api_and_cli(args: &Args) -> anyhow::Result<()> {
     let config_path = std::env::var("PIGS_CONFIG")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("config.toml"));
-    let proxy_config = ProxyConfig::load(config_path.as_path())
-        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    let proxy_config =
+        ProxyConfig::load(config_path.as_path()).map_err(|e| anyhow::anyhow!(e.to_string()))?;
 
     // 从 pigs-proxy 配置构建 PhasedRuntime（通过 ProxyApiClient 走 pigs-proxy 重试）
     // Build PhasedRuntime from pigs-proxy config (via ProxyApiClient through pigs-proxy retry)
@@ -235,37 +234,24 @@ async fn run_api_and_cli(args: &Args) -> anyhow::Result<()> {
 
     // 构建 CLI 用的 ProxyApiClient（与 HTTP 服务器共用同一套重试逻辑）
     // Build ProxyApiClient for CLI (shares the same retry logic as the HTTP server)
-    let cli_client: std::sync::Arc<dyn pigs_core::ApiClient> = std::sync::Arc::new(
-        pigs_proxy::proxy_client::ProxyApiClient::new(
+    let cli_client: std::sync::Arc<dyn pigs_core::ApiClient> =
+        std::sync::Arc::new(pigs_proxy::proxy_client::ProxyApiClient::new(
             std::sync::Arc::clone(&proxy_config_arc),
             pigs_proxy::protocol::Protocol::OpenAI,
             "pigs".to_string(),
-        ),
-    );
-
-    let runtime = pigs_proxy::build_phased_runtime(
-        proxy_config_arc,
-        "pigs",
-        pigs_config::Language::from_str(&proxy_config.language).unwrap_or_default(),
-        pigs_api::phased_runtime::RuntimeLimits {
-            max_tokens: proxy_config.max_tokens,
-            temperature: proxy_config.temperature,
-            ..Default::default()
-        },
-    )?;
+        ));
 
     eprintln!("[pigs] CLI: full pigs-cli REPL (tools/MCP/slash commands)");
     eprintln!("[pigs] /quit to exit (proxy will stop too)");
     eprintln!();
 
-    // 初始化日志（pigs-cli 也会 try_init，此处先初始化避免 proxy 日志丢失）
-    // Initialize logging first (pigs-cli will also try_init; this avoids losing proxy logs)
+    // Initialize proxy logging before pigs-cli attempts its own subscriber.
     let _ = pigs_proxy::log::init(&proxy_config.log);
 
     // 后台启动 pigs-proxy 服务器 / Spawn pigs-proxy server in background
     let proxy_config_clone = proxy_config.clone();
     let api_handle = tokio::spawn(async move {
-        if let Err(e) = pigs_proxy::serve(proxy_config_clone, runtime).await {
+        if let Err(e) = pigs_proxy::serve(proxy_config_clone).await {
             eprintln!("[pigs proxy] server error: {e:#}");
         }
     });
@@ -300,28 +286,14 @@ async fn run_api_only(_args: &Args) -> anyhow::Result<()> {
     let config_path = std::env::var("PIGS_CONFIG")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("config.toml"));
-    let proxy_config = ProxyConfig::load(config_path.as_path())
-        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    let proxy_config =
+        ProxyConfig::load(config_path.as_path()).map_err(|e| anyhow::anyhow!(e.to_string()))?;
 
     // --api 模式无 pigs-cli，需自行初始化日志 / Init logging (no pigs-cli in --api mode)
-    pigs_proxy::log::init(&proxy_config.log)
-        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    pigs_proxy::log::init(&proxy_config.log).map_err(|e| anyhow::anyhow!(e.to_string()))?;
 
-    // 构建 PhasedRuntime（-pig 路由用，走 pigs-proxy 重试）/ Build PhasedRuntime
-    let proxy_config_arc = std::sync::Arc::new(proxy_config.clone());
-    let runtime = pigs_proxy::build_phased_runtime(
-        proxy_config_arc,
-        "pigs",
-        pigs_config::Language::from_str(&proxy_config.language).unwrap_or_default(),
-        pigs_api::phased_runtime::RuntimeLimits {
-            max_tokens: proxy_config.max_tokens,
-            temperature: proxy_config.temperature,
-            ..Default::default()
-        },
-    )?;
-
-    // 直接启动代理服务器（阻塞式）/ Start proxy server (blocking)
-    pigs_proxy::serve(proxy_config, runtime).await
+    // Start the protocol-native HTTP phased server.
+    pigs_proxy::serve(proxy_config).await
 }
 
 // ---------------------------------------------------------------------------
@@ -344,10 +316,10 @@ fn print_describe() {
     println!("default (no args): CLI REPL (foreground) + phased API (background :3927)");
     println!("  --api            API-only (no REPL, background daemon)");
     println!("  \"prompt\"         one-shot CLI turn (no API, no REPL)");
-    println!("core: api_convert -> PhasedRuntime (shared)");
-    println!("phases: pre (plan) -> executor -> post (review+goal)");
-    println!("markers: PIGEND | PIGFAILED | (default loop)");
-    println!("phase end: no tool_calls (tool loop idle)");
+    println!("core: protocol-native HttpPhasedRuntime + HTTP loopback transport");
+    println!("phases: pre -> executor -> post; markerless post -> post");
+    println!("markers: PIGEND | PIGFAIL (final non-empty line only)");
+    println!("tools: upstream agent execution + bounded in-memory continuation");
     println!("docs: crates/pigs/docs/理解与规划.md");
 }
 
@@ -370,6 +342,6 @@ fn init_tracing() {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(false) // 不显示模块路径 / Don't show module paths
-        .try_init();        // try_init 而非 init，避免重复初始化 panic
-                            // try_init instead of init, avoids double-init panic
+        .try_init(); // try_init 而非 init，避免重复初始化 panic
+                     // try_init instead of init, avoids double-init panic
 }

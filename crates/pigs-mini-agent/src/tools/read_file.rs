@@ -79,21 +79,13 @@ impl Tool for ReadFileTool {
             .ok_or_else(|| MiniAgentError::ToolError("缺少 'path' 参数".into()))?;
 
         // 2. 提取可选参数
-        let offset = input
-            .get("offset")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(1) as usize; // 默认从第 1 行开始
-        let limit = input
-            .get("limit")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(2000) as usize; // 默认读取 2000 行
+        let offset = input.get("offset").and_then(|v| v.as_i64()).unwrap_or(1) as usize; // 默认从第 1 行开始
+        let limit = input.get("limit").and_then(|v| v.as_i64()).unwrap_or(2000) as usize; // 默认读取 2000 行
 
         // 3. 异步读取文件
         let content = fs::read_to_string(path)
             .await
-            .map_err(|e| {
-                MiniAgentError::ToolError(format!("读取文件失败 '{path}': {e}"))
-            })?;
+            .map_err(|e| MiniAgentError::ToolError(format!("读取文件失败 '{path}': {e}")))?;
 
         // 4. 按行分割
         let lines: Vec<&str> = content.lines().collect();
@@ -116,7 +108,10 @@ impl Tool for ReadFileTool {
 
         // 8. 如果不是从第 1 行开始，标注范围
         if start > 0 {
-            result = format!("（显示第 {offset} ~ {} 行，共 {total_lines} 行）\n\n{result}", start + (end - start));
+            result = format!(
+                "（显示第 {offset} ~ {} 行，共 {total_lines} 行）\n\n{result}",
+                start + (end - start)
+            );
         } else if end < total_lines {
             // 如果没读完，标注总行数
             result = format!("{result}（共 {total_lines} 行，只显示前 {end} 行）");

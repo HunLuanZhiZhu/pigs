@@ -150,7 +150,11 @@ impl ToolHandler for TodoWriteTool {
                     _ => TodoPriority::Medium,
                 };
 
-                new_todos.push(TodoItem { content, status, priority });
+                new_todos.push(TodoItem {
+                    content,
+                    status,
+                    priority,
+                });
             }
 
             let summary = {

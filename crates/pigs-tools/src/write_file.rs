@@ -68,13 +68,11 @@ impl ToolHandler for WriteFileTool {
             // Create parent directories if needed
             if let Some(parent) = path.parent() {
                 if !parent.exists() && !parent.as_os_str().is_empty() {
-                    tokio::fs::create_dir_all(parent)
-                        .await
-                        .map_err(|e| {
-                            ToolError::ExecutionFailed(format!(
-                                "Failed to create parent directories: {e}"
-                            ))
-                        })?;
+                    tokio::fs::create_dir_all(parent).await.map_err(|e| {
+                        ToolError::ExecutionFailed(format!(
+                            "Failed to create parent directories: {e}"
+                        ))
+                    })?;
                 }
             }
 

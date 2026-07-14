@@ -129,10 +129,7 @@ pub fn remove_memory_notes(
     };
     let notes = read_notes(&path);
     let before = notes.len();
-    let kept: Vec<String> = notes
-        .into_iter()
-        .filter(|n| !n.contains(needle))
-        .collect();
+    let kept: Vec<String> = notes.into_iter().filter(|n| !n.contains(needle)).collect();
     let removed = before - kept.len();
     write_notes(&path, &kept)?;
     Ok((removed, path))
@@ -195,21 +192,21 @@ mod tests {
 
     #[test]
     fn test_add_and_format_memory() {
-        let temp = std::env::temp_dir().join(format!(
-            "pigs_memory_test_{}",
-            std::process::id()
-        ));
+        let temp = std::env::temp_dir().join(format!("pigs_memory_test_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&temp);
         std::fs::create_dir_all(temp.join(".pigs")).unwrap();
 
         // Use temp workspace for project memory.
-        let path = add_memory_note(&temp, MemorySource::Project, "Prefer Conventional Commits")
-            .unwrap();
+        let path =
+            add_memory_note(&temp, MemorySource::Project, "Prefer Conventional Commits").unwrap();
         assert!(path.exists());
 
         let store = load_memory(&temp);
         assert!(
-            store.project.iter().any(|n| n.contains("Prefer Conventional Commits")),
+            store
+                .project
+                .iter()
+                .any(|n| n.contains("Prefer Conventional Commits")),
             "project notes: {:?}",
             store.project
         );
@@ -220,12 +217,10 @@ mod tests {
             remove_memory_notes(&temp, MemorySource::Project, "Conventional").unwrap();
         assert!(removed >= 1);
         let store = load_memory(&temp);
-        assert!(
-            store
-                .project
-                .iter()
-                .all(|n| !n.contains("Prefer Conventional Commits"))
-        );
+        assert!(store
+            .project
+            .iter()
+            .all(|n| !n.contains("Prefer Conventional Commits")));
 
         let _ = std::fs::remove_dir_all(&temp);
     }

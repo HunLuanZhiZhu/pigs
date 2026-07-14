@@ -128,9 +128,7 @@ impl ConvertedTurn {
 /// `Message::system()` variant, picked up downstream via `with_system_prompt`.
 fn convert_messages(messages: &[ChatMessage]) -> Result<Vec<Message>, ConvertError> {
     if messages.is_empty() {
-        return Err(ConvertError::Invalid(
-            "messages must not be empty".into(),
-        ));
+        return Err(ConvertError::Invalid("messages must not be empty".into()));
     }
     let mut out = Vec::with_capacity(messages.len());
     for m in messages {
@@ -145,15 +143,13 @@ fn convert_messages(messages: &[ChatMessage]) -> Result<Vec<Message>, ConvertErr
             // user 角色 → Message::user / user role → Message::user
             "user" => out.push(Message::user(text)),
             // assistant 角色 → Message::assistant / assistant role → Message::assistant
-            "assistant" => out.push(Message::assistant(vec![
-                pigs_core::ContentBlock::Text { text },
-            ])),
+            "assistant" => out.push(Message::assistant(vec![pigs_core::ContentBlock::Text {
+                text,
+            }])),
             // tool 角色暂忽略（API 自有工具）/ tool role ignored for now
             "tool" => {}
             other => {
-                return Err(ConvertError::Invalid(format!(
-                    "unsupported role `{other}`"
-                )));
+                return Err(ConvertError::Invalid(format!("unsupported role `{other}`")));
             }
         }
     }

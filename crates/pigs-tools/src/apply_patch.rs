@@ -295,10 +295,7 @@ fn strip_diff_path(s: &str) -> &str {
 
 fn parse_hunk_header(line: &str) -> Result<usize, String> {
     // @@ -l,s +l,s @@ optional
-    let body = line
-        .trim_start_matches("@@")
-        .trim_end_matches("@@")
-        .trim();
+    let body = line.trim_start_matches("@@").trim_end_matches("@@").trim();
     let old = body
         .split_whitespace()
         .next()

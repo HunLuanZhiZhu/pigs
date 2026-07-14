@@ -5,8 +5,8 @@ use crate::config::{is_always_skip, Endpoint};
 use crate::protocol::Protocol;
 use crate::upstream::UpstreamClient;
 use axum::body::Body;
-use axum::http::StatusCode;
 use axum::http::Response;
+use axum::http::StatusCode;
 use bytes::Bytes;
 
 pub enum DispatchOutcome {
@@ -54,9 +54,7 @@ pub async fn dispatch(
 
                 // 检查业务错误码（含流式 SSE 中的 error 事件）
                 let biz_code = resp.extract_error_code();
-                let biz_retry = biz_code
-                    .map(|c| retry_codes.contains(&c))
-                    .unwrap_or(false);
+                let biz_retry = biz_code.map(|c| retry_codes.contains(&c)).unwrap_or(false);
 
                 if biz_retry {
                     tracing::warn!(biz_code = biz_code, "命中可重试业务错误码，将重试");

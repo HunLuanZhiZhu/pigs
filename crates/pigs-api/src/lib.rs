@@ -9,8 +9,8 @@
 //!   OpenAI request → phased runtime conversion
 //! - `format` — 三种 API 格式的请求解析与响应构造
 //!   Request parsing / response construction for three API formats
-//! - `phased_markers` — 控制标记 PIGEND / PIGFAILED 的检测与清理
-//!   Control marker PIGEND / PIGFAILED detection and stripping
+//! - `phased_markers` — 控制标记 PIGEND / PIGFAIL 的检测与清理
+//!   Control marker PIGEND / PIGFAIL detection and stripping
 //! - `phased_phase` — Phase 枚举
 //!   Phase enum
 //! - `phased_tools` — 相位运行时的工具注册表（复用 pigs-tools）
@@ -26,6 +26,9 @@
 pub mod format;
 
 /// OpenAI 请求 → 相位运行时输入的转换层。
+/// Protocol-native request preservation, phase mutation, and output extraction.
+pub mod protocol;
+
 /// OpenAI request → phased runtime conversion layer.
 pub mod phased_api_convert;
 
@@ -33,12 +36,27 @@ pub mod phased_api_convert;
 /// Phased agent runtime (Pre→Executor→Post + marker routing).
 pub mod phased_runtime;
 
+/// Protocol-native JSON and SSE response encoding.
+pub mod output;
+
+/// Protocol-native HTTP phase runtime.
+pub mod http_runtime;
+
+/// Bounded in-memory external-tool continuations.
+pub mod continuation;
+
+/// Transport abstraction used by the HTTP phase runtime.
+pub mod transport;
+
+/// Pure Pre -> Executor -> Post state transitions.
+pub mod orchestration;
+
 /// Phase 枚举（Pre / Executor / Post）。
 /// Phase enum (Pre / Executor / Post).
 pub mod phased_phase;
 
-/// 控制标记 PIGEND / PIGFAILED 的检测与清理。
-/// Control marker PIGEND / PIGFAILED detection and stripping.
+/// 控制标记 PIGEND / PIGFAIL 的检测与清理。
+/// Control marker PIGEND / PIGFAIL detection and stripping.
 pub mod phased_markers;
 
 /// 相位运行时的工具注册表。

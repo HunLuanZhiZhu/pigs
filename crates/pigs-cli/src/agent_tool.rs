@@ -13,8 +13,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use pigs_core::{
-    ApiClient, ApiRequest, ContentBlock, Message, ToolError, ToolHandler,
-    ToolResult, ToolSpec,
+    ApiClient, ApiRequest, ContentBlock, Message, ToolError, ToolHandler, ToolResult, ToolSpec,
 };
 
 /// Tool for delegating subtasks to a nested agent.
@@ -116,9 +115,7 @@ impl ToolHandler for AgentTool {
                 let response = match self.api_client.send_message(request).await {
                     Ok(r) => r,
                     Err(e) => {
-                        return Ok(ToolResult::error(format!(
-                            "Sub-agent API error: {e}"
-                        )));
+                        return Ok(ToolResult::error(format!("Sub-agent API error: {e}")));
                     }
                 };
 

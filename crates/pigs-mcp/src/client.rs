@@ -9,7 +9,7 @@ use std::time::Duration;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
-use tokio::sync::{Mutex, oneshot};
+use tokio::sync::{oneshot, Mutex};
 use tracing::{debug, warn};
 
 use crate::error::McpError;
@@ -129,9 +129,7 @@ impl McpClient {
         };
         let init_value = serde_json::to_value(init_params)
             .map_err(|e| McpError::InvalidResponse(e.to_string()))?;
-        let _ = session
-            .request("initialize", Some(init_value))
-            .await?;
+        let _ = session.request("initialize", Some(init_value)).await?;
 
         // notifications/initialized (no response expected)
         let notify = serde_json::json!({
@@ -141,7 +139,9 @@ impl McpClient {
         session.write_message(&notify).await?;
 
         // tools/list
-        let list_result = session.request("tools/list", Some(serde_json::json!({}))).await?;
+        let list_result = session
+            .request("tools/list", Some(serde_json::json!({})))
+            .await?;
         let tools_result: ListToolsResult = serde_json::from_value(list_result)
             .map_err(|e| McpError::InvalidResponse(format!("tools/list parse: {e}")))?;
 
@@ -152,7 +152,9 @@ impl McpClient {
                 server_name: config.name.clone(),
                 name: t.name,
                 description: t.description.unwrap_or_default(),
-                input_schema: t.input_schema.unwrap_or_else(|| serde_json::json!({"type":"object"})),
+                input_schema: t
+                    .input_schema
+                    .unwrap_or_else(|| serde_json::json!({"type":"object"})),
             })
             .collect();
 
@@ -186,10 +188,7 @@ impl McpClient {
     /// List all tools across connected servers.
     pub async fn list_tools(&self) -> Vec<McpToolInfo> {
         let sessions = self.sessions.lock().await;
-        sessions
-            .values()
-            .flat_map(|s| s.tools.clone())
-            .collect()
+        sessions.values().flat_map(|s| s.tools.clone()).collect()
     }
 
     /// Call a tool on a specific server.
@@ -248,8 +247,8 @@ impl McpSession {
     }
 
     async fn write_message(&mut self, value: &Value) -> Result<(), McpError> {
-        let body = serde_json::to_vec(value)
-            .map_err(|e| McpError::InvalidResponse(e.to_string()))?;
+        let body =
+            serde_json::to_vec(value).map_err(|e| McpError::InvalidResponse(e.to_string()))?;
         let header = format!("Content-Length: {}\r\n\r\n", body.len());
         self.stdin
             .write_all(header.as_bytes())

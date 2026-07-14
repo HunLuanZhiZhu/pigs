@@ -52,10 +52,7 @@ impl ToolHandler for McpToolHandler {
                 self.info.name, self.info.server_name
             )
         } else {
-            format!(
-                "[MCP:{}] {}",
-                self.info.server_name, self.info.description
-            )
+            format!("[MCP:{}] {}", self.info.server_name, self.info.description)
         };
 
         ToolSpec::new(

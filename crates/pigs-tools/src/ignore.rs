@@ -47,10 +47,7 @@ impl IgnorePatterns {
         // Get the relative path from base
         let rel = path.strip_prefix(base).unwrap_or(path);
         let rel_str = rel.to_string_lossy().replace('\\', "/");
-        let name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
         for pattern in &self.patterns {
             // Direct name match
@@ -84,9 +81,22 @@ impl IgnorePatterns {
     pub fn is_default_ignored(name: &str) -> bool {
         matches!(
             name,
-            ".git" | "node_modules" | "target" | "__pycache__" | ".next"
-                | "dist" | "build" | ".cache" | ".venv" | "venv" | ".idea" | ".vscode"
-                | "coverage" | ".nuxt" | ".turbo" | ".parcel-cache"
+            ".git"
+                | "node_modules"
+                | "target"
+                | "__pycache__"
+                | ".next"
+                | "dist"
+                | "build"
+                | ".cache"
+                | ".venv"
+                | "venv"
+                | ".idea"
+                | ".vscode"
+                | "coverage"
+                | ".nuxt"
+                | ".turbo"
+                | ".parcel-cache"
         ) || name.starts_with(".")
     }
 

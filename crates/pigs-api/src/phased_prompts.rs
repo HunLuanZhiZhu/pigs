@@ -8,8 +8,4 @@
 //! `crates/pigs-prompts/prompts/`, compiled in via `include_str!`.
 //! This module re-exports them so existing call sites work unchanged.
 
-pub use pigs_prompts::{
-    executor_prompt as executor_system_prompt, executor_user_payload,
-    post_prompt as post_system_prompt, post_user_payload,
-    pre_prompt as pre_system_prompt, pre_user_payload,
-};
+pub use pigs_prompts::{executor_user_payload, post_user_payload, pre_user_payload};

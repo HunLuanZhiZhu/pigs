@@ -56,13 +56,27 @@ pub struct Config {
     pub compact_keep_recent: usize,
 }
 
-fn default_language() -> String { "zh".into() }
-fn default_permission_mode() -> String { "workspace_write".into() }
-fn default_max_turns() -> u32 { 50 }
-fn default_max_tokens() -> u32 { 4096 }
-fn default_temperature() -> f32 { 0.2 }
-fn default_compact_threshold() -> u64 { 100_000 }
-fn default_compact_keep() -> usize { 10 }
+fn default_language() -> String {
+    "zh".into()
+}
+fn default_permission_mode() -> String {
+    "workspace_write".into()
+}
+fn default_max_turns() -> u32 {
+    50
+}
+fn default_max_tokens() -> u32 {
+    4096
+}
+fn default_temperature() -> f32 {
+    0.2
+}
+fn default_compact_threshold() -> u64 {
+    100_000
+}
+fn default_compact_keep() -> usize {
+    10
+}
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ServerConfig {
@@ -89,11 +103,21 @@ pub struct LogConfig {
     pub rotate_keep: usize,
 }
 
-fn default_level() -> String { "info".into() }
-fn default_format() -> String { "pretty".into() }
-fn default_true() -> bool { true }
-fn default_rotate_size() -> u64 { 50 }
-fn default_rotate_keep() -> usize { 7 }
+fn default_level() -> String {
+    "info".into()
+}
+fn default_format() -> String {
+    "pretty".into()
+}
+fn default_true() -> bool {
+    true
+}
+fn default_rotate_size() -> u64 {
+    50
+}
+fn default_rotate_keep() -> usize {
+    7
+}
 
 // Provider 级共用字段（可选），Endpoint 级同名字段覆盖之
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -173,7 +197,9 @@ pub enum KeyMode {
 }
 
 impl Default for KeyMode {
-    fn default() -> Self { KeyMode::Passthrough }
+    fn default() -> Self {
+        KeyMode::Passthrough
+    }
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -184,7 +210,9 @@ pub enum PathMode {
 }
 
 impl Default for PathMode {
-    fn default() -> Self { PathMode::Append }
+    fn default() -> Self {
+        PathMode::Append
+    }
 }
 
 // 支持单值 429 或范围字符串 "500-504"
@@ -252,8 +280,8 @@ pub fn is_always_skip(code: u16) -> bool {
 //   11310 新错误类型
 pub fn default_retry_codes() -> Vec<i64> {
     vec![
-        10007, 10008, 10009, 10010, 10012, 10110, 10222, 10223,
-        11200, 11201, 11202, 11203, 11210, 11310,
+        10007, 10008, 10009, 10010, 10012, 10110, 10222, 10223, 11200, 11201, 11202, 11203, 11210,
+        11310,
     ]
 }
 
@@ -264,10 +292,22 @@ impl Provider {
         let c = &self.common;
         Some(Endpoint {
             base_url,
-            api_key: raw.api_key.clone().or_else(|| c.api_key.clone()).unwrap_or_default(),
+            api_key: raw
+                .api_key
+                .clone()
+                .or_else(|| c.api_key.clone())
+                .unwrap_or_default(),
             key_mode: raw.key_mode.or(c.key_mode).unwrap_or_default(),
-            models: raw.models.clone().or_else(|| c.models.clone()).unwrap_or_default(),
-            model_map: raw.model_map.clone().or_else(|| c.model_map.clone()).unwrap_or_default(),
+            models: raw
+                .models
+                .clone()
+                .or_else(|| c.models.clone())
+                .unwrap_or_default(),
+            model_map: raw
+                .model_map
+                .clone()
+                .or_else(|| c.model_map.clone())
+                .unwrap_or_default(),
             retry_on_status: raw
                 .retry_on_status
                 .clone()
@@ -292,11 +332,15 @@ impl Provider {
     }
 
     pub fn anthropic_endpoint(&self) -> Option<Endpoint> {
-        self.anthropic.as_ref().and_then(|r| self.resolve_endpoint(r))
+        self.anthropic
+            .as_ref()
+            .and_then(|r| self.resolve_endpoint(r))
     }
 
     pub fn responses_endpoint(&self) -> Option<Endpoint> {
-        self.responses.as_ref().and_then(|r| self.resolve_endpoint(r))
+        self.responses
+            .as_ref()
+            .and_then(|r| self.resolve_endpoint(r))
     }
 }
 

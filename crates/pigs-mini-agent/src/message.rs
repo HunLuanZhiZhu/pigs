@@ -150,9 +150,9 @@ impl Message {
     pub fn system(text: impl Into<String>) -> Self {
         Message {
             role: Role::System,         // 系统角色
-            content: Some(text.into()),  // 系统提示词文本
-            tool_calls: None,            // 系统消息不会有工具调用
-            tool_call_id: None,          // 系统消息不会有工具调用 ID
+            content: Some(text.into()), // 系统提示词文本
+            tool_calls: None,           // 系统消息不会有工具调用
+            tool_call_id: None,         // 系统消息不会有工具调用 ID
         }
     }
 
@@ -161,10 +161,10 @@ impl Message {
     /// 用户消息只有文本内容，不会有工具调用。
     pub fn user(text: impl Into<String>) -> Self {
         Message {
-            role: Role::User,            // 用户角色
-            content: Some(text.into()),  // 用户输入的文本
-            tool_calls: None,            // 用户不会发起工具调用
-            tool_call_id: None,          // 用户消息没有工具调用 ID
+            role: Role::User,           // 用户角色
+            content: Some(text.into()), // 用户输入的文本
+            tool_calls: None,           // 用户不会发起工具调用
+            tool_call_id: None,         // 用户消息没有工具调用 ID
         }
     }
 
@@ -174,9 +174,9 @@ impl Message {
     pub fn assistant_text(text: impl Into<String>) -> Self {
         Message {
             role: Role::Assistant,      // 助手角色
-            content: Some(text.into()),  // LLM 的文本回复
-            tool_calls: None,            // 纯文本消息没有工具调用
-            tool_call_id: None,          // 助手消息没有工具调用 ID
+            content: Some(text.into()), // LLM 的文本回复
+            tool_calls: None,           // 纯文本消息没有工具调用
+            tool_call_id: None,         // 助手消息没有工具调用 ID
         }
     }
 
@@ -185,16 +185,17 @@ impl Message {
     /// 当 LLM 决定要使用工具时，用这个构造器。
     /// `text` 可以是空字符串（LLM 可能只返回工具调用不附带文字）。
     /// `calls` 是 LLM 请求执行的工具调用列表。
-    pub fn assistant_with_tools(
-        text: impl Into<String>,
-        calls: Vec<ToolCall>,
-    ) -> Self {
+    pub fn assistant_with_tools(text: impl Into<String>, calls: Vec<ToolCall>) -> Self {
         let content = text.into();
         Message {
-            role: Role::Assistant,                       // 助手角色
-            content: if content.is_empty() { None } else { Some(content) }, // 空文本则不序列化
-            tool_calls: Some(calls),                     // 工具调用列表
-            tool_call_id: None,                          // 助手消息没有工具调用 ID
+            role: Role::Assistant, // 助手角色
+            content: if content.is_empty() {
+                None
+            } else {
+                Some(content)
+            }, // 空文本则不序列化
+            tool_calls: Some(calls), // 工具调用列表
+            tool_call_id: None,    // 助手消息没有工具调用 ID
         }
     }
 
@@ -204,7 +205,11 @@ impl Message {
     /// 这样 LLM 才能知道这是哪个工具调用的结果。
     /// `output` 是工具执行的输出文本。
     /// `is_error` 标记是否为错误结果——LLM 可以根据这个调整策略。
-    pub fn tool_result(tool_call_id: impl Into<String>, output: impl Into<String>, is_error: bool) -> Self {
+    pub fn tool_result(
+        tool_call_id: impl Into<String>,
+        output: impl Into<String>,
+        is_error: bool,
+    ) -> Self {
         // 如果是错误，在输出前加 [ERROR] 前缀，让 LLM 更容易识别
         let output_text = if is_error {
             format!("[ERROR] {}", output.into())
@@ -212,10 +217,10 @@ impl Message {
             output.into()
         };
         Message {
-            role: Role::Tool,                                  // 工具角色
-            content: Some(output_text),                         // 工具执行结果文本
-            tool_calls: None,                                   // 工具消息不会有工具调用
-            tool_call_id: Some(tool_call_id.into()),            // 关联的工具调用 ID
+            role: Role::Tool,                        // 工具角色
+            content: Some(output_text),              // 工具执行结果文本
+            tool_calls: None,                        // 工具消息不会有工具调用
+            tool_call_id: Some(tool_call_id.into()), // 关联的工具调用 ID
         }
     }
 
@@ -226,7 +231,9 @@ impl Message {
     /// 如果没有 → LLM 完成了任务，返回文本
     pub fn has_tool_calls(&self) -> bool {
         // tool_calls 不为 None 且不为空列表时返回 true
-        self.tool_calls.as_ref().is_some_and(|calls| !calls.is_empty())
+        self.tool_calls
+            .as_ref()
+            .is_some_and(|calls| !calls.is_empty())
     }
 
     /// 获取这条消息的工具调用列表（如果有）。

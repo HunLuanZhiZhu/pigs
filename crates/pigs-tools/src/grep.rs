@@ -73,10 +73,7 @@ impl ToolHandler for GrepTool {
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| ToolError::InvalidInput("missing 'pattern' field".into()))?;
 
-            let path = input
-                .get("path")
-                .and_then(|v| v.as_str())
-                .unwrap_or(".");
+            let path = input.get("path").and_then(|v| v.as_str()).unwrap_or(".");
 
             let include = input.get("include").and_then(|v| v.as_str());
             let case_insensitive = input
@@ -207,8 +204,24 @@ async fn search_directory(args: SearchArgs<'_>) {
                 if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
                     if matches!(
                         ext,
-                        "png" | "jpg" | "jpeg" | "gif" | "bmp" | "ico" | "pdf" | "zip" | "tar"
-                            | "gz" | "exe" | "dll" | "so" | "dylib" | "bin" | "obj" | "o" | "a"
+                        "png"
+                            | "jpg"
+                            | "jpeg"
+                            | "gif"
+                            | "bmp"
+                            | "ico"
+                            | "pdf"
+                            | "zip"
+                            | "tar"
+                            | "gz"
+                            | "exe"
+                            | "dll"
+                            | "so"
+                            | "dylib"
+                            | "bin"
+                            | "obj"
+                            | "o"
+                            | "a"
                     ) {
                         continue;
                     }

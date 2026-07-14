@@ -1,9 +1,5 @@
-POST phase instructions above.
-
---- PRE plan/GOAL ---
-{pre_output}
-
---- EXECUTOR draft ---
-{executor_draft}
-
-Review, check GOAL, then route with PIGEND / PIGFAILED / no marker.
+Using the stated goal, independently verify the result and comprehensively review execution of the task.
+First output a review report, then make these judgments:
+1. Decide whether the goal is fully complete. Only when it is complete, end the response with `PIGEND`.
+2. Decide whether execution was wrong, meaning it moved farther from the goal than before execution. End the response with `PIGFAIL`.
+3. If the task progressed but is not fully complete, continue executing it after the review report and do not output a marker at the end.

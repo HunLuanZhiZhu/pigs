@@ -36,12 +36,18 @@ pub struct ToolResult {
 impl ToolResult {
     /// Create a successful tool result.
     pub fn success(output: impl Into<String>) -> Self {
-        ToolResult { output: output.into(), is_error: false }
+        ToolResult {
+            output: output.into(),
+            is_error: false,
+        }
     }
 
     /// Create an error tool result.
     pub fn error(output: impl Into<String>) -> Self {
-        ToolResult { output: output.into(), is_error: true }
+        ToolResult {
+            output: output.into(),
+            is_error: true,
+        }
     }
 }
 
@@ -60,7 +66,11 @@ impl ToolSpec {
         description: impl Into<String>,
         input_schema: serde_json::Value,
     ) -> Self {
-        ToolSpec { name: name.into(), description: description.into(), input_schema }
+        ToolSpec {
+            name: name.into(),
+            description: description.into(),
+            input_schema,
+        }
     }
 }
 
@@ -90,7 +100,9 @@ pub struct ToolRegistry {
 impl ToolRegistry {
     /// Create a new empty registry.
     pub fn new() -> Self {
-        ToolRegistry { tools: HashMap::new() }
+        ToolRegistry {
+            tools: HashMap::new(),
+        }
     }
 
     /// Register a tool handler.
@@ -115,7 +127,11 @@ impl ToolRegistry {
     }
 
     /// Execute a tool by name.
-    pub async fn execute(&self, name: &str, input: serde_json::Value) -> Result<ToolResult, ToolError> {
+    pub async fn execute(
+        &self,
+        name: &str,
+        input: serde_json::Value,
+    ) -> Result<ToolResult, ToolError> {
         let handler = self
             .tools
             .get(name)

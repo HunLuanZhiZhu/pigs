@@ -24,7 +24,7 @@ pigs/
 │   ├── pigs-permissions/       # 权限系统（5 级权限模式 + 交互式提示器）
 │   ├── pigs-config/            # 配置管理（TOML + CLAUDE.md/AGENTS.md + 环境变量 + 日志）
 │   ├── pigs-session/           # 会话持久化（JSONL + 自动压缩）
-│   ├── pigs-prompts/           # 相位提示词模板（12 个 .txt 纯文本 + include_str! + 中英双语）
+│   ├── pigs-prompts/           # 相位 user payload（6 个活跃 txt + include_str! + 中英双语）
 │   ├── pigs-llm/               # LLM 客户端（Anthropic + OpenAI Responses + OpenAI Chat + SSE）
 │   ├── pigs-tools/             # 内置工具 + ToolRegistry + .pigsignore
 │   ├── pigs-mcp/               # MCP 客户端（stdio + tools/list + tools/call）
@@ -47,12 +47,12 @@ pigs/
 | `pigs-permissions` | 权限模式、策略、CLI 提示器 |
 | `pigs-config` | TOML 配置、项目记忆（CLAUDE.md 优先/AGENTS.md）、Skills、Rules、Memory |
 | `pigs-session` | JSONL 会话与压缩 |
-| `pigs-prompts` | 相位提示词模板（12 个 .txt 纯文本文件 + include_str! 编译 + 中英双语切换） |
+| `pigs-prompts` | 相位 user payload（Pre/Executor/Post × 中英文，6 个活跃 .txt）；旧 identity prompt 文件保留但不注入 |
 | `pigs-llm` | Anthropic / OpenAI Responses / OpenAI Chat 客户端与 SSE 流式 |
 | `pigs-tools` | 内置 `ToolHandler` 实现与默认注册表 |
 | `pigs-mcp` | MCP stdio 客户端与 tool bridge |
-| `pigs-api` | 相位运行时（Pre→Executor→Post + 标记 PIGEND/PIGFAILED）+ 三格式 API 转换（OpenAI Chat / Anthropic / Responses）+ 进程内调度 |
-| `pigs-proxy` | 多协议 HTTP 代理 + 同渠道重试（10001 次）+ body 清洗 + 思考强度注入 + `-pig` 路由分流 + ProxyApiClient + dispatch_in_process |
+| `pigs-api` | 协议原生 HTTP 相位运行时（Pre→Executor→Post + PIGEND/PIGFAIL）+ 三协议 codec + 连续 JSON/SSE + 有界内存 continuation；保留 CLI 本地运行时 |
+| `pigs-proxy` | 多协议 HTTP 代理 + 同渠道重试（10001 次）+ body 清洗 + 思考强度注入 + `-pig` 路由 + HTTP loopback；CLI 使用 ProxyApiClient + dispatch_in_process |
 | `pigs-cli` | CLI REPL + Agent 循环 + 斜杠命令 + MCP + Hooks + 子代理（library，非产品 bin） |
 | `pigs` | 唯一产品二进制；默认模式（pigs-proxy 后台 + pigs-cli REPL 前台）；`--api`（仅代理）；`--cli`（仅 REPL） |
 | `pigs-mini-agent` | 教学用最简自包含 Agent；**禁止**被正式 crate 依赖，也**不要**依赖正式 crate |
@@ -74,8 +74,8 @@ cargo run -- --cli       # 仅 CLI REPL
 - **pigs-core** 是零内部依赖的基础 crate，定义所有核心 trait（`ApiClient`, `ToolHandler`, `StreamCallback`）。不要在 core 中添加外部依赖。
 - **pigs-llm** 实现 `ApiClient` trait：Anthropic Messages、OpenAI Responses、OpenAI Chat Completions + SSE 流式。
 - **pigs-prompts** 提示词模板外置为纯文本 `.txt` 文件，编译时 `include_str!` 嵌入，运行时 `.replace()` 填充变量。中英双语，默认 `zh`。
-- **pigs-api** 相位运行时：Pre→Executor→Post + 标记路由（PIGEND/PIGFAILED）。用户 system 透传，相位指令走 user payload。三格式 API 转换（OpenAI Chat / Anthropic / Responses）。
-- **pigs-proxy** 多协议 HTTP 代理：三协议端点（`/chat/completions` / `/v1/messages` / `/responses`）+ 同渠道重试 + body 清洗 + 思考强度注入 + `-pig` 路由分流。`ProxyApiClient` 实现 `ApiClient` trait，通过 `dispatch_in_process` 进程内调度（不走 HTTP loopback）。`build_phased_runtime` 构造相位运行时。
+- **pigs-api** HTTP 相位运行时：完整保留方法、path/query、headers 和三协议原生 JSON，只定点修改 model、当前 user 与相位轨迹。状态机为 Pre→Executor→Post；Post `PIGEND` 完成、`PIGFAIL` 回 Pre、无标记继续 Post。工具调用由上游 Agent 执行，并通过有界内存 continuation 恢复。
+- **pigs-proxy** 多协议 HTTP 代理：三协议端点（`/chat/completions` / `/v1/messages` / `/responses`）+ 同渠道重试 + body 清洗 + 思考强度注入。HTTP `-pig` 相位子请求去掉一层后通过带随机内部令牌的本机 HTTP loopback 重入代理；内部 header 在发往供应商前移除。CLI 的 `ProxyApiClient / dispatch_in_process / build_phased_runtime` 继续保留，不用于 HTTP 相位路径。
 - **pigs-tools** 实现 `ToolHandler` trait，每个工具一个文件，通过 `ToolRegistry` 统一管理；`grep/glob/list_files` 尊重 `.pigsignore`。
 - **pigs-mcp** 提供最小 MCP 客户端（stdio + Content-Length framing + initialize/tools.list/tools.call）。
 - **pigs-cli** 是 CLI REPL 库（非产品 bin）。子代理、MCP、斜杠命令等在此。日志 `~/.pigs/logs/`。默认语言 zh。通过 `run_cli_from` 供 pigs 二进制调用。

@@ -85,7 +85,8 @@ impl OpenAiClient {
             .collect();
 
         // claw-code: gpt-5* wants max_completion_tokens; older models use max_tokens.
-        let (max_tokens, max_completion_tokens) = split_max_tokens_field(&request.model, request.max_tokens);
+        let (max_tokens, max_completion_tokens) =
+            split_max_tokens_field(&request.model, request.max_tokens);
 
         OpenAiRequest {
             model: request.model.clone(),
@@ -101,7 +102,9 @@ impl OpenAiClient {
             temperature: request.temperature,
             stream,
             stream_options: if stream {
-                Some(StreamOptions { include_usage: true })
+                Some(StreamOptions {
+                    include_usage: true,
+                })
             } else {
                 None
             },
@@ -179,10 +182,9 @@ impl OpenAiClient {
             return Err(map_error_response(response).await);
         }
 
-        let response_body: OpenAiResponse = response
-            .json()
-            .await
-            .map_err(|e| ApiError::InvalidResponse(format!("Failed to parse response JSON: {e}")))?;
+        let response_body: OpenAiResponse = response.json().await.map_err(|e| {
+            ApiError::InvalidResponse(format!("Failed to parse response JSON: {e}"))
+        })?;
         Ok(convert_response(response_body))
     }
 
@@ -213,7 +215,8 @@ impl OpenAiClient {
         let mut response_model = self.model.clone();
 
         while let Some(chunk_result) = stream.next().await {
-            let chunk = chunk_result.map_err(|e| ApiError::Network(format!("Stream error: {e}")))?;
+            let chunk =
+                chunk_result.map_err(|e| ApiError::Network(format!("Stream error: {e}")))?;
             buffer.push_str(&String::from_utf8_lossy(&chunk));
 
             while let Some(newline_pos) = buffer.find('\n') {
@@ -272,10 +275,12 @@ impl OpenAiClient {
                                             tool_calls[idx].2.push_str(args);
                                             let id = tool_calls[idx].0.clone();
                                             if !id.is_empty() {
-                                                callback.on_event(&StreamEvent::ToolUseInputDelta {
-                                                    id,
-                                                    partial_json: args.clone(),
-                                                });
+                                                callback.on_event(
+                                                    &StreamEvent::ToolUseInputDelta {
+                                                        id,
+                                                        partial_json: args.clone(),
+                                                    },
+                                                );
                                             }
                                         }
                                     }
@@ -341,8 +346,8 @@ fn convert_response(response: OpenAiResponse) -> ApiResponse {
         }
         if let Some(tool_calls) = &choice.message.tool_calls {
             for tc in tool_calls {
-                let input = serde_json::from_str(&tc.function.arguments)
-                    .unwrap_or(serde_json::Value::Null);
+                let input =
+                    serde_json::from_str(&tc.function.arguments).unwrap_or(serde_json::Value::Null);
                 content.push(ContentBlock::tool_use(&tc.id, &tc.function.name, input));
             }
         }
@@ -353,7 +358,10 @@ fn convert_response(response: OpenAiResponse) -> ApiResponse {
         cache_read_tokens: u.prompt_tokens_details.and_then(|d| d.cached_tokens),
         total_cost: None,
     });
-    let stop_reason = response.choices.first().and_then(|c| c.finish_reason.clone());
+    let stop_reason = response
+        .choices
+        .first()
+        .and_then(|c| c.finish_reason.clone());
     ApiResponse {
         content,
         usage,
@@ -624,8 +632,8 @@ mod tests {
     #[test]
     fn system_prompt_is_first_message_not_top_level_field() {
         let client = OpenAiClient::new("k", "gpt-4o", "https://api.openai.com/v1");
-        let req = ApiRequest::new("gpt-4o", vec![Message::user("hi")])
-            .with_system_prompt("you are pigs");
+        let req =
+            ApiRequest::new("gpt-4o", vec![Message::user("hi")]).with_system_prompt("you are pigs");
         let body = client.build_request_body(&req, false);
         let json = serde_json::to_value(&body).unwrap();
         assert!(json.get("system").is_none());
@@ -637,7 +645,8 @@ mod tests {
     #[test]
     fn stream_options_include_usage_when_streaming() {
         let client = OpenAiClient::new("k", "gpt-4o", "https://api.openai.com/v1");
-        let body = client.build_request_body(&ApiRequest::new("gpt-4o", vec![Message::user("x")]), true);
+        let body =
+            client.build_request_body(&ApiRequest::new("gpt-4o", vec![Message::user("x")]), true);
         let json = serde_json::to_value(&body).unwrap();
         assert_eq!(json["stream"], true);
         assert_eq!(json["stream_options"]["include_usage"], true);
@@ -677,9 +686,12 @@ mod tests {
     #[test]
     fn tools_set_tool_choice_auto() {
         let client = OpenAiClient::new("k", "gpt-4o", "https://api.openai.com/v1");
-        let req = ApiRequest::new("gpt-4o", vec![Message::user("x")]).with_tools(vec![
-            ToolSpec::new("bash", "run", serde_json::json!({"type":"object"})),
-        ]);
+        let req =
+            ApiRequest::new("gpt-4o", vec![Message::user("x")]).with_tools(vec![ToolSpec::new(
+                "bash",
+                "run",
+                serde_json::json!({"type":"object"}),
+            )]);
         let body = client.build_request_body(&req, false);
         let json = serde_json::to_value(&body).unwrap();
         assert_eq!(json["tool_choice"], "auto");

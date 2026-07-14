@@ -52,7 +52,11 @@ impl PermissionPolicy {
     }
 
     /// Set a required permission mode for a specific tool.
-    pub fn with_tool_requirement(mut self, tool_name: impl Into<String>, mode: PermissionMode) -> Self {
+    pub fn with_tool_requirement(
+        mut self,
+        tool_name: impl Into<String>,
+        mode: PermissionMode,
+    ) -> Self {
         self.tool_requirements.insert(tool_name.into(), mode);
         self
     }
@@ -121,7 +125,11 @@ impl PermissionPolicy {
     }
 
     /// Check if a file path is within the workspace root.
-    pub fn check_file_path(&self, path: &std::path::Path, workspace_root: &std::path::Path) -> Result<(), String> {
+    pub fn check_file_path(
+        &self,
+        path: &std::path::Path,
+        workspace_root: &std::path::Path,
+    ) -> Result<(), String> {
         let canonical_path = path
             .canonicalize()
             .map_err(|e| format!("Cannot canonicalize path '{path:?}': {e}"))?;

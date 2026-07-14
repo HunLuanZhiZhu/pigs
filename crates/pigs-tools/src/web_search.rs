@@ -111,7 +111,9 @@ impl ToolHandler for WebSearchTool {
                 ])
                 .send()
                 .await
-                .map_err(|e| ToolError::ExecutionFailed(format!("web_search request failed: {e}")))?;
+                .map_err(|e| {
+                    ToolError::ExecutionFailed(format!("web_search request failed: {e}"))
+                })?;
 
             if !resp.status().is_success() {
                 return Ok(ToolResult::error(format!(

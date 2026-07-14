@@ -1,41 +1,34 @@
 # pigs-proxy
 
-多协议 HTTP 前置代理 + 相位化 Agent 路由器。监听单一端口（默认 3927），按 model ID 分流：无 `-pig` 后缀透传上游 LLM，有 `-pig` 后缀走 `pigs-api` 相位运行时。
+`pigs-proxy` 是多协议 HTTP 前置代理与 `-pig` 路由层。单一端口同时接受 OpenAI Chat、Anthropic Messages 和 OpenAI Responses。
 
-## 架构与数据流
+## 路由
 
-```
-客户端请求 (OpenAI Chat / Anthropic / OpenAI Responses)
+```text
+客户端请求
   │
-  ▼
-server (端口 3927)
+  ├─ model 无 -pig -> passthrough -> 渠道映射/清洗/思考强度/重试 -> provider
   │
-  ├─ model 无 -pig 后缀 ──→ upstream + retry::dispatch
-  │                           （透传，含重试 + body 清洗 + 思考强度注入）
-  │
-  └─ model 有 -pig 后缀 ──→ pigs-api PhasedRuntime
-                               （Pre→Executor→Post，LLM 请求回走 dispatch_in_process）
+  └─ model 有 -pig -> pigs-api HttpPhasedRuntime
+                         │
+                         └─ 去掉一层 -pig 的协议原生 HTTP subrequest
+                              -> 本机 loopback -> 同一 handler -> passthrough -> provider
 ```
 
-三相位的 LLM 请求不走 HTTP loopback，而是通过 `dispatch_in_process` 直接进入 `retry::dispatch`，自动享受重试与 body 清洗。
+loopback 请求保留原方法、path/query、端到端 headers 和完整 JSON body。`LoopbackPhaseTransport` 加入随机内部令牌；handler 验证后绕过 `-pig` 分流，并在发往供应商前删除内部 header，避免递归和泄露。
 
-## 核心内容
+监听 `0.0.0.0` 或 `[::]` 时，transport 会转换为可连接的 loopback 地址。对本机 provider 自动禁用环境 HTTP proxy；外部 provider 仍遵循原有网络配置。
 
-- `server` — Axum HTTP 服务器，路由 `/chat/completions`、`/v1/messages`、`/responses`、`/v1/models`
-- `config::Config` — 代理配置（provider / endpoint / 日志 / language 等）
-- `protocol::Protocol` — 协议枚举（`OpenAI` / `Anthropic` / `Responses`）
-- `upstream::UpstreamClient` — 上游 HTTP 客户端（reqwest + rustls）
-- `retry::dispatch` / `retry::DispatchOutcome` — 重试调度与结果
-- `proxy_client::ProxyApiClient` — 实现 `ApiClient` trait，相位运行时通过它发起 LLM 请求
-- `fn serve()` — 启动代理服务器（阻塞式）
-- `fn build_phased_runtime()` — 从配置构建 `PhasedRuntime`
-- `fn dispatch_in_process()` — 进程内调度（绕过 HTTP，直走重试逻辑）
+## 核心模块
 
-## 依赖
+- `server`：三协议入口、`-pig`/passthrough 分流、JSON/SSE 返回与协议错误。
+- `loopback`：`PhaseTransport` 的 HTTP 实现；解析三协议 JSON/SSE、增量文本和原生工具调用。
+- `retry`：同渠道重试、HTTP/业务错误码判断。
+- `upstream`：供应商请求与流式 body 处理。
+- `config`：provider/endpoint/model_map/key_mode/path_mode/thinking_effort。
+- `protocol`：代理侧协议到 endpoint 的映射。
+- `proxy_client`：CLI 使用的 `ApiClient` 实现。
 
-- `pigs-api`、`pigs-core`、`pigs-config`（均 workspace）
-- `axum` 0.7 / `hyper` 1 / `tower` 0.5 / `reqwest` 0.12 / `tracing-subscriber` / `tracing-appender`
+## CLI 边界
 
-## 在 workspace 中的角色
-
-前置路由层 — 项目的网络入口与协议适配层，将外部多协议请求统一路由到上游 LLM 或 pigs-api 相位运行时。
+`ProxyApiClient`、`dispatch_in_process` 和 `build_phased_runtime` 继续服务 CLI 本地 Agent，因此 CLI 的 bash/file/MCP 工具循环不受 HTTP 重构影响。HTTP `-pig` 路径不再使用 `ConvertedTurn -> ApiRequest -> OpenAI Chat`，也不再使用进程内 dispatch。

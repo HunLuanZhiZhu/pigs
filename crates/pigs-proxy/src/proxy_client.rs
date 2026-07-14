@@ -11,13 +11,13 @@
 
 use std::sync::Arc;
 
-use pigs_core::{
-    ApiClient, ApiError, ApiFuture, ApiRequest, ApiResponse, ContentBlock,
-    MessageRole, StreamCallback, StreamEvent, TokenUsage,
-};
 use crate::config::Config as ProxyConfig;
 use crate::protocol::Protocol;
 use crate::upstream::UpstreamClient;
+use pigs_core::{
+    ApiClient, ApiError, ApiFuture, ApiRequest, ApiResponse, ContentBlock, MessageRole,
+    StreamCallback, StreamEvent, TokenUsage,
+};
 
 /// 通过 pigs-proxy 进程内调度的 ApiClient 实现。
 /// ApiClient implementation that dispatches via pigs-proxy in-process.
@@ -234,14 +234,16 @@ fn build_openai_chat_body(request: &ApiRequest) -> serde_json::Value {
         let tools: Vec<serde_json::Value> = request
             .tools
             .iter()
-            .map(|t| serde_json::json!({
-                "type": "function",
-                "function": {
-                    "name": t.name,
-                    "description": t.description,
-                    "parameters": t.input_schema
-                }
-            }))
+            .map(|t| {
+                serde_json::json!({
+                    "type": "function",
+                    "function": {
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": t.input_schema
+                    }
+                })
+            })
             .collect();
         body["tools"] = serde_json::Value::Array(tools);
         body["tool_choice"] = serde_json::json!("auto");
@@ -332,10 +334,7 @@ fn parse_openai_chat_response(
 
     // usage
     let usage = json.get("usage").map(|u| {
-        let prompt_tokens = u
-            .get("prompt_tokens")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
+        let prompt_tokens = u.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
         let completion_tokens = u
             .get("completion_tokens")
             .and_then(|v| v.as_u64())

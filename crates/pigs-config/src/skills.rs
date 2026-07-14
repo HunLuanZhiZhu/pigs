@@ -107,7 +107,9 @@ fn load_skills_from_dir(
             // Nested skill dir: skills/code-review/SKILL.md
             let skill_md = path.join("SKILL.md");
             if skill_md.is_file() {
-                if let Some(skill) = parse_skill_file(&skill_md, path.file_name().and_then(|n| n.to_str())) {
+                if let Some(skill) =
+                    parse_skill_file(&skill_md, path.file_name().and_then(|n| n.to_str()))
+                {
                     if seen.insert(skill.name.clone()) {
                         skills.push(skill);
                     }
@@ -220,11 +222,7 @@ pub fn find_skill<'a>(skills: &'a [Skill], name: &str) -> Option<&'a Skill> {
     skills
         .iter()
         .find(|s| s.name == needle)
-        .or_else(|| {
-            skills
-                .iter()
-                .find(|s| s.name.eq_ignore_ascii_case(needle))
-        })
+        .or_else(|| skills.iter().find(|s| s.name.eq_ignore_ascii_case(needle)))
 }
 
 /// Format the full body of a skill for tool output.
@@ -255,7 +253,8 @@ mod tests {
 
     #[test]
     fn test_parse_frontmatter() {
-        let content = "---\nname: review\ndescription: Code review skill\n---\nDo a thorough review.\n";
+        let content =
+            "---\nname: review\ndescription: Code review skill\n---\nDo a thorough review.\n";
         let (name, desc, body) = parse_frontmatter(content, "default");
         assert_eq!(name, "review");
         assert_eq!(desc, "Code review skill");
@@ -322,10 +321,8 @@ mod tests {
 
     #[test]
     fn test_load_skills_from_agents_skills_dir() {
-        let temp = std::env::temp_dir().join(format!(
-            "pigs_agents_skills_test_{}",
-            std::process::id()
-        ));
+        let temp =
+            std::env::temp_dir().join(format!("pigs_agents_skills_test_{}", std::process::id()));
         let agents_skill = temp.join(".agents").join("skills").join("aris-demo");
         let _ = std::fs::remove_dir_all(&temp);
         std::fs::create_dir_all(&agents_skill).unwrap();
@@ -352,10 +349,8 @@ mod tests {
 
     #[test]
     fn test_pigs_skills_outrank_agents_skills_on_name_collision() {
-        let temp = std::env::temp_dir().join(format!(
-            "pigs_skills_priority_test_{}",
-            std::process::id()
-        ));
+        let temp =
+            std::env::temp_dir().join(format!("pigs_skills_priority_test_{}", std::process::id()));
         let pigs_dir = temp.join(".pigs").join("skills");
         let agents_dir = temp.join(".agents").join("skills").join("shared");
         let _ = std::fs::remove_dir_all(&temp);

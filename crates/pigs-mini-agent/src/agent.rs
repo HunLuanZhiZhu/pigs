@@ -74,32 +74,32 @@ use crate::tool::ToolRegistry;
 /// 所有"决策"都是 LLM 做的，Agent 只是 LLM 的"手脚"。
 pub struct Agent {
     /// LLM 客户端 —— 连接大语言模型 API
-    /// 
+    ///
     /// 教学要点：LLM 是 Agent 的"大脑"。所有的决策、推理、
     /// "知道该用什么工具"都来自 LLM。Agent 代码不做决策。
     pub llm: LlmClient,
 
     /// 工具注册表 —— Agent 可用的工具集合
-    /// 
+    ///
     /// 教学要点：工具是 Agent 的"手脚"。LLM 决定调用什么工具，
     /// 但真正执行工具的是这段 Rust 代码。
     pub tools: ToolRegistry,
 
     /// 对话历史 —— 所有已发送/接收的消息
-    /// 
+    ///
     /// 教学要点：每次调用 LLM 都会发送**完整的**对话历史。
     /// LLM 没有记忆——它靠历史消息"回忆"之前发生了什么。
     /// 历史越长，请求越慢越贵（token 更多）。
     pub messages: Vec<Message>,
 
     /// 系统提示词 —— 定义 Agent 的行为规则
-    /// 
+    ///
     /// 在对话的最前面，通常只有一条。
     /// 每次调用 LLM 时都会把它放在历史消息前面。
     pub system_prompt: String,
 
     /// 最大循环轮次 —— 防止 Agent 无限循环
-    /// 
+    ///
     /// 来自 CoreCoder 的 max_rounds=50。
     /// Agent 可能在某些场景下陷入循环：
     /// "调用工具 → LLM 再次要求调用工具 → 调用工具 → ..."
@@ -120,11 +120,11 @@ impl Agent {
         // 动态生成系统提示词——工具列表变化时提示词自动变
         let system_prompt = build_system_prompt(&tools);
         Agent {
-            llm,                              // LLM 客户端
-            tools,                            // 工具注册表
-            messages: Vec::new(),             // 空对话历史
-            system_prompt,                    // 自动生成的系统提示词
-            max_rounds: 50,                   // 默认最大 50 轮
+            llm,                  // LLM 客户端
+            tools,                // 工具注册表
+            messages: Vec::new(), // 空对话历史
+            system_prompt,        // 自动生成的系统提示词
+            max_rounds: 50,       // 默认最大 50 轮
         }
     }
 
@@ -239,7 +239,11 @@ impl Agent {
                 // 根据执行结果构造工具消息
                 let (output, is_error) = match result {
                     Ok(output) => {
-                        eprintln!("[agent] 工具 {} 完成: {} 字符", tc.name, output.chars().count());
+                        eprintln!(
+                            "[agent] 工具 {} 完成: {} 字符",
+                            tc.name,
+                            output.chars().count()
+                        );
                         (output, false) // 成功
                     }
                     Err(e) => {
@@ -319,7 +323,7 @@ mod tests {
         // 验证初始状态
         assert_eq!(agent.max_rounds, 50); // 默认值
         assert_eq!(agent.history_len(), 0); // 空历史
-        // 系统提示词应该非空
+                                            // 系统提示词应该非空
         assert!(!agent.system_prompt.is_empty());
     }
 

@@ -18,9 +18,9 @@ pigs-proxy (前置路由层)
                                 ├── Executor（信息收集/起草）
                                 └── POST（审阅/验收/路由）
                                     │
-                                    │ 每个相位的 LLM 请求
-                                    │ 通过进程内调用回到 pigs-proxy
-                                    │ 自动享受重试
+                                    │ 每个相位的协议原生 HTTP 请求
+                                    │ 去掉一层 -pig 后回到 pigs-proxy
+                                    │ 复用渠道映射、清洗、思考强度与重试
                                     ▼
                                 上游 LLM
 ```
@@ -30,7 +30,7 @@ pigs-proxy (前置路由层)
 - **单一端口**（默认 3927）同时服务三种 API 协议
 - **输入什么格式，输出什么格式**：OpenAI Chat / Anthropic Messages / OpenAI Responses
 - **模型 ID ×2**：每个配置的模型对外暴露两个 ID — `{model}`（透传）+ `{model}-pig`（相位化）
-- **相位运行时的 LLM 请求走 pigs-proxy 进程内调度**：三相位的每个 LLM 调用都自动享受重试（10001 次 + 业务错误码 + SSE error 检测）
+- **相位请求走本机 HTTP loopback**：完整保留入口协议、路径/查询、headers 和 JSON 扩展字段，去掉一层 `-pig` 后重新进入 pigs-proxy，复用渠道映射、body 清洗、思考强度注入与重试
 
 ## 功能
 
@@ -46,10 +46,13 @@ pigs-proxy (前置路由层)
 ### 相位运行时（pigs-api）
 
 - **三相位流程** — Pre（规划/分流）→ Executor（执行/起草）→ Post（审阅/验收）
-- **控制标记** — `PIGEND`（整轮结束）/ `PIGFAILED`（路径失败，回到 Pre 重规划）/ 无标记（默认回环）
-- **用户 system 透传** — 调用方的 system 消息原样传给 LLM，三相位不覆盖
-- **中英双语提示词** — `language = "zh"`（默认）或 `"en"`，提示词模板外置为纯文本文件（`pigs-prompts`）
-- **进程内调度** — LLM 请求通过 `dispatch_in_process` 走 pigs-proxy 重试，不走 HTTP loopback
+- **控制标记** — `PIGEND`（成功完成）/ `PIGFAIL`（执行错误，回到 Pre 重规划）/ 无标记（继续 Post）；仅最后一个有效非空行控制路由
+- **协议原生请求** — clone 完整 JSON，只定点修改 model、当前用户输入和相位轨迹；system/history/tools/媒体/metadata/未知字段保持原生结构
+- **外部工具 continuation** — 上游 Agent 执行原请求工具；运行时按 tool-call ID 在内存中暂停/恢复，存储受 TTL 和容量限制，不落盘
+- **连续响应** — Pre、Executor、历次 Post 文本按顺序连续输出；流式末行缓冲隐藏控制标记，错误流不发送成功结束帧
+- **用户 system 透传** — 调用方的 system/instructions 原样保留，相位指令只进入 user payload
+- **中英双语提示词** — `language = "zh"`（默认）或 `"en"`，user payload 模板外置为纯文本文件（`pigs-prompts`）
+- **双 transport** — HTTP `-pig` 使用本机 loopback；CLI 仍使用 `ProxyApiClient / dispatch_in_process`
 
 ### CLI（pigs-cli）
 
@@ -150,7 +153,6 @@ POST http://127.0.0.1:3927/chat/completions   → OpenAI Chat 协议
 POST http://127.0.0.1:3927/v1/messages        → Anthropic 协议
 POST http://127.0.0.1:3927/responses          → OpenAI Responses 协议
 GET  http://127.0.0.1:3927/v1/models          → 模型列表（×2）
-GET  http://127.0.0.1:3927/health             → 健康检查
 ```
 
 ### 模型 ID ×2
@@ -212,12 +214,12 @@ Layer 4:  pigs-cli               ← CLI REPL + Agent 循环（library）
 | **`pigs-permissions`** | 库 | 权限系统：5 级 `PermissionMode` + `PermissionPolicy` + 交互式 `PermissionPrompter`。 |
 | **`pigs-config`** | 库 | 配置管理：TOML 加载 + 环境变量覆盖 + AGENTS.md 解析 + Skills/Rules/Memory 加载 + `Language` 枚举。 |
 | **`pigs-session`** | 库 | 会话持久化：JSONL 读写 + 自动压缩 + 会话元数据。 |
-| **`pigs-prompts`** | 库 | 相位提示词模板：12 个 `.txt` 纯文本文件 + `include_str!` 编译 + `Language` 中英切换 + `.replace()` 填充变量。 |
+| **`pigs-prompts`** | 库 | 相位 user payload：Pre / Executor / Post × 中英文，6 个活跃 `.txt` 通过 `include_str!` 编译；旧 identity prompt 文件保留但不注入。 |
 | **`pigs-llm`** | 库 | LLM 客户端：OpenAI Responses / OpenAI Chat Completions / Anthropic Messages + SSE 流式。 |
 | **`pigs-tools`** | 库 | 内置工具实现（每工具一个文件）+ 默认 `ToolRegistry` + `.pigsignore`。 |
 | **`pigs-mcp`** | 库 | MCP 客户端：stdio + Content-Length framing + `tools/list` + `tools/call`。 |
-| **`pigs-api`** | 库 | 相位运行时（Pre→Executor→Post）+ 三格式 API 转换（OpenAI Chat / Anthropic / Responses）+ 标记路由 + 进度回调。 |
-| **`pigs-proxy`** | 库 | 多协议 HTTP 代理：三协议端点 + 同渠道重试 + body 清洗 + 思考强度注入 + `-pig` 路由分流 + `ProxyApiClient`（进程内调度）+ `dispatch_in_process`。 |
+| **`pigs-api`** | 库 | 协议原生 HTTP 相位运行时：请求信封与三协议 codec、Pre→Executor→Post 纯状态机、PIGEND/PIGFAIL、连续 JSON/SSE 输出、有界内存 continuation；另保留 CLI 本地运行时。 |
+| **`pigs-proxy`** | 库 | 多协议 HTTP 代理：三协议端点 + 同渠道重试 + body 清洗 + 思考强度注入 + `-pig` 路由 + `LoopbackPhaseTransport`；CLI 继续使用 `ProxyApiClient / dispatch_in_process`。 |
 | **`pigs-cli`** | 库 | CLI REPL + Agent 循环 + 斜杠命令 + MCP + Hooks + 子代理。产品二进制通过 `run_cli_from` 调用。 |
 | **`pigs`** | 二进制 | 唯一产品入口。默认模式：pigs-proxy（后台）+ pigs-cli REPL（前台）。`--api`：仅代理。`--cli`：仅 REPL。 |
 | **`pigs-mini-agent`** | 教学库 | 最简 Agent（"Agent 的 nanoGPT"）。自包含，不依赖 pigs-* crate。 |

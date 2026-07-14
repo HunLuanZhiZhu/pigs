@@ -23,22 +23,17 @@ pub mod snapshots;
 // 相位模块已移至 pigs-api crate；此处 re-export 保持旧路径可用。
 // Phased modules moved to pigs-api crate; re-export keeps old paths working.
 pub use pigs_api::phased_api_convert;
+pub use pigs_api::phased_markers;
+pub use pigs_api::phased_phase;
+pub use pigs_api::phased_prompts;
 pub use pigs_api::phased_runtime;
 pub use pigs_api::phased_tools;
-pub use pigs_api::phased_prompts;
-pub use pigs_api::phased_phase;
-pub use pigs_api::phased_markers;
 
 use std::process::ExitCode;
 use std::sync::Arc;
 
 use clap::Parser;
-use tracing_subscriber::{
-    fmt,
-    layer::SubscriberExt,
-    util::SubscriberInitExt,
-    EnvFilter,
-};
+use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 /// Run the full pigs-cli agent (REPL or one-shot).
 ///
@@ -107,7 +102,6 @@ async fn run_with_args(
     args: cli::CliArgs,
     injected_client: Option<Arc<dyn pigs_core::ApiClient>>,
 ) -> anyhow::Result<()> {
-
     if args.list_sessions {
         let sessions = agent::Agent::list_sessions()?;
         if sessions.is_empty() {
@@ -121,10 +115,7 @@ async fn run_with_args(
             for s in sessions.iter().take(20) {
                 let short_id = &s.session_id[..8.min(s.session_id.len())];
                 let updated = s.updated_at.format("%Y-%m-%d %H:%M");
-                let title = s
-                    .title
-                    .clone()
-                    .unwrap_or_else(|| "(untitled)".to_string());
+                let title = s.title.clone().unwrap_or_else(|| "(untitled)".to_string());
                 let title = if title.chars().count() > 26 {
                     let t: String = title.chars().take(23).collect();
                     format!("{t}...")

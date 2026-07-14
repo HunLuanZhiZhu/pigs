@@ -65,14 +65,13 @@ impl ToolHandler for SkillTool {
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .ok_or_else(|| {
-                    ToolError::InvalidInput(
-                        "missing skill name: provide 'name' or 'skill'".into(),
-                    )
+                    ToolError::InvalidInput("missing skill name: provide 'name' or 'skill'".into())
                 })?;
 
-            let catalog = self.catalog.lock().map_err(|_| {
-                ToolError::ExecutionFailed("skill catalog lock poisoned".into())
-            })?;
+            let catalog = self
+                .catalog
+                .lock()
+                .map_err(|_| ToolError::ExecutionFailed("skill catalog lock poisoned".into()))?;
 
             match pigs_config::find_skill(&catalog, name) {
                 Some(skill) => {

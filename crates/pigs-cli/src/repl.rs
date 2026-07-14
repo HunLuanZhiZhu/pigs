@@ -9,7 +9,8 @@ use crate::i18n;
 
 /// Run the interactive REPL loop.
 pub async fn run_repl(agent: &mut Agent) -> anyhow::Result<()> {
-    let mut rl = DefaultEditor::new().map_err(|e| anyhow::anyhow!("Failed to init readline: {e}"))?;
+    let mut rl =
+        DefaultEditor::new().map_err(|e| anyhow::anyhow!("Failed to init readline: {e}"))?;
 
     let lang = agent.language;
     let tools_label = if agent.no_tools {

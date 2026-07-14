@@ -11,7 +11,9 @@
 
 use std::time::Duration;
 
-use pigs_core::{ApiClient, ApiError, ApiRequest, ApiResponse, ApiFuture, StreamCallback, StreamEvent};
+use pigs_core::{
+    ApiClient, ApiError, ApiFuture, ApiRequest, ApiResponse, StreamCallback, StreamEvent,
+};
 use pigs_core::{ContentBlock, Message, MessageRole, TokenUsage};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
@@ -80,7 +82,8 @@ impl ApiClient for AnthropicClient {
                 }
             }
 
-            Err(last_error.unwrap_or_else(|| ApiError::Request("All retries exhausted".to_string())))
+            Err(last_error
+                .unwrap_or_else(|| ApiError::Request("All retries exhausted".to_string())))
         })
     }
 
@@ -178,10 +181,9 @@ impl AnthropicClient {
             return Err(map_error_response(response).await);
         }
 
-        let response_body: AnthropicResponse = response
-            .json()
-            .await
-            .map_err(|e| ApiError::InvalidResponse(format!("Failed to parse response JSON: {e}")))?;
+        let response_body: AnthropicResponse = response.json().await.map_err(|e| {
+            ApiError::InvalidResponse(format!("Failed to parse response JSON: {e}"))
+        })?;
         Ok(self.convert_response(response_body))
     }
 
@@ -229,8 +231,8 @@ impl AnthropicClient {
         let mut buffer = String::new();
 
         while let Some(chunk_result) = stream.next().await {
-            let chunk = chunk_result
-                .map_err(|e| ApiError::Network(format!("Stream error: {e}")))?;
+            let chunk =
+                chunk_result.map_err(|e| ApiError::Network(format!("Stream error: {e}")))?;
 
             buffer.push_str(&String::from_utf8_lossy(&chunk));
 
@@ -266,12 +268,13 @@ impl AnthropicClient {
                                 }
                                 if let Some(u) = m.get("usage") {
                                     let existing = usage.get_or_insert(TokenUsage::default());
-                                    if let Some(input) = u.get("input_tokens").and_then(|v| v.as_u64()) {
+                                    if let Some(input) =
+                                        u.get("input_tokens").and_then(|v| v.as_u64())
+                                    {
                                         existing.input_tokens = input;
                                     }
-                                    if let Some(cached) = u
-                                        .get("cache_read_input_tokens")
-                                        .and_then(|v| v.as_u64())
+                                    if let Some(cached) =
+                                        u.get("cache_read_input_tokens").and_then(|v| v.as_u64())
                                     {
                                         existing.cache_read_tokens = Some(cached);
                                     }
@@ -281,7 +284,9 @@ impl AnthropicClient {
                     }
 
                     "content_block_start" => {
-                        if let Ok(block_start) = serde_json::from_str::<AnthropicStreamBlockStart>(&data) {
+                        if let Ok(block_start) =
+                            serde_json::from_str::<AnthropicStreamBlockStart>(&data)
+                        {
                             let block = block_start.content_block;
                             match block.r#type.as_str() {
                                 "text" => {
@@ -299,7 +304,9 @@ impl AnthropicClient {
                     }
 
                     "content_block_delta" => {
-                        if let Ok(delta_event) = serde_json::from_str::<AnthropicStreamDeltaEvent>(&data) {
+                        if let Ok(delta_event) =
+                            serde_json::from_str::<AnthropicStreamDeltaEvent>(&data)
+                        {
                             let delta = delta_event.delta;
                             match delta.r#type.as_str() {
                                 "text_delta" => {
@@ -338,7 +345,9 @@ impl AnthropicClient {
                     }
 
                     "message_delta" => {
-                        if let Ok(msg_delta) = serde_json::from_str::<AnthropicStreamMessageDelta>(&data) {
+                        if let Ok(msg_delta) =
+                            serde_json::from_str::<AnthropicStreamMessageDelta>(&data)
+                        {
                             if let Some(reason) = msg_delta.delta.stop_reason {
                                 stop_reason = Some(reason);
                             }
@@ -482,8 +491,14 @@ struct AnthropicResponse {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum AnthropicResponseBlock {
-    Text { text: String },
-    ToolUse { id: String, name: String, input: serde_json::Value },
+    Text {
+        text: String,
+    },
+    ToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -525,7 +540,11 @@ fn convert_message_to_anthropic(msg: &Message) -> AnthropicMessage {
                     "input": input
                 }));
             }
-            ContentBlock::ToolResult { tool_use_id, output, is_error } => {
+            ContentBlock::ToolResult {
+                tool_use_id,
+                output,
+                is_error,
+            } => {
                 let mut result = serde_json::json!({
                     "type": "tool_result",
                     "tool_use_id": tool_use_id,
@@ -611,7 +630,6 @@ struct AnthropicStreamMessageUsage {
     output_tokens: Option<u64>,
 }
 
-
 fn network_err(e: reqwest::Error) -> ApiError {
     if e.is_timeout() {
         ApiError::Network(format!("Request timed out: {e}"))
@@ -622,7 +640,6 @@ fn network_err(e: reqwest::Error) -> ApiError {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -632,7 +649,11 @@ mod tests {
 
     #[test]
     fn endpoint_handles_base_with_v1() {
-        let c = AnthropicClient::new("k", "claude-sonnet-4-20250514", "https://api.anthropic.com/v1");
+        let c = AnthropicClient::new(
+            "k",
+            "claude-sonnet-4-20250514",
+            "https://api.anthropic.com/v1",
+        );
         assert_eq!(c.endpoint(), "https://api.anthropic.com/v1/messages");
         let c2 = AnthropicClient::new("k", "claude-sonnet-4-20250514", "https://api.anthropic.com");
         assert_eq!(c2.endpoint(), "https://api.anthropic.com/v1/messages");

@@ -10,6 +10,7 @@ pub mod edit_file;
 pub mod git_diff;
 pub mod glob;
 pub mod grep;
+pub mod http_request;
 pub mod ignore;
 pub mod list_files;
 pub mod read_file;
@@ -18,7 +19,6 @@ pub mod todo_write;
 pub mod web_fetch;
 pub mod web_search;
 pub mod write_file;
-pub mod http_request;
 
 use std::sync::{Arc, Mutex};
 

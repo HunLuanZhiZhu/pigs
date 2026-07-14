@@ -62,7 +62,11 @@ impl LlmClient {
     /// 教学要点：构造器返回 `Self` 而非 `Result`，
     /// 因为 reqwest::Client::new() 在极少数情况下可能失败（如 TLS 初始化），
     /// 但在教学版中我们用 unwrap_or_else 简化处理。
-    pub fn new(api_key: impl Into<String>, base_url: impl Into<String>, model: impl Into<String>) -> Self {
+    pub fn new(
+        api_key: impl Into<String>,
+        base_url: impl Into<String>,
+        model: impl Into<String>,
+    ) -> Self {
         LlmClient {
             // 创建 HTTP 客户端，设置 120 秒超时（LLM 响可能很慢）
             http: reqwest::Client::builder()
@@ -70,8 +74,8 @@ impl LlmClient {
                 .build()
                 .unwrap_or_else(|_| reqwest::Client::new()),
             api_key: api_key.into(),   // API 密钥
-            base_url: base_url.into(),  // 基础 URL
-            model: model.into(),        // 模型名
+            base_url: base_url.into(), // 基础 URL
+            model: model.into(),       // 模型名
         }
     }
 
@@ -86,16 +90,14 @@ impl LlmClient {
     /// 也是 CoreCoder 和几乎所有 CLI 工具的惯例。
     pub fn from_env() -> Result<Self> {
         // 读取 API 密钥（必需）
-        let api_key = std::env::var("OPENAI_API_KEY")
-            .map_err(|_| MiniAgentError::ConfigError(
-                "未设置 OPENAI_API_KEY 环境变量".to_string()
-            ))?;
+        let api_key = std::env::var("OPENAI_API_KEY").map_err(|_| {
+            MiniAgentError::ConfigError("未设置 OPENAI_API_KEY 环境变量".to_string())
+        })?;
         // 读取基础 URL（可选，有默认值）
         let base_url = std::env::var("OPENAI_BASE_URL")
             .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
         // 读取模型名（可选，有默认值）
-        let model = std::env::var("OPENAI_MODEL")
-            .unwrap_or_else(|_| "gpt-4o".to_string());
+        let model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o".to_string());
         // 构造客户端
         Ok(LlmClient::new(api_key, base_url, model))
     }
@@ -180,10 +182,9 @@ impl LlmClient {
 
                     if status.is_success() {
                         // 成功 —— 解析 JSON 响应
-                        let json: Value = resp.json().await
-                            .map_err(|e| MiniAgentError::ParseError(
-                                format!("解析 API 响应失败: {e}")
-                            ))?;
+                        let json: Value = resp.json().await.map_err(|e| {
+                            MiniAgentError::ParseError(format!("解析 API 响应失败: {e}"))
+                        })?;
                         return Ok(json);
                     }
 
@@ -191,8 +192,7 @@ impl LlmClient {
                     let error_text = resp.text().await.unwrap_or_default();
 
                     // 429 限流或 5xx 服务器错误 —— 可以重试
-                    if (status.as_u16() == 429 || status.is_server_error())
-                        && attempt < max_retries
+                    if (status.as_u16() == 429 || status.is_server_error()) && attempt < max_retries
                     {
                         eprintln!(
                             "[llm] 请求失败 (HTTP {})，{}秒后重试 (第 {}/{} 次)",
@@ -209,7 +209,9 @@ impl LlmClient {
 
                     // 4xx 客户端错误（非 429）—— 不重试
                     return Err(MiniAgentError::LlmError(format!(
-                        "API 请求失败 (HTTP {}): {}", status.as_u16(), error_text
+                        "API 请求失败 (HTTP {}): {}",
+                        status.as_u16(),
+                        error_text
                     )));
                 }
                 Err(e) => {
@@ -217,7 +219,9 @@ impl LlmClient {
                     if attempt < max_retries {
                         eprintln!(
                             "[llm] 网络错误: {e}，{}秒后重试 (第 {}/{} 次)",
-                            wait_secs, attempt + 1, max_retries
+                            wait_secs,
+                            attempt + 1,
+                            max_retries
                         );
                         tokio::time::sleep(Duration::from_secs(wait_secs)).await;
                         wait_secs *= 2;
@@ -282,16 +286,12 @@ fn parse_llm_response(json: &Value) -> Result<LlmResponse> {
         .get("choices")
         .and_then(|c| c.as_array())
         .and_then(|arr| arr.first())
-        .ok_or_else(|| MiniAgentError::ParseError(
-            "API 响应缺少 choices 字段".to_string()
-        ))?;
+        .ok_or_else(|| MiniAgentError::ParseError("API 响应缺少 choices 字段".to_string()))?;
 
     // 获取 message 对象
     let message = choice
         .get("message")
-        .ok_or_else(|| MiniAgentError::ParseError(
-            "API 响应缺少 message 字段".to_string()
-        ))?;
+        .ok_or_else(|| MiniAgentError::ParseError("API 响应缺少 message 字段".to_string()))?;
 
     // 提取文本内容（可能为 null）
     let content = message
@@ -332,18 +332,21 @@ fn parse_llm_response(json: &Value) -> Result<LlmResponse> {
 
             // 解析参数 JSON 字符串——来自 CoreCoder 的设计：
             // 解析失败时降级为空对象 {}，让下游工具处理参数缺失
-            let arguments: Value = serde_json::from_str(arguments_str)
-                .unwrap_or_else(|_| serde_json::json!({}));
+            let arguments: Value =
+                serde_json::from_str(arguments_str).unwrap_or_else(|_| serde_json::json!({}));
 
             tool_calls.push(ToolCall {
-                id,          // 工具调用 ID
-                name,        // 工具名
-                arguments,   // 已解析的参数
+                id,        // 工具调用 ID
+                name,      // 工具名
+                arguments, // 已解析的参数
             });
         }
     }
 
-    Ok(LlmResponse { content, tool_calls })
+    Ok(LlmResponse {
+        content,
+        tool_calls,
+    })
 }
 
 /// 用于测试的 mock 响应数据
@@ -403,7 +406,10 @@ mod tests {
         assert_eq!(response.tool_calls[0].id, "call_001");
         assert_eq!(response.tool_calls[0].name, "read_file");
         // 验证参数已正确解析为 JSON 对象
-        assert_eq!(response.tool_calls[0].arguments["path"].as_str().unwrap(), "/tmp/test.txt");
+        assert_eq!(
+            response.tool_calls[0].arguments["path"].as_str().unwrap(),
+            "/tmp/test.txt"
+        );
     }
 
     /// 测试解析参数格式错误的情况（降级为空对象）

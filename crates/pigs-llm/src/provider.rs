@@ -65,7 +65,9 @@ pub fn create_client_for_endpoint(
 
     match api {
         Provider::Anthropic => Ok(Arc::new(AnthropicClient::new(api_key, model, base_url))),
-        Provider::OpenAI => Ok(Arc::new(OpenAiResponsesClient::new(api_key, model, base_url))),
+        Provider::OpenAI => Ok(Arc::new(OpenAiResponsesClient::new(
+            api_key, model, base_url,
+        ))),
         Provider::OpenAIChat => Ok(Arc::new(OpenAiClient::new(api_key, model, base_url))),
     }
 }
@@ -131,9 +133,7 @@ pub fn create_client_with_config(
         // detect_provider never returns OpenAIChat; default OpenAI path uses Responses.
         Provider::OpenAI | Provider::OpenAIChat => {
             let api_key = config.openai_api_key.ok_or_else(|| {
-                pigs_core::ApiError::Config(
-                    "OPENAI_API_KEY is required for OpenAI models.".into(),
-                )
+                pigs_core::ApiError::Config("OPENAI_API_KEY is required for OpenAI models.".into())
             })?;
             let base_url = config
                 .openai_base_url
@@ -151,7 +151,10 @@ mod tests {
 
     #[test]
     fn test_detect_provider() {
-        assert_eq!(detect_provider("claude-sonnet-4-20250514"), Provider::Anthropic);
+        assert_eq!(
+            detect_provider("claude-sonnet-4-20250514"),
+            Provider::Anthropic
+        );
         assert_eq!(detect_provider("gpt-4o"), Provider::OpenAI);
         assert_eq!(detect_provider("deepseek-chat"), Provider::OpenAI);
     }

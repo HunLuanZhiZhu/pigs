@@ -75,7 +75,9 @@ impl ToolHandler for WebFetchTool {
                 .timeout(Duration::from_secs(30))
                 .user_agent("PigsAgent/0.1")
                 .build()
-                .map_err(|e| ToolError::ExecutionFailed(format!("Failed to create HTTP client: {e}")))?;
+                .map_err(|e| {
+                    ToolError::ExecutionFailed(format!("Failed to create HTTP client: {e}"))
+                })?;
 
             let response = client
                 .get(url)
@@ -97,13 +99,16 @@ impl ToolHandler for WebFetchTool {
                 )));
             }
 
-            let body = response
-                .text()
-                .await
-                .map_err(|e| ToolError::ExecutionFailed(format!("Failed to read response body: {e}")))?;
+            let body = response.text().await.map_err(|e| {
+                ToolError::ExecutionFailed(format!("Failed to read response body: {e}"))
+            })?;
 
             let truncated = if body.len() > max_length {
-                format!("{}... (truncated, {} total chars)", &body[..max_length], body.len())
+                format!(
+                    "{}... (truncated, {} total chars)",
+                    &body[..max_length],
+                    body.len()
+                )
             } else {
                 body
             };

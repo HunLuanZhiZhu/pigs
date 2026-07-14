@@ -95,7 +95,9 @@ impl ToolHandler for ReadFileTool {
             };
 
             if start >= lines.len() {
-                return Ok(ToolResult::success("(empty - offset beyond file end)".to_string()));
+                return Ok(ToolResult::success(
+                    "(empty - offset beyond file end)".to_string(),
+                ));
             }
 
             let mut result = String::new();

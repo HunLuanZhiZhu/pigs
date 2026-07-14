@@ -79,9 +79,7 @@ pub fn build_system_prompt_with_source(
 /// Convenience: load from `dir` and append to `base_prompt` with the correct label.
 pub fn build_system_prompt_from_dir(base_prompt: &str, dir: &Path) -> String {
     match load_project_context(dir) {
-        Some(ctx) => {
-            build_system_prompt_with_source(base_prompt, Some(&ctx.content), &ctx.source)
-        }
+        Some(ctx) => build_system_prompt_with_source(base_prompt, Some(&ctx.content), &ctx.source),
         None => base_prompt.to_string(),
     }
 }
@@ -119,10 +117,8 @@ mod tests {
 
     #[test]
     fn test_claude_md_preferred_over_agents_md() {
-        let temp = std::env::temp_dir().join(format!(
-            "pigs_project_context_{}",
-            std::process::id()
-        ));
+        let temp =
+            std::env::temp_dir().join(format!("pigs_project_context_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&temp);
         std::fs::create_dir_all(&temp).unwrap();
 

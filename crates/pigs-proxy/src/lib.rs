@@ -21,6 +21,7 @@
 
 pub mod config;
 pub mod log;
+pub mod loopback;
 pub mod protocol;
 pub mod proxy_client;
 pub mod retry;
@@ -33,17 +34,9 @@ use std::sync::Arc;
 use axum::http::HeaderMap;
 use serde_json::Value;
 
-// Task-local 存储：当前请求的客户端认证头（`Authorization` / `x-api-key`）。
-// Task-local storage: the current request's client auth headers.
-//
-// `-pig` 路径是进程内调用（`dispatch_in_process`），没有 HTTP 请求头。
-// 但上游需要 API Key。通过 task-local 在 `handle_pig` 入口存入客户端
-// 的 auth 头，`dispatch_in_process` 读取后传给 `retry::dispatch`。
-//
-// The `-pig` path is an in-process call (`dispatch_in_process`) with no HTTP
-// headers. But upstream needs an API Key. This task-local stores the client's
-// auth headers at the `handle_pig` entry point; `dispatch_in_process` reads
-// them and passes them to `retry::dispatch`.
+// Task-local storage retained for the CLI in-process transport.
+// HTTP `-pig` requests use LoopbackPhaseTransport and carry their full header set
+// through the native request envelope instead of using this task-local.
 tokio::task_local! {
     /// 当前请求的客户端头（仅含 auth 相关头）。
     /// The current request's client headers (auth-related only).
@@ -53,13 +46,8 @@ tokio::task_local! {
 /// 在 task-local 上下文中执行异步函数，注入客户端头。
 /// Run an async function within a task-local context that injects client headers.
 ///
-/// 供 `handle_pig` / `stream_pig` 调用：把外部客户端的 `Authorization` /
-/// `x-api-key` 头存入 task-local，这样 `-pig` 路径的 `dispatch_in_process`
-/// 就能读取到 auth 头，传给上游。
-///
-/// Called by `handle_pig` / `stream_pig`: stores the external client's
-/// `Authorization` / `x-api-key` headers in task-local so that
-/// `dispatch_in_process` in the `-pig` path can read them and forward to upstream.
+/// Compatibility helper for callers of the CLI in-process transport.
+/// HTTP phase requests do not use this function.
 pub async fn with_client_headers<F, R>(headers: HeaderMap, f: F) -> R
 where
     F: std::future::Future<Output = R>,
@@ -128,14 +116,8 @@ pub fn build_phased_runtime(
 ///
 /// In-process request dispatch (bypasses HTTP, goes straight to retry logic).
 ///
-/// 供 pigs-api 的 `ProxyApiClient` 调用：
-/// 三相位的 LLM 请求不走 HTTP loopback，而是直接调这个函数，
-/// 自动享受 `retry::dispatch` 的重试 + body 清洗 + 思考强度注入。
-///
-/// Called by pigs-api's `ProxyApiClient`:
-/// phased LLM requests bypass HTTP loopback and call this function directly,
-/// automatically benefiting from `retry::dispatch`'s retry + body cleaning
-/// + thinking-effort injection.
+/// Used by the CLI-compatible `ProxyApiClient`; HTTP phase subrequests use
+/// `LoopbackPhaseTransport` instead.
 ///
 /// # 参数 / Parameters
 /// - `config`: 代理配置
@@ -190,7 +172,8 @@ pub async fn dispatch_in_process(
 
     // 序列化处理后的 body / Serialize processed body
     let body_bytes = bytes::Bytes::from(
-        serde_json::to_vec(&parsed).unwrap_or_else(|_| serde_json::to_vec(body).unwrap_or_default()),
+        serde_json::to_vec(&parsed)
+            .unwrap_or_else(|_| serde_json::to_vec(body).unwrap_or_default()),
     );
 
     // 从 task-local 获取客户端 auth 头（-pig HTTP 路径注入）；
@@ -212,13 +195,11 @@ pub async fn dispatch_in_process(
             serde_json::from_slice::<Value>(&bytes)
                 .map_err(|e| format!("failed to parse response JSON: {e}"))
         }
-        retry::DispatchOutcome::Failed { status, body } => {
-            Err(format!(
-                "upstream failed with status {}: {}",
-                status,
-                String::from_utf8_lossy(&body)
-            ))
-        }
+        retry::DispatchOutcome::Failed { status, body } => Err(format!(
+            "upstream failed with status {}: {}",
+            status,
+            String::from_utf8_lossy(&body)
+        )),
     }
 }
 
@@ -232,12 +213,7 @@ use tracing::info;
 /// # 参数 / Parameters
 /// - `config`: 代理配置（含 provider/endpoint/日志等）
 ///   Proxy configuration (providers, endpoints, logging, etc.)
-/// - `runtime`: 相位化运行时（用于 `-pig` 模型路由）
-///   Phased runtime (used for `-pig` model routing)
-pub async fn serve(
-    config: config::Config,
-    runtime: pigs_api::phased_runtime::PhasedRuntime,
-) -> Result<()> {
+pub async fn serve(config: config::Config) -> Result<()> {
     // 注意：日志初始化由调用方负责，避免与 pigs-cli 的 init_logging 冲突。
     // Logging initialization is the caller's responsibility, to avoid
     // conflicting with pigs-cli's init_logging ("global default subscriber already set").
@@ -280,28 +256,56 @@ pub async fn serve(
         }
     }
 
+    let listen = config.server.listen.clone();
+    let addr: SocketAddr = listen
+        .parse()
+        .map_err(|e| anyhow::anyhow!("invalid listen address {listen}: {e}"))?;
+    let internal_phase_token = uuid::Uuid::new_v4().to_string();
+    let transport = Arc::new(
+        loopback::LoopbackPhaseTransport::new(addr, internal_phase_token.clone())
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?,
+    );
+    let runtime = pigs_api::http_runtime::HttpPhasedRuntime::new(
+        transport,
+        pigs_api::http_runtime::HttpRuntimeConfig {
+            language: config
+                .language
+                .parse::<pigs_config::Language>()
+                .unwrap_or_default(),
+            orchestration: pigs_api::orchestration::OrchestrationLimits::default(),
+            continuation: pigs_api::continuation::ContinuationConfig::default(),
+        },
+    );
     let client = Arc::new(upstream::UpstreamClient::new());
     let state = server::AppState {
         config: Arc::new(config.clone()),
         client,
         runtime: Arc::new(runtime),
+        internal_phase_token: Arc::from(internal_phase_token),
     };
     let app = server::build(state);
-
-    let listen = config.server.listen.clone();
-    let addr: SocketAddr = listen
-        .parse()
-        .map_err(|e| anyhow::anyhow!("invalid listen address {listen}: {e}"))?;
 
     eprintln!();
     eprintln!("═══════════════════════════════════════════════════════════");
     eprintln!("  pigs-proxy 已启动，监听 {}", listen);
     eprintln!();
     eprintln!("  对外服务端点：");
-    eprintln!("      POST http://{}/chat/completions  → OpenAI 协议", listen);
-    eprintln!("      POST http://{}/v1/messages       → Anthropic 协议", listen);
-    eprintln!("      POST http://{}/responses         → Response 协议", listen);
-    eprintln!("      GET  http://{}/v1/models         → 模型列表（×2）", listen);
+    eprintln!(
+        "      POST http://{}/chat/completions  → OpenAI 协议",
+        listen
+    );
+    eprintln!(
+        "      POST http://{}/v1/messages       → Anthropic 协议",
+        listen
+    );
+    eprintln!(
+        "      POST http://{}/responses         → Response 协议",
+        listen
+    );
+    eprintln!(
+        "      GET  http://{}/v1/models         → 模型列表（×2）",
+        listen
+    );
     eprintln!();
     eprintln!("  model ID 无 -pig 后缀 → 透传上游");
     eprintln!("  model ID 有 -pig 后缀 → 相位化运行时（Pre→Executor→Post）");

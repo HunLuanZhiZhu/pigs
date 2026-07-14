@@ -5,9 +5,8 @@
 /// Successful turn-end marker (whole turn done).
 pub const PIGEND: &str = "PIGEND";
 
-/// 路径失败标记（清空本轮状态并回到 PRE 重规划）。
-/// Path-failed marker (clear turn-local state and replan back to pre).
-pub const PIGFAILED: &str = "PIGFAILED";
+/// Failed-path marker (return to Pre for replanning).
+pub const PIGFAIL: &str = "PIGFAIL";
 
 /// 标记类型枚举。
 /// Marker type enum.
@@ -16,59 +15,43 @@ pub enum Marker {
     /// PIGEND — 整轮正常结束。
     /// PIGEND — turn ends successfully.
     End,
-    /// PIGFAILED — 路径失败，需要重规划。
-    /// PIGFAILED — path failed, needs replan.
+    /// PIGFAIL — 路径失败，需要重规划。
+    /// PIGFAIL — path failed, needs replan.
     Failed,
 }
 
-/// 检测文本中的控制标记。仅精确匹配；未匹配/垃圾文本 → None（默认边）。
-/// 如同时出现两种标记，Failed 优先。
-///
-/// Detect control markers in text. Positive match only; unmatched/garbage →
-/// None (default edge). If both appear, Failed wins.
+/// Detects a control marker only when it is the final non-empty line.
+/// A completion marker is valid only when an earlier non-marker line gives a reason.
 pub fn detect_marker(text: &str) -> Option<Marker> {
-    let mut saw_end = false;
-    let mut saw_failed = false;
-    for raw in text.lines() {
-        let line = raw.trim();
-        // 允许尾部标点噪声："PIGEND" / "PIGEND." / "`PIGEND`"
-        // Allow trailing punctuation noise: "PIGEND" / "PIGEND." / "`PIGEND`"
-        let cleaned = line
-            .trim_matches('`')
-            .trim_matches('*')
-            .trim_end_matches(['.', '!', '。', '！'])
-            .trim();
-        if cleaned == PIGFAILED {
-            saw_failed = true;
-        } else if cleaned == PIGEND {
-            saw_end = true;
-        }
+    let lines: Vec<&str> = text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    let last = lines.last()?;
+    if lines[..lines.len() - 1]
+        .iter()
+        .all(|line| control_marker(line).is_some() || line.trim().is_empty())
+    {
+        return None;
     }
-    // 兜底：检查最后非空段落尾部的分词
-    // Fallback: check last non-empty paragraph's whitespace-split tokens
-    if !saw_end && !saw_failed {
-        if let Some(last) = text
-            .split_whitespace()
-            .rev()
-            .find(|t| t.contains("PIGEND") || t.contains("PIGFAILED"))
-        {
-            let t = last
-                .trim_matches(|c: char| !c.is_ascii_alphanumeric())
-                .trim();
-            if t == PIGFAILED {
-                saw_failed = true;
-            } else if t == PIGEND {
-                saw_end = true;
-            }
-        }
-    }
-    // Failed 优先于 End / Failed wins over End
-    if saw_failed {
-        Some(Marker::Failed)
-    } else if saw_end {
-        Some(Marker::End)
-    } else {
-        None
+    control_marker(last)
+}
+
+pub(crate) fn is_control_marker_line(line: &str) -> bool {
+    control_marker(line).is_some()
+}
+
+fn control_marker(line: &str) -> Option<Marker> {
+    let cleaned = line
+        .trim()
+        .trim_matches('`')
+        .trim_matches('*')
+        .trim_end_matches(['.', '!', '。', '！'])
+        .trim();
+    match cleaned {
+        PIGEND => Some(Marker::End),
+        PIGFAIL => Some(Marker::Failed),
+        _ => None,
     }
 }
 
@@ -76,15 +59,7 @@ pub fn detect_marker(text: &str) -> Option<Marker> {
 /// Strip routing marker lines from user-visible final text.
 pub fn strip_markers(text: &str) -> String {
     text.lines()
-        .filter(|line| {
-            let cleaned = line
-                .trim()
-                .trim_matches('`')
-                .trim_matches('*')
-                .trim_end_matches(['.', '!', '。', '！'])
-                .trim();
-            cleaned != PIGEND && cleaned != PIGFAILED
-        })
+        .filter(|line| control_marker(line).is_none())
         .collect::<Vec<_>>()
         .join("\n")
         .trim()
@@ -98,22 +73,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn detects_end_and_failed() {
+    fn detects_end_and_fail_only_on_the_last_non_empty_line() {
         assert_eq!(detect_marker("hello\nPIGEND\n"), Some(Marker::End));
-        assert_eq!(detect_marker("x\nPIGFAILED"), Some(Marker::Failed));
+        assert_eq!(detect_marker("x\nPIGFAIL"), Some(Marker::Failed));
         assert_eq!(detect_marker("no markers here"), None);
+        assert_eq!(detect_marker("PIGEND\nstill working"), None);
+        assert_eq!(detect_marker("PIGFAIL\nrecovered"), None);
     }
 
     #[test]
-    fn failed_wins_over_end() {
-        assert_eq!(
-            detect_marker("PIGEND\nPIGFAILED"),
-            Some(Marker::Failed)
-        );
+    fn marker_requires_a_non_marker_reason() {
+        assert_eq!(detect_marker("PIGEND"), None);
+        assert_eq!(detect_marker("PIGFAIL"), None);
+        assert_eq!(detect_marker("\nPIGEND\n"), None);
+        assert_eq!(detect_marker("reason\nPIGEND"), Some(Marker::End));
     }
 
     #[test]
-    fn strip_keeps_body() {
+    fn strip_removes_only_exact_control_lines() {
         assert_eq!(strip_markers("answer\nPIGEND"), "answer");
+        assert_eq!(strip_markers("PIGFAIL\nretry"), "retry");
+        assert_eq!(
+            strip_markers("PIGEND appears in this sentence\nPIGEND"),
+            "PIGEND appears in this sentence"
+        );
     }
 }
