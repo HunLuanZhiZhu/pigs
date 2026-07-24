@@ -1,11 +1,11 @@
 //! Tool lifecycle hooks — run shell commands before/after tool execution.
 //!
 //! Environment variables provided to hooks:
-//! - `PIGS_TOOL_NAME` — tool name
-//! - `PIGS_TOOL_INPUT` — tool input JSON
-//! - `PIGS_HOOK_EVENT` — `pre_tool_use` or `post_tool_use`
-//! - `PIGS_TOOL_OUTPUT` — tool output text (post only)
-//! - `PIGS_TOOL_IS_ERROR` — `true`/`false` (post only)
+//! - `PIG_TOOL_NAME` — tool name
+//! - `PIG_TOOL_INPUT` — tool input JSON
+//! - `PIG_HOOK_EVENT` — `pre_tool_use` or `post_tool_use`
+//! - `PIG_TOOL_OUTPUT` — tool output text (post only)
+//! - `PIG_TOOL_IS_ERROR` — `true`/`false` (post only)
 //!
 //! Pre-tool hooks: exit code 0 allows, non-zero denies.
 
@@ -130,11 +130,11 @@ async fn run_hook(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .env("PIGS_HOOK_EVENT", event)
-        .env("PIGS_TOOL_NAME", tool_name)
-        .env("PIGS_TOOL_INPUT", input_json)
+        .env("PIG_HOOK_EVENT", event)
+        .env("PIG_TOOL_NAME", tool_name)
+        .env("PIG_TOOL_INPUT", input_json)
         .env(
-            "PIGS_TOOL_IS_ERROR",
+            "PIG_TOOL_IS_ERROR",
             if is_error { "true" } else { "false" },
         );
 
@@ -145,7 +145,7 @@ async fn run_hook(
         } else {
             output.to_string()
         };
-        cmd.env("PIGS_TOOL_OUTPUT", truncated);
+        cmd.env("PIG_TOOL_OUTPUT", truncated);
     }
 
     let child = cmd
@@ -211,7 +211,7 @@ mod tests {
     fn test_matcher() {
         assert!(matcher_matches("*", "bash"));
         assert!(matcher_matches("bash", "bash"));
-        assert!(!matcher_matches("bash", "read_file"));
+        assert!(!matcher_matches("bash", "read"));
         assert!(matcher_matches("mcp_*", "mcp_fs_read"));
         assert!(!matcher_matches("mcp_*", "bash"));
     }

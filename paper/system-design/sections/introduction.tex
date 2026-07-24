@@ -1,0 +1,71 @@
+\section{Introduction}
+\label{sec:intro}
+
+Modern LLM-based agents interact with model providers through HTTP APIs that are fundamentally stateless: a client sends messages and receives a completion, with no built-in notion of planning, execution verification, or failure recovery. To achieve complex multi-step behavior, practitioners have developed orchestration frameworks---from simple chain-of-thought prompting~\citep{wei2022cot} to interleaved reasoning-acting loops~\citep{yao2022react} and reflective self-improvement~\citep{shinn2023reflexion,madaan2023selfrefine}. These approaches share a common limitation: they place the LLM in charge of its own control flow. The model must decide when to plan, when to execute, and when to reflect, using natural language cues that are inherently ambiguous and error-prone.
+\begin{chinese}
+现代基于大语言模型（LLM）的智能体通过本质上无状态的 HTTP API 与模型提供商交互：客户端发送消息并接收补全结果，而系统本身不具备规划、执行验证或故障恢复的内在机制。为实现复杂的多步骤行为，实践者开发了多种编排框架——从简单的思维链提示~\citep{wei2022cot}，到推理与行动交替的循环~\citep{yao2022react}，再到反思式自我改进~\citep{shinn2023reflexion,madaan2023selfrefine}。这些方法存在一个共同的局限性：它们将 LLM 置于自身控制流的主导地位。模型必须自行决定何时规划、何时执行、何时反思，而所依赖的自然语言线索本质上具有模糊性且容易出错。
+\end{chinese}
+
+This design creates three problems. First, \textbf{control-flow fragility}: if the model deviates from the expected reasoning pattern (e.g., skipping the planning phase or prematurely declaring completion), the entire agent loop breaks. Second, \textbf{protocol coupling}: most orchestration frameworks are tightly coupled to a single API protocol (typically OpenAI Chat Completions), requiring reimplementation when switching providers. Third, \textbf{opacity}: external tooling (proxies, observability platforms, cost monitors) cannot inspect or influence the orchestration logic because it is embedded inside the agent's prompt engineering rather than exposed as a system-level concern.
+\begin{chinese}
+这一设计导致了三个问题。第一，\textbf{控制流脆弱性}：如果模型偏离了预期的推理模式（例如跳过规划阶段或过早宣布完成），整个智能体循环便会中断。第二，\textbf{协议耦合}：大多数编排框架与单一 API 协议（通常为 OpenAI Chat Completions）紧密耦合，在切换提供商时需要重新实现。第三，\textbf{不透明性}：外部工具（代理、可观测性平台、成本监控器）无法检查或影响编排逻辑，因为该逻辑内嵌于智能体的提示工程中，而非作为系统层面的关注点暴露出来。
+\end{chinese}
+
+We argue that LLM orchestration should be elevated from a prompting technique to a \emph{middleware concern}---a transparent layer between the client and the provider that enforces a deterministic control-flow structure while leaving semantic decisions to the model. This separation mirrors the classical middleware pattern in distributed systems, where transport-level concerns (routing, retry, load balancing) are handled outside the application logic.
+\begin{chinese}
+我们认为，LLM 编排应当从一种提示技术提升为一种\emph{中间件关注点}——一个位于客户端与提供商之间的透明层，在执行确定性的控制流结构的同时，将语义决策交由模型处理。这种分离借鉴了分布式系统中经典的中间件模式，其中传输层面的问题（路由、重试、负载均衡）在应用逻辑之外处理。
+\end{chinese}
+
+We present \textbf{Pigs}, a phased orchestration middleware that implements this vision. Pigs wraps each LLM API request with a three-phase state machine:
+\begin{chinese}
+我们提出了 \textbf{Pigs}，一种分阶段编排中间件，实现了上述愿景。Pigs 以三阶段状态机封装每个 LLM API 请求：
+\end{chinese}
+
+\begin{enumerate}[nosep]
+    \item \textbf{Pre} (planning): the model analyzes the task, identifies required information, and formulates an execution plan. If the task is trivially simple, the model may short-circuit with a \texttt{PIGEND} marker.
+    \begin{chinese}
+    \textbf{Pre}（规划）：模型分析任务，识别所需信息，并制定执行计划。若任务极其简单，模型可通过 \texttt{PIGEND} 标记直接短路。
+    \end{chinese}
+    \item \textbf{Executor} (execution): the model executes the plan, gathering information and producing output. Tool calls are returned to the external agent for execution.
+    \begin{chinese}
+    \textbf{Executor}（执行）：模型执行计划，收集信息并产生输出。工具调用被返回给外部智能体执行。
+    \end{chinese}
+    \item \textbf{Post} (review): the model independently reviews the executor's output against the goal. It may confirm completion (\texttt{PIGEND}), signal failure (\texttt{PIGFAIL}), or continue working (no marker).
+    \begin{chinese}
+    \textbf{Post}（审查）：模型独立地根据目标审查执行器的输出。它可以确认完成（\texttt{PIGEND}）、发出失败信号（\texttt{PIGFAIL}），或继续工作（无标记）。
+    \end{chinese}
+\end{enumerate}
+
+The state machine is driven by \emph{control markers}---short text tokens (\texttt{PIGEND}, \texttt{PIGFAIL}) that the model appends to its output. These markers are detected by the middleware, not the model's own reasoning; they serve as routing signals, not as content. Crucially, the middleware strips these markers from the visible output, so the client sees only the model's substantive text.
+\begin{chinese}
+该状态机由\emph{控制标记}驱动——模型附加到其输出中的简短文本标记（\texttt{PIGEND}、\texttt{PIGFAIL}）。这些标记由中间件检测，而非由模型自身的推理检测；它们充当路由信号，而非内容。关键在于，中间件会从可见输出中剥离这些标记，因此客户端只能看到模型的实质文本。
+\end{chinese}
+
+Pigs makes four key contributions:
+\begin{chinese}
+Pigs 做出了四项关键贡献：
+\end{chinese}
+
+\begin{enumerate}
+    \item \textbf{Phased orchestration via text control markers}: a deterministic Pre$\rightarrow$Executor$\rightarrow$Post state machine that uses lightweight text markers for routing, without injecting orchestration-specific tools or system prompts into the model's context.
+    \begin{chinese}
+    \textbf{基于文本控制标记的分阶段编排}：一种确定性的 Pre$\rightarrow$Executor$\rightarrow$Post 状态机，使用轻量级文本标记进行路由，无需向模型上下文中注入编排特定的工具或系统提示。
+    \end{chinese}
+    \item \textbf{Protocol-native request preservation}: the complete HTTP request---method, path/query, headers, and JSON body---is preserved across three API protocols, with only the model identifier, current user input, and phase transcript modified. Unknown fields, media blocks, and provider extensions pass through untouched.
+    \begin{chinese}
+    \textbf{协议原生的请求保留}：完整的 HTTP 请求——方法、路径/查询、头部和 JSON 主体——在三种 API 协议间保持不变，仅修改模型标识符、当前用户输入和阶段记录。未知字段、媒体块和提供商扩展均原样透传。
+    \end{chinese}
+    \item \textbf{HTTP loopback transport}: phase subrequests re-enter the local proxy via HTTP, transparently inheriting channel selection, model mapping, body cleaning, thinking-effort injection, and retry logic---without requiring a separate in-process dispatch path.
+    \begin{chinese}
+    \textbf{HTTP 回环传输}：阶段子请求通过 HTTP 重新进入本地代理，透明地继承通道选择、模型映射、主体清洗、思考力度注入和重试逻辑——无需单独的进程内分发路径。
+    \end{chinese}
+    \item \textbf{Bounded in-memory continuation}: external tool execution is supported through a continuation store with TTL, capacity limits, and tombstone-based error reporting, never persisting authentication headers to disk.
+    \begin{chinese}
+    \textbf{有界内存续传}：通过具有 TTL、容量限制和基于墓碑的错误报告的续传存储来支持外部工具执行，且绝不将认证头部持久化到磁盘。
+    \end{chinese}
+\end{enumerate}
+
+The remainder of this paper describes the architecture (\Cref{sec:design}), implementation (\Cref{sec:impl}), related work (\Cref{sec:related}), and design discussion (\Cref{sec:discussion}).
+\begin{chinese}
+本文的其余部分描述了架构（\Cref{sec:design}）、实现（\Cref{sec:impl}）、相关工作（\Cref{sec:related}）和设计讨论（\Cref{sec:discussion}）。
+\end{chinese}

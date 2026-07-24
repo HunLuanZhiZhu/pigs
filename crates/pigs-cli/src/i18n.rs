@@ -41,6 +41,8 @@ pub fn t(lang: Language, key: &str) -> &'static str {
         (Language::Zh, "lang_set_zh") => "语言已切换为中文。",
         (Language::En, "lang_usage") => "Usage: /lang <en|zh|中文>",
         (Language::Zh, "lang_usage") => "用法: /lang <en|zh|中文>  或  /语言 <en|zh|中文>",
+        (Language::En, "shortcuts_label") => "Shortcuts:",
+        (Language::Zh, "shortcuts_label") => "快捷键:",
         _ => "???",
     }
 }

@@ -1,0 +1,142 @@
+\section{Related Work}
+\label{sec:related}
+
+\subsection{Multi-Stage LLM Reasoning}
+\begin{chinese}
+\subsection{多阶段 LLM 推理}
+\end{chinese}
+
+\textbf{ReAct}~\citep{yao2022react} pioneered interleaved reasoning and acting in LLMs. Unlike Pigs, ReAct embeds control flow inside the model's output---the model decides when to reason and when to act. Pigs externalizes control flow to a deterministic state machine, using the model only for semantic content and routing signals.
+\begin{chinese}
+\textbf{ReAct}~\citep{yao2022react} 开创了 LLM 中推理与行动交替的范式。与 Pigs 不同，ReAct 将控制流嵌入模型输出中——由模型决定何时推理、何时行动。Pigs 将控制流外置至确定性状态机，模型仅用于语义内容和路由信号。
+\end{chinese}
+
+\textbf{Reflexion}~\citep{shinn2023reflexion} adds verbal reinforcement learning through reflective feedback. The reflection trigger is model-driven, whereas Pigs' Post phase is a mandatory structural step enforced by the state machine.
+\begin{chinese}
+\textbf{Reflexion}~\citep{shinn2023reflexion} 通过反思反馈增加了语言强化学习。其反思触发是模型驱动的，而 Pigs 的 Post 阶段是由状态机强制的必选结构性步骤。
+\end{chinese}
+
+\textbf{Self-Refine}~\citep{madaan2023selfrefine} uses a single LLM as generator, critic, and refiner. Pigs separates these roles into distinct phases with distinct prompts, and adds a Pre (planning) phase that Self-Refine lacks.
+\begin{chinese}
+\textbf{Self-Refine}~\citep{madaan2023selfrefine} 使用单个 LLM 充当生成器、批评器和精炼器。Pigs 将这些角色分离为具有不同提示的不同阶段，并增加了 Self-Refine 所缺乏的 Pre（规划）阶段。
+\end{chinese}
+
+\textbf{Plan-and-Solve}~\citep{wang2023plan} separates planning from execution in prompt structure. Pigs extends this to a three-phase model with an explicit review phase and failure-recovery routing.
+\begin{chinese}
+\textbf{Plan-and-Solve}~\citep{wang2023plan} 在提示结构中将规划与执行分离。Pigs 将其扩展为具有显式审查阶段和故障恢复路由的三阶段模型。
+\end{chinese}
+
+\textbf{Tree of Thoughts}~\citep{yao2023tot} and \textbf{Graph of Thoughts}~\citep{besta2023got} generalize chain-of-thought to search structures. These approaches require the model to self-evaluate states, while Pigs uses a dedicated Post phase for evaluation.
+\begin{chinese}
+\textbf{Tree of Thoughts}~\citep{yao2023tot} 和 \textbf{Graph of Thoughts}~\citep{besta2023got} 将思维链推广为搜索结构。这些方法要求模型自我评估状态，而 Pigs 使用专门的 Post 阶段进行评估。
+\end{chinese}
+
+\subsection{LLM-as-Code and Deterministic Control}
+\begin{chinese}
+\subsection{LLM-as-Code 与确定性控制}
+\end{chinese}
+
+Recent work has proposed shifting control flow from the LLM to deterministic program structures. \textbf{LLM-as-Code}~\citep{llmascode2026} treats the LLM as an adaptive component that cannot alter the program's execution path. \textbf{Compile, Then Page}~\citep{compilepage2026} compiles standard operating procedures into executable pseudo-code with a stack machine. \textbf{XFlow}~\citep{xflow2026} defines a DSL with lifecycle-governed symbols that stage uncertainty. These systems share Pigs' philosophy of deterministic control flow, but operate at a higher abstraction level (workflow DSLs, compiled programs). Pigs achieves deterministic control at the API middleware level, requiring no DSL or compilation step.
+\begin{chinese}
+近期工作提出将控制流从 LLM 转移至确定性程序结构。\textbf{LLM-as-Code}~\citep{llmascode2026} 将 LLM 视为无法改变程序执行路径的自适应组件。\textbf{Compile, Then Page}~\citep{compilepage2026} 将标准操作流程编译为带有栈机的可执行伪代码。\textbf{XFlow}~\citep{xflow2026} 定义了具有生命周期治理符号的 DSL 来分阶段处理不确定性。这些系统与 Pigs 共享确定性控制流的理念，但运行在更高的抽象层次（工作流 DSL、编译程序）。Pigs 在 API 中间件层面实现了确定性控制，无需 DSL 或编译步骤。
+\end{chinese}
+
+\textbf{Rel(AI)Build}~\citep{relaibuild2026} proposes a deterministic control plane for coding agents with a phase state machine. This is architecturally similar to Pigs, but focuses on supply-chain integrity (SHA-256 addressing, HMAC lockfiles) rather than API-level orchestration.
+\begin{chinese}
+\textbf{Rel(AI)Build}~\citep{relaibuild2026} 提出了具有阶段状态机的编码智能体确定性控制平面。这在架构上与 Pigs 相似，但专注于供应链完整性（SHA-256 寻址、HMAC 锁定文件），而非 API 级编排。
+\end{chinese}
+
+\subsection{LLM Middleware and Proxies}
+\begin{chinese}
+\subsection{LLM 中间件与代理}
+\end{chinese}
+
+\textbf{Towards a Middleware for LLMs}~\citep{dzanic2024middleware} is a vision paper proposing middleware for enterprise LLM deployment, but provides no implementation. Pigs is an implemented system that realizes this vision with a specific orchestration model.
+\begin{chinese}
+\textbf{Towards a Middleware for LLMs}~\citep{dzanic2024middleware} 是一篇愿景论文，提出了面向企业 LLM 部署的中间件，但未提供实现。Pigs 是一个已实现的系统，以特定的编排模型实现了这一愿景。
+\end{chinese}
+
+\textbf{TokenMizer}~\citep{liu2026tokenmizer} is a transparent proxy with session state management via a typed knowledge graph. While it adds state to the proxy layer, it does not impose phase structure or control markers.
+\begin{chinese}
+\textbf{TokenMizer}~\citep{liu2026tokenmizer} 是一个透明代理，通过类型化知识图谱管理会话状态。虽然它在代理层增加了状态，但不施加阶段结构或控制标记。
+\end{chinese}
+
+\textbf{STREAM}~\citep{stream2026} implements multi-tier LLM inference routing (local$\rightarrow$HPC$\rightarrow$cloud) with a complexity judge. Pigs' routing is phase-based (Pre$\rightarrow$Executor$\rightarrow$Post), not tier-based.
+\begin{chinese}
+\textbf{STREAM}~\citep{stream2026} 实现了具有复杂度判定器的多级 LLM 推理路由（本地$\rightarrow$HPC$\rightarrow$云）。Pigs 的路由是基于阶段的（Pre$\rightarrow$Executor$\rightarrow$Post），而非基于层级。
+\end{chinese}
+
+\textbf{Dyserve}~\citep{dyserve2027} is a workflow-aware serving layer that reroutes on tool-call failures. Pigs' \texttt{PIGFAIL} marker provides a similar failure-recovery mechanism, but at the phase level rather than the tool-call level.
+\begin{chinese}
+\textbf{Dyserve}~\citep{dyserve2027} 是一个工作流感知的服务层，在工具调用失败时重新路由。Pigs 的 \texttt{PIGFAIL} 标记提供了类似的故障恢复机制，但在阶段层面而非工具调用层面。
+\end{chinese}
+
+\subsection{Tool-Use Agent Frameworks}
+\begin{chinese}
+\subsection{工具使用智能体框架}
+\end{chinese}
+
+\textbf{ToolLLM/ToolBench}~\citep{qin2023toolllm} provides a framework and benchmark for tool-augmented LLMs. \textbf{MetaGPT}~\citep{hong2023metagpt} encodes SOPs into prompt sequences. \textbf{MemGPT}~\citep{packer2023memgpt} manages control flow via OS-inspired interrupts. Pigs differs by keeping tool execution external to the orchestration layer---the runtime pauses and returns tool calls to the client, rather than executing them internally.
+\begin{chinese}
+\textbf{ToolLLM/ToolBench}~\citep{qin2023toolllm} 提供了工具增强 LLM 的框架和基准测试。\textbf{MetaGPT}~\citep{hong2023metagpt} 将标准操作流程编码为提示序列。\textbf{MemGPT}~\citep{packer2023memgpt} 通过操作系统启发的中断机制管理控制流。Pigs 的不同之处在于将工具执行保持在编排层之外——运行时暂停并将工具调用返回给客户端，而非在内部执行。
+\end{chinese}
+
+\subsection{Agent Benchmarks}
+\begin{chinese}
+\subsection{智能体基准测试}
+\end{chinese}
+
+Several benchmarks evaluate LLM agents: \textbf{AgentBench}~\citep{liu2023agentbench} (8 environments), \textbf{SWE-bench}~\citep{jimenez2024swebench} (software engineering), \textbf{GAIA}~\citep{mialon2023gaia} (general AI assistants), \textbf{ToolBench}~\citep{qin2023toolllm} (tool use), and \textbf{AgentBoard}~\citep{ma2024agentboard} (multi-turn analysis). These benchmarks evaluate end-to-end agent performance but do not isolate the contribution of orchestration structure. Pigs' phased design enables ablation studies (e.g., Pre-only vs.\ full pipeline) that these benchmarks can measure.
+\begin{chinese}
+若干基准测试用于评估 LLM 智能体：\textbf{AgentBench}~\citep{liu2023agentbench}（8 个环境）、\textbf{SWE-bench}~\citep{jimenez2024swebench}（软件工程）、\textbf{GAIA}~\citep{mialon2023gaia}（通用 AI 助手）、\textbf{ToolBench}~\citep{qin2023toolllm}（工具使用）和 \textbf{AgentBoard}~\citep{ma2024agentboard}（多轮分析）。这些基准测试评估端到端智能体性能，但不隔离编排结构的贡献。Pigs 的分阶段设计使得消融实验成为可能（如仅 Pre 与完整流水线的对比），这些基准测试可以测量。
+\end{chinese}
+
+\subsection{Surveys and Foundations}
+\begin{chinese}
+\subsection{综述与基础}
+\end{chinese}
+
+Several surveys provide comprehensive background for this work. \citet{xi2023rise} and \citet{wang2023agent_survey} survey LLM-based autonomous agents, covering single-agent and multi-agent scenarios. \citet{zhao2023llm_survey} provides a broad survey of large language models. \citet{qin2023tool_learning_survey} surveys tool learning with foundation models, defining a four-stage taxonomy (task planning, tool selection, tool calling, response generation) that maps to Pigs' Pre$\rightarrow$Executor$\rightarrow$Post phases. \citet{sumers2023coala} proposes cognitive architectures for language agents (CoALA), formalizing the distinction between reasoning, acting, and memory. \citet{schulhoff2024prompt} surveys prompt engineering techniques systematically. \citet{kaddour2023challenges} discusses challenges and applications of LLMs.
+\begin{chinese}
+若干综述为本文提供了全面的背景。\citet{xi2023rise} 和 \citet{wang2023agent_survey} 综述了基于 LLM 的自主智能体，涵盖单智能体和多智能体场景。\citet{zhao2023llm_survey} 提供了大语言模型的广泛综述。\citet{qin2023tool_learning_survey} 综述了基础模型的工具学习，定义了四阶段分类法（任务规划、工具选择、工具调用、响应生成），与 Pigs 的 Pre$\rightarrow$Executor$\rightarrow$Post 阶段相对应。\citet{sumers2023coala} 提出了语言智能体的认知架构（CoALA），形式化了推理、行动和记忆之间的区分。\citet{schulhoff2024prompt} 系统地综述了提示工程技巧。\citet{kaddour2023challenges} 讨论了 LLM 的挑战与应用。
+\end{chinese}
+
+\subsection{Self-Correction and Verification}
+\begin{chinese}
+\subsection{自我纠正与验证}
+\end{chinese}
+
+The Post phase in Pigs is related to LLM self-correction. \citet{huang2024selfcorrect} shows that LLMs cannot reliably self-correct reasoning without external feedback, motivating Pigs' use of a dedicated review phase with structured prompts rather than relying on the model's intrinsic self-correction. \citet{asai2023selfrag} proposes Self-RAG for retrieval-augmented self-reflection. \citet{lightman2023verify} demonstrates that step-by-step verification improves reasoning. \citet{bai2022constitutional} introduces Constitutional AI for harmlessness through AI feedback. \citet{peng2023checkfacts} improves LLMs with external knowledge and automated feedback.
+\begin{chinese}
+Pigs 的 Post 阶段与 LLM 自我纠正相关。\citet{huang2024selfcorrect} 表明 LLM 在没有外部反馈的情况下无法可靠地自我纠正推理，这促使 Pigs 使用具有结构化提示的专门审查阶段，而非依赖模型的内在自我纠正能力。\citet{asai2023selfrag} 提出了 Self-RAG，用于检索增强的自我反思。\citet{lightman2023verify} 证明了逐步验证可以改善推理。\citet{bai2022constitutional} 引入了 Constitutional AI，通过 AI 反馈实现无害性。\citet{peng2023checkfacts} 通过外部知识和自动化反馈改进 LLM。
+\end{chinese}
+
+\subsection{LLM Serving Systems}
+\begin{chinese}
+\subsection{LLM 服务系统}
+\end{chinese}
+
+On the infrastructure side, \textbf{vLLM}~\citep{kwon2023vllm} introduces PagedAttention for efficient memory management in LLM serving. \textbf{Orca}~\citep{yu2022orca} proposes distributed serving with iteration-level scheduling. \textbf{S-LoRA}~\citep{sheng2023slora} serves thousands of concurrent LoRA adapters. These systems optimize \emph{inference} performance, while Pigs optimizes \emph{orchestration} structure---the two concerns are orthogonal and complementary.
+\begin{chinese}
+在基础设施方面，\textbf{vLLM}~\citep{kwon2023vllm} 引入了 PagedAttention 以实现 LLM 服务中的高效内存管理。\textbf{Orca}~\citep{yu2022orca} 提出了具有迭代级调度的分布式服务。\textbf{S-LoRA}~\citep{sheng2023slora} 服务数千个并发 LoRA 适配器。这些系统优化\emph{推理}性能，而 Pigs 优化\emph{编排}结构——两者正交且互补。
+\end{chinese}
+
+\subsection{Security Considerations}
+\begin{chinese}
+\subsection{安全考量}
+\end{chinese}
+
+Prompt injection attacks~\citep{greshake2023promptinjection, liu2024promptinjection} are a concern for LLM middleware. Pigs' architecture mitigates some risks by separating the orchestration layer from the model's output: control markers are detected by the middleware, not by the model's own reasoning, making it harder for injected content to hijack the control flow. However, a comprehensive security analysis is left for future work.
+\begin{chinese}
+提示注入攻击~\citep{greshake2023promptinjection, liu2024promptinjection} 是 LLM 中间件的一个关注点。Pigs 的架构通过将编排层与模型输出分离来降低部分风险：控制标记由中间件检测，而非由模型自身的推理检测，这使得注入内容更难劫持控制流。然而，全面的安全分析留待未来工作。
+\end{chinese}
+
+\subsection{Classical Foundations}
+\begin{chinese}
+\subsection{经典基础}
+\end{chinese}
+
+The concept of using a state machine for control flow has deep roots in software engineering. \citet{harel1987statecharts} introduced statecharts as a visual formalism for complex systems. Pigs' Pre$\rightarrow$Executor$\rightarrow$Post state machine with marker-based transitions can be seen as a lightweight instance of this classical pattern, applied at the LLM API middleware level.
+\begin{chinese}
+使用状态机进行控制流的概念在软件工程中有着深厚的根基。\citet{harel1987statecharts} 引入了状态图作为复杂系统的可视化形式化方法。Pigs 的基于标记转移的 Pre$\rightarrow$Executor$\rightarrow$Post 状态机可被视为这一经典模式的轻量级实例，应用于 LLM API 中间件层面。
+\end{chinese}

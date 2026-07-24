@@ -1,0 +1,70 @@
+\section{Experiments}
+\label{sec:experiments}
+
+To evaluate whether phased orchestration improves task completion quality, we design four experiments that collectively address the concerns raised in prior review: (1) an ablation study isolating each phase's contribution, (2) a control marker effectiveness study, (3) a three-protocol consistency evaluation, and (4) a cost-benefit analysis. All experiments are conducted through the Pigs HTTP API, requiring only API access---no GPU resources.
+
+\subsection{Experimental Setup}
+
+\textbf{System configuration.} All experiments use the Pigs API server with default orchestration limits (\texttt{max\_post\_iterations=3}, \texttt{max\_pre\_replans=2}), continuation TTL of 30 minutes, capacity of 256, and Chinese (zh) phase prompts. Thinking effort is set to xhigh for OpenAI and max for Anthropic.
+
+\textbf{Benchmarks.} We use three public benchmarks:
+
+\begin{center}
+\begin{tabular}{lllr}
+\toprule
+Benchmark & Domain & Tasks & Public \\
+\midrule
+SWE-bench Lite~\citep{jimenez2024swebench} & Software engineering & 300 & \checkmark \\
+GAIA~\citep{mialon2023gaia} & General AI assistant & 300 & \checkmark \\
+AgentBoard~\citep{ma2024agentboard} & Multi-turn agent & 9 tasks & \checkmark \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Ablation conditions.} For Experiment 1, we define four conditions:
+\begin{itemize}[nosep]
+    \item \textbf{Condition A (Baseline)}: Direct API call without orchestration (non-\texttt{-pig} model, passthrough).
+    \item \textbf{Condition B (Full)}: Complete Pre$\rightarrow$Executor$\rightarrow$Post orchestration (\texttt{-pig} model).
+    \item \textbf{Condition C (Pre-only)}: Only the Pre phase (planning without execution verification).
+    \item \textbf{Condition D (Executor+Post)}: Skip Pre, directly execute and review.
+\end{itemize}
+
+\textbf{Metrics.} We measure: (1) task completion rate (benchmark-specific), (2) average LLM API calls per task, (3) total input + output tokens per task, (4) wall-clock latency, and (5) error recovery rate (percentage of tasks where PIGFAIL triggered a successful replan).
+
+\subsection{Experiment 1: Ablation Study}
+
+\textbf{Setup.} We evaluate four conditions (A: baseline, B: full orchestration, C: Pre-only, D: Executor+Post) on SWE-bench Lite (300 tasks) and GAIA (300 tasks). Each task is sent as a \texttt{-pig} model request (Condition B/C/D) or a passthrough request (Condition A) to the Pigs API.
+
+\textbf{Procedure.} For each task:
+\begin{enumerate}[nosep]
+    \item Send the task prompt to the Pigs API endpoint.
+    \item If tool calls are returned, execute them locally and send results back.
+    \item Repeat until the API returns a final response (no tool calls).
+    \item Evaluate the final response against the benchmark's ground truth.
+\end{enumerate}
+
+\textbf{Hypothesis.} Full orchestration (B) outperforms baseline (A) on task completion rate, with the Pre phase contributing planning and the Post phase contributing verification.
+
+\subsection{Experiment 2: Control Marker Effectiveness}
+
+\textbf{Setup.} We compare two configurations on GAIA: (A) with \texttt{PIGFAIL} enabled (failure triggers replan), (B) with \texttt{PIGFAIL} disabled (failure treated as completion).
+
+\textbf{Procedure.} We count: (1) tasks where PIGFAIL was emitted, (2) tasks where replan led to successful completion, (3) tasks that failed despite replan.
+
+\textbf{Hypothesis.} PIGFAIL-based replan improves outcomes on tasks where the initial approach was flawed.
+
+\subsection{Experiment 3: Three-Protocol Consistency}
+
+\textbf{Setup.} We send the same set of 100 tasks through three API protocols: OpenAI Chat (\texttt{/chat/completions}), Anthropic Messages (\texttt{/v1/messages}), and OpenAI Responses (\texttt{/responses}).
+
+\textbf{Procedure.} For each task and protocol, we record: (1) whether the task completed, (2) the visible text output, (3) any tool calls made. We measure consistency as the percentage of tasks where all three protocols agree on completion status.
+
+\textbf{Hypothesis.} The protocol-native request preservation ensures consistent behavior across all three protocols.
+
+\subsection{Experiment 4: Cost-Benefit Analysis}
+
+\textbf{Setup.} On SWE-bench Lite, we measure per-task: (1) total input tokens, (2) total output tokens, (3) number of API calls, (4) wall-clock latency, (5) task completion.
+
+\textbf{Procedure.} We compare Condition A (baseline) vs.\ Condition B (full orchestration) and compute the overhead ratio for each metric.
+
+\textbf{Hypothesis.} The token overhead of orchestration (3 phases vs.\ 1) is justified by improved completion rate.

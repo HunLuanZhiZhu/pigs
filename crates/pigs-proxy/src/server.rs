@@ -44,6 +44,10 @@ pub struct AppState {
     pub runtime: Arc<pigs_api::http_runtime::HttpPhasedRuntime>,
     /// Random token required on internal HTTP loopback requests.
     pub internal_phase_token: Arc<str>,
+    /// Compaction cache (prefix hash → summary).
+    pub compaction_cache: Arc<std::sync::Mutex<crate::compaction::CompactionCache>>,
+    /// Loopback base URL (e.g. "http://127.0.0.1:3927") for compaction LLM calls.
+    pub loopback_base_url: String,
 }
 
 /// 构建 axum 路由树。
@@ -358,6 +362,44 @@ async fn handle_passthrough(
         .unwrap_or_else(|| protocol.default_effort().to_string());
     inject_thinking(&mut parsed, protocol, &effort);
 
+    // --- Context-window compaction (routing-layer auto-compaction) ---
+    // If the estimated token count exceeds the model's context window × coefficient,
+    // automatically compact the conversation via LLM summarization (through loopback).
+    // This is transparent to the harness/Agent layer.
+    if state.config.compaction.enabled {
+        match crate::compaction::ensure_context_fits(
+            parsed.clone(),
+            &upstream_model,
+            &endpoint,
+            protocol,
+            &state.config.compaction,
+            &state.compaction_cache,
+            &crate::compaction::LoopbackConfig {
+                base_url: state.loopback_base_url.clone(),
+                token: state.internal_phase_token.to_string(),
+            },
+            client_model,
+            0,
+        )
+        .await
+        {
+            Ok(compacted) => {
+                if compacted != parsed {
+                    tracing::info!(
+                        model = %upstream_model,
+                        original_tokens = crate::compaction::estimate_tokens(&parsed),
+                        compacted_tokens = crate::compaction::estimate_tokens(&compacted),
+                        "compaction applied"
+                    );
+                    parsed = compacted;
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "compaction failed, proceeding with original body");
+            }
+        }
+    }
+
     let body_bytes = serde_json::to_vec(&parsed).unwrap_or_else(|_| body.to_vec());
     let body_bytes = Bytes::from(body_bytes);
 
@@ -501,12 +543,52 @@ pub fn clean_empty_messages(parsed: &mut Value, protocol: Protocol) {
         }
     }
 
-    // 移除 content 为空/空白的项
+    // 处理 assistant 消息 content 为空字符串的情况：
+    // - 有 tool_calls 的 assistant：content="" 是合法的（模型只调用工具不输出文本），
+    //   但部分上游供应商不接受空字符串，替换为 " "。
+    // - 无 tool_calls 的 assistant：content="" 是无效的，移除。
+    let mut patched = 0;
+    for item in arr.iter_mut() {
+        let is_assistant = item
+            .get("role")
+            .and_then(Value::as_str)
+            .is_some_and(|r| r == "assistant");
+        if !is_assistant {
+            continue;
+        }
+        let has_tool_calls = item.get("tool_calls").is_some();
+        if let Some(content) = item.get_mut("content") {
+            if let Some(s) = content.as_str() {
+                if s.is_empty() && has_tool_calls {
+                    *content = Value::String(" ".to_string());
+                    patched += 1;
+                }
+            }
+        }
+    }
+    if patched > 0 {
+        tracing::info!(
+            patched,
+            "已将 assistant tool_calls 消息的空 content 替换为空格"
+        );
+    }
+
+    // 移除 content 为空/空白的项（assistant 无 tool_calls 的空消息、user 空消息等）
     let before = arr.len();
     arr.retain(|item| {
+        let is_assistant = item
+            .get("role")
+            .and_then(Value::as_str)
+            .is_some_and(|r| r == "assistant");
+        let has_tool_calls = item.get("tool_calls").is_some();
         let content = item.get("content");
         match content {
-            Some(Value::String(s)) => !s.trim().is_empty(),
+            Some(Value::String(s)) => {
+                if is_assistant && has_tool_calls {
+                    return true;
+                }
+                !s.trim().is_empty()
+            }
             Some(Value::Array(a)) => a.iter().any(|c| {
                 if let Some(t) = c.get("text").and_then(|t| t.as_str()) {
                     !t.trim().is_empty()

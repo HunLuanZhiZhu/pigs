@@ -24,7 +24,7 @@ Thumbs.db
 .env.local
 
 # Local-only pigs machine config (API keys, private endpoints, etc.) — do not commit
-.pigs/config.local.toml
+.pigs/config-cli.local.toml
 .pigs/*.local.toml
 .pigs/local/
 *.local.toml

@@ -31,8 +31,8 @@ pub struct CliArgs {
     #[arg(long, value_name = "TEXT")]
     pub system_prompt: Option<String>,
 
-    /// Resume a previous session by ID
-    #[arg(long, value_name = "ID")]
+    /// Resume a previous session by agent code (6-char ID)
+    #[arg(long, value_name = "CODE")]
     pub resume: Option<String>,
 
     /// Disable all tools (LLM-only mode)

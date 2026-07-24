@@ -23,12 +23,12 @@ impl Default for GlobTool {
 
 impl ToolHandler for GlobTool {
     fn name(&self) -> &str {
-        "glob_search"
+        "find"
     }
 
     fn spec(&self) -> ToolSpec {
         ToolSpec::new(
-            "glob_search",
+            "find",
             "Find files matching a glob pattern. Returns file paths relative to the search directory. \
              Supports patterns like '**/*.rs' for recursive matching.",
             serde_json::json!({
@@ -101,7 +101,7 @@ impl ToolHandler for GlobTool {
                             continue;
                         }
 
-                        // Skip .pigsignore-matched files
+                        // Skip .pigignore-matched files
                         if ignore_patterns.is_ignored(&path, base) {
                             continue;
                         }

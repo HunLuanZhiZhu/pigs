@@ -1,0 +1,103 @@
+\section{Experimental Method}
+\label{sec:method}
+
+\subsection{System Configuration}
+\begin{chinese}
+\subsection*{系统配置}
+\end{chinese}
+
+All experiments are conducted through the Pigs HTTP API. The system is configured with:
+\begin{chinese}
+所有实验通过 Pigs HTTP API 进行。系统配置为：
+\end{chinese}
+\begin{itemize}[nosep]
+    \item Default orchestration limits: \texttt{max\_post\_iterations=3}, \texttt{max\_pre\_replans=2}
+    \begin{chinese}
+    默认编排限制：\texttt{max\_post\_iterations=3}，\texttt{max\_pre\_replans=2}
+    \end{chinese}
+    \item Continuation TTL: 30 minutes, capacity: 256
+    \begin{chinese}
+    Continuation TTL：30 分钟，容量：256
+    \end{chinese}
+    \item Language: Chinese (zh) for phase prompts
+    \begin{chinese}
+    语言：中文（zh）相位提示词
+    \end{chinese}
+    \item Thinking effort: xhigh (OpenAI) / max (Anthropic)
+    \begin{chinese}
+    思考强度：xhigh（OpenAI）/ max（Anthropic）
+    \end{chinese}
+\end{itemize}
+
+\subsection{Ablation Conditions}
+\begin{chinese}
+\subsection*{消融条件}
+\end{chinese}
+
+For Experiment 1, we define four conditions:
+\begin{chinese}
+实验 1 定义四个条件：
+\end{chinese}
+\begin{itemize}
+    \item \textbf{Condition A (Baseline)}: Direct API call without orchestration (non-\texttt{-pig} model, passthrough).
+    \begin{chinese}
+    \textbf{条件 A（基线）}：直接 API 调用，无编排（非 \texttt{-pig} 模型，透传）。
+    \end{chinese}
+    \item \textbf{Condition B (Full)}: Complete Pre$\rightarrow$Executor$\rightarrow$Post orchestration (\texttt{-pig} model).
+    \begin{chinese}
+    \textbf{条件 B（完整）}：完整 Pre$\rightarrow$Executor$\rightarrow$Post 编排（\texttt{-pig} 模型）。
+    \end{chinese}
+    \item \textbf{Condition C (Pre-only)}: Only the Pre phase (planning without execution verification).
+    \begin{chinese}
+    \textbf{条件 C（仅 Pre）}：只有 Pre 阶段（规划但不验证执行）。
+    \end{chinese}
+    \item \textbf{Condition D (Executor+Post)}: Skip Pre, directly execute and review.
+    \begin{chinese}
+    \textbf{条件 D（Executor+Post）}：跳过 Pre，直接执行和评审。
+    \end{chinese}
+\end{itemize}
+
+\subsection{Metrics}
+\begin{chinese}
+\subsection*{评估指标}
+\end{chinese}
+
+\begin{itemize}[nosep]
+    \item \textbf{Task completion rate}: percentage of tasks successfully completed (benchmark-specific definition).
+    \begin{chinese}
+    \textbf{任务完成率}：成功完成的任务百分比（基准特定定义）。
+    \end{chinese}
+    \item \textbf{Average turns}: mean number of LLM API calls per task.
+    \begin{chinese}
+    \textbf{平均轮次}：每个任务的 LLM API 调用次数均值。
+    \end{chinese}
+    \item \textbf{Token consumption}: total input + output tokens per task.
+    \begin{chinese}
+    \textbf{Token 消耗}：每个任务的总输入 + 输出 token 数。
+    \end{chinese}
+    \item \textbf{Latency}: wall-clock time from request to final response.
+    \begin{chinese}
+    \textbf{延迟}：从请求到最终响应的实际时间。
+    \end{chinese}
+    \item \textbf{Error recovery rate}: percentage of tasks where PIGFAIL triggered a successful replan.
+    \begin{chinese}
+    \textbf{错误恢复率}：PIGFAIL 触发成功重规划的任务百分比。
+    \end{chinese}
+\end{itemize}
+
+\subsection{Benchmarks}
+\begin{chinese}
+\subsection*{基准测试}
+\end{chinese}
+
+\begin{center}
+\begin{tabular}{lllr}
+\toprule
+Benchmark & Domain & Tasks & Public \\
+\midrule
+SWE-bench Lite~\citep{jimenez2024swebench} & Software engineering & 300 & \checkmark \\
+GAIA~\citep{mialon2023gaia} & General AI assistant & 300 & \checkmark \\
+AgentBoard~\citep{ma2024agentboard} & Multi-turn agent & 9 tasks & \checkmark \\
+\bottomrule
+\end{tabular}
+\end{center}

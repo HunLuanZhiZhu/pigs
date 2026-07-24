@@ -14,17 +14,17 @@ pub fn provider_format_name(api: ApiFormat) -> &'static str {
 }
 
 /// Print full provider + model catalog (`/models`).
-pub fn print_models(config: &AppConfig, current_selection: &str, _current_remote: &str) {
-    println!(
+pub fn print_models(out: &mut crate::output::OutputSink, config: &AppConfig, current_selection: &str, _current_remote: &str) {
+    out.println(
         "API formats: anthropic (Messages) | openai (Responses /v1/responses) | openai-chat (Chat Completions)"
     );
-    println!();
+    out.println_empty();
 
     let providers = config.effective_providers();
     if !providers.is_empty() {
-        println!("Configured providers:");
-        println!("{:<16} {:<12} {:<40} Key", "Name", "API", "Base URL");
-        println!("{}", "-".repeat(90));
+        out.println("Configured providers:");
+        out.println(format!("{:<16} {:<12} {:<40} Key", "Name", "API", "Base URL"));
+        out.println("-".repeat(90));
         for p in &providers {
             let key = if p.api_key.as_ref().map(|s| !s.is_empty()).unwrap_or(false) {
                 "set"
@@ -32,46 +32,40 @@ pub fn print_models(config: &AppConfig, current_selection: &str, _current_remote
                 "missing"
             };
             let url = p.base_url.as_deref().unwrap_or("-");
-            println!(
-                "{:<16} {:<12} {:<40} {key}",
+            out.println(format!("{:<16} {:<12} {:<40} {}", key,
                 p.name,
                 p.api,
                 truncate(url, 40)
-            );
+            ));
         }
-        println!();
+        out.println_empty();
     }
 
     if config.models.is_empty() {
-        println!("No [[models]] catalog entries. Using built-in aliases + raw model ids.");
-        println!("  aliases: opus, sonnet, haiku, gpt-4o, gpt-4o-mini");
-        println!("  or: provider/model-id  e.g. deepseek/deepseek-chat");
-        println!();
-        println!("Models with `-pig` suffix go through the phased runtime (Pre→Executor→Post).");
+        out.println("No [[models]] catalog entries. Using built-in aliases + raw model ids.");
+        out.println("  aliases: opus, sonnet, haiku, gpt-4o, gpt-4o-mini");
+        out.println("  or: provider/model-id  e.g. deepseek/deepseek-chat");
+        out.println_empty();
+        out.println("Models with `-pig` suffix go through the phased runtime (Pre→Executor→Post).");
     } else {
-        println!("Configured models (each has a `-pig` phased variant):");
-        println!(
-            "{:<24} {:<22} {:<14} {:>10} Notes",
-            "Name", "Remote", "Provider", "Ctx"
-        );
-        println!("{}", "-".repeat(100));
+        out.println("Configured models (each has a `-pig` phased variant):");
+        out.println(format!(
+            "{:<24} {:<20} {:<14}",
+            "Name", "Provider", "API"
+        ));
+        out.println("-".repeat(80));
         for m in &config.models {
-            let remote = m.model.as_deref().unwrap_or(&m.name);
-            let ctx = m
-                .context_window
-                .unwrap_or_else(|| AppConfig::default_context_window_for(remote));
-
             // Raw (direct) model
             let mark_raw = if current_selection == m.name {
                 "*"
             } else {
                 " "
             };
-            let notes = m.notes.as_deref().unwrap_or("");
-            println!(
-                "{mark_raw}{:<23} {:<22} {:<14} {:>10} {notes}",
-                m.name, remote, m.provider, ctx
-            );
+            let provider = m.provider.as_deref().unwrap_or("(auto)");
+            let api = m.api.as_deref().unwrap_or("(auto)");
+            out.println(format!("{}{:<23} {:<20} {:<14}", mark_raw,
+                m.name, provider, api
+            ));
 
             // -pig (phased) variant
             let pig_name = format!("{}-pig", m.name);
@@ -80,118 +74,118 @@ pub fn print_models(config: &AppConfig, current_selection: &str, _current_remote
             } else {
                 " "
             };
-            let pig_notes = "phased (pre→executor→post)";
-            println!(
-                "{mark_pig}{:<23} {:<22} {:<14} {:>10} {pig_notes}",
-                pig_name, remote, m.provider, ctx
-            );
+            let provider = m.provider.as_deref().unwrap_or("(auto)");
+            let api = m.api.as_deref().unwrap_or("(auto)");
+            out.println(format!("{}{:<23} {:<20} {:<14}  phased (pre→executor→post)", mark_pig,
+                pig_name, provider, api
+            ));
         }
     }
 
-    println!();
+    out.println_empty();
     match config.resolve_model(current_selection) {
-        Ok(r) => print_resolved_detail(&r, current_selection),
-        Err(e) => println!("Current selection '{current_selection}' unresolved: {e}"),
+        Ok(r) => print_resolved_detail(out, &r, current_selection),
+        Err(e) => out.println(format!("Current selection '{current_selection}' unresolved: {e}")),
     }
-    println!();
-    println!("Use:");
-    println!("  /model <name|alias|provider/model-id|raw-id>   switch model");
-    println!("  /model add | /模型 添加                        guided setup wizard");
-    println!("  /models                                        full catalog");
+    out.println_empty();
+    out.println("Use:");
+    out.println("  /model <name|alias|provider/model-id|raw-id>   switch model");
+    out.println("  /model add | /模型 添加                        guided setup wizard");
+    out.println("  /models                                        full catalog");
 }
 
 /// Status view for bare `/model` / `/模型` — always shows configured ids first.
-pub fn print_model_status(agent: &Agent) {
+pub fn print_model_status(agent: &mut Agent) {
     let zh = agent.language.is_zh();
     let selection = agent.config.model.as_str();
     let live_remote = agent.api_client.model();
 
     if zh {
-        println!("当前模型");
-        println!("{}", "-".repeat(60));
+        agent.output.println("当前模型");
+        agent.output.println("-".repeat(60));
     } else {
-        println!("Current model");
-        println!("{}", "-".repeat(60));
+        agent.output.println("Current model");
+        agent.output.println("-".repeat(60));
     }
 
     match agent.resolved_model() {
         Ok(r) => {
-            print_resolved_detail(&r, selection);
+            print_resolved_detail(&mut agent.output, &r, selection);
             if r.remote_model != live_remote {
                 if zh {
-                    println!("运行中远端 id: {live_remote}  (与解析结果不一致，可 /reload)");
+                    agent.output.println(format!("运行中远端 id: {live_remote}  (与解析结果不一致，可 /reload)"));
                 } else {
-                    println!("Live remote id: {live_remote}  (differs from resolve; try /reload)");
+                    agent.output.println(format!("Live remote id: {live_remote}  (differs from resolve; try /reload)"));
                 }
             }
         }
         Err(e) => {
             if zh {
-                println!("配置选择: {selection}");
-                println!("运行中远端 id: {live_remote}");
-                println!("解析失败: {e}");
+                agent.output.println(format!("配置选择: {selection}"));
+                agent.output.println(format!("运行中远端 id: {live_remote}"));
+                agent.output.println(format!("解析失败: {e}"));
             } else {
-                println!("Config selection: {selection}");
-                println!("Live remote id: {live_remote}");
-                println!("Resolve error: {e}");
+                agent.output.println(format!("Config selection: {selection}"));
+                agent.output.println(format!("Live remote id: {live_remote}"));
+                agent.output.println(format!("Resolve error: {e}"));
             }
         }
     }
 
-    println!();
+    agent.output.println_empty();
     if !agent.config.models.is_empty() {
         if zh {
-            println!("已配置模型目录 ({}):", agent.config.models.len());
+            agent.output.println(format!("已配置模型目录 ({}):", agent.config.models.len()));
         } else {
-            println!("Configured catalog ({}):", agent.config.models.len());
+            agent.output.println(format!("Configured catalog ({}):", agent.config.models.len()));
         }
         for m in &agent.config.models {
-            let remote = m.model.as_deref().unwrap_or(&m.name);
-            let mark = if m.name == selection || remote == live_remote {
+            let mark = if m.name == selection {
                 "*"
             } else {
                 " "
             };
-            println!("  {mark} {}  →  {}  [{}]", m.name, remote, m.provider);
+            let provider = m.provider.as_deref().unwrap_or("(auto)");
+            agent.output.println(format!("  {} {}  [{}]", mark, m.name, provider));
         }
-        println!();
+        agent.output.println_empty();
     }
 
     if zh {
-        println!("用法:");
-        println!("  /模型 <名称|别名|供应商/模型id|原始id>   切换模型");
-        println!("  /模型 添加 | /model add                  逐步引导添加供应商+模型");
-        println!("  /模型列表 | /models                      查看完整目录");
-        println!("内置别名: opus, sonnet, haiku, gpt-4o, gpt-4o-mini");
+        agent.output.println("用法:");
+        agent.output.println("  /模型 <名称|别名|供应商/模型id|原始id>   切换模型");
+        agent.output.println("  /模型 添加 | /model add                  逐步引导添加供应商+模型");
+        agent.output.println("  /模型列表 | /models                      查看完整目录");
+        agent.output.println("内置别名: opus, sonnet, haiku, gpt-4o, gpt-4o-mini");
     } else {
-        println!("Usage:");
-        println!("  /model <name|alias|provider/model-id|raw-id>   switch");
-        println!("  /model add | /模型 添加                        guided setup wizard");
-        println!("  /models                                        full catalog");
-        println!("Built-in aliases: opus, sonnet, haiku, gpt-4o, gpt-4o-mini");
+        agent.output.println("Usage:");
+        agent.output.println("  /model <name|alias|provider/model-id|raw-id>   switch");
+        agent.output.println("  /model add | /模型 添加                        guided setup wizard");
+        agent.output.println("  /models                                        full catalog");
+        agent.output.println("Built-in aliases: opus, sonnet, haiku, gpt-4o, gpt-4o-mini");
     }
 }
 
-fn print_resolved_detail(r: &ResolvedModel, selection: &str) {
-    println!("  selection:      {selection}");
-    println!("  catalog name:   {}", r.name);
-    println!("  remote model:   {}", r.remote_model);
-    println!("  provider:       {}", r.provider_name);
-    println!("  api format:     {}", provider_format_name(r.api));
-    println!("  base_url:       {}", r.base_url);
-    println!("  context_window: {}", r.context_window);
+fn print_resolved_detail(out: &mut crate::output::OutputSink, r: &ResolvedModel, selection: &str) {
+    out.println(format!("  selection:      {selection}"));
+    out.println(format!("  catalog name:   {}", r.name));
+    out.println(format!("  remote model:   {}", r.remote_model));
+    out.println(format!("  provider:       {}", r.provider_name));
+    out.println(format!("  api format:     {}", provider_format_name(r.api)));
+    out.println(format!("  base_url:       {}", r.base_url));
+    out.println(format!("  context_window: {}", r.context_window));
     if let Some(mt) = r.max_tokens {
-        println!("  max_tokens:     {mt}");
+        out.println(format!("  max_tokens:     {mt}"));
     }
     if let Some(temp) = r.temperature {
-        println!("  temperature:    {temp}");
+        out.println(format!("  temperature:    {temp}"));
     }
     let key_state = if r.api_key.is_empty() {
         "missing"
     } else {
         "set"
     };
-    println!("  api_key:        {key_state}");
+    out.println(format!("  api_key:        {key_state}"));
 }
 
 /// Handle `/model` arguments: switch, status, or wizard.
@@ -218,36 +212,36 @@ pub fn handle_model_command(agent: &mut Agent, arg: &str) -> anyhow::Result<()> 
 
     // `/model list` convenience → same as /models
     if matches!(lower.as_str(), "list" | "ls" | "liebiao") || arg == "列表" || arg == "目录" {
-        print_models(&agent.config, &agent.config.model, agent.api_client.model());
+        print_models(&mut agent.output, &agent.config, &agent.config.model, agent.api_client.model());
         return Ok(());
     }
 
     match agent.set_model(arg) {
         Ok(()) => {
             if agent.language.is_zh() {
-                println!(
+                agent.output.println(format!(
                     "已切换模型: selection=`{}` remote=`{}`",
                     agent.config.model,
                     agent.api_client.model()
-                );
+                ));
             } else {
-                println!(
+                agent.output.println(format!(
                     "Model switched: selection=`{}` remote=`{}`",
                     agent.config.model,
                     agent.api_client.model()
-                );
+                ));
             }
             if let Ok(r) = agent.resolved_model() {
-                print_resolved_detail(&r, &agent.config.model);
+                print_resolved_detail(&mut agent.output, &r, &agent.config.model);
             }
         }
         Err(e) => {
             if agent.language.is_zh() {
-                eprintln!("切换失败: {e}");
-                eprintln!("提示: 用 `/模型 添加` 引导配置供应商与模型，或 `/模型列表` 查看目录。");
+                agent.output.eprintln(format!("切换失败: {e}"));
+                agent.output.eprintln("提示: 用 `/模型 添加` 引导配置供应商与模型，或 `/模型列表` 查看目录。");
             } else {
-                eprintln!("Failed to switch model: {e}");
-                eprintln!("Hint: `/model add` for guided setup, or `/models` to list catalog.");
+                agent.output.eprintln(format!("Failed to switch model: {e}"));
+                agent.output.eprintln("Hint: `/model add` for guided setup, or `/models` to list catalog.");
             }
         }
     }
@@ -258,20 +252,20 @@ pub fn handle_model_command(agent: &mut Agent, arg: &str) -> anyhow::Result<()> 
 pub fn run_model_add_wizard(agent: &mut Agent) -> anyhow::Result<()> {
     let zh = agent.language.is_zh();
     if zh {
-        println!("添加模型向导（逐步配置供应商与模型，写入 ~/.pigs/config.toml）");
-        println!("直接回车使用括号中的默认值；输入 q 取消。");
+        agent.output.println("添加模型向导（逐步配置供应商与模型，写入 ~/.pigs/pig.toml）");
+        agent.output.println("直接回车使用括号中的默认值；输入 q 取消。");
     } else {
-        println!("Add model wizard (provider + model → ~/.pigs/config.toml)");
-        println!("Press Enter for defaults in [brackets]; type q to cancel.");
+        agent.output.println("Add model wizard (provider + model → ~/.pigs/pig.toml)");
+        agent.output.println("Press Enter for defaults in [brackets]; type q to cancel.");
     }
-    println!();
+    agent.output.println_empty();
 
     // Show existing providers briefly
     let providers = agent.config.effective_providers();
     if zh {
-        println!("已有供应商:");
+        agent.output.println("已有供应商:");
     } else {
-        println!("Existing providers:");
+        agent.output.println("Existing providers:");
     }
     for (i, p) in providers.iter().enumerate() {
         let key = if p.api_key.as_ref().map(|s| !s.is_empty()).unwrap_or(false) {
@@ -279,16 +273,16 @@ pub fn run_model_add_wizard(agent: &mut Agent) -> anyhow::Result<()> {
         } else {
             "key=missing"
         };
-        println!(
+        agent.output.println(format!(
             "  {}. {}  api={}  {}  url={}",
             i + 1,
             p.name,
             p.api,
             key,
             p.base_url.as_deref().unwrap_or("-")
-        );
+        ));
     }
-    println!();
+    agent.output.println_empty();
 
     // Step 1: provider name
     let provider_name = match prompt_line(
@@ -300,7 +294,7 @@ pub fn run_model_add_wizard(agent: &mut Agent) -> anyhow::Result<()> {
         Some("openai"),
     )? {
         None => {
-            cancel(zh);
+            cancel(&mut agent.output, zh);
             return Ok(());
         }
         Some(v) => v,
@@ -319,9 +313,9 @@ pub fn run_model_add_wizard(agent: &mut Agent) -> anyhow::Result<()> {
 
     // Step 2: api format
     if zh {
-        println!("  API 格式: openai (Responses) | openai-chat (Chat Completions) | anthropic");
+        agent.output.println("  API 格式: openai (Responses) | openai-chat (Chat Completions) | anthropic");
     } else {
-        println!("  API formats: openai (Responses) | openai-chat (Chat Completions) | anthropic");
+        agent.output.println("  API formats: openai (Responses) | openai-chat (Chat Completions) | anthropic");
     }
     let api_raw = match prompt_line(
         if zh {
@@ -332,7 +326,7 @@ pub fn run_model_add_wizard(agent: &mut Agent) -> anyhow::Result<()> {
         Some(default_api),
     )? {
         None => {
-            cancel(zh);
+            cancel(&mut agent.output, zh);
             return Ok(());
         }
         Some(v) => v,
@@ -340,7 +334,7 @@ pub fn run_model_add_wizard(agent: &mut Agent) -> anyhow::Result<()> {
     let api = match ApiFormat::parse(&api_raw) {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("{e}");
+            agent.output.eprintln(e);
             return Ok(());
         }
     };
@@ -357,7 +351,7 @@ pub fn run_model_add_wizard(agent: &mut Agent) -> anyhow::Result<()> {
         Some(&default_url),
     )? {
         None => {
-            cancel(zh);
+            cancel(&mut agent.output, zh);
             return Ok(());
         }
         Some(v) => v,
@@ -383,7 +377,7 @@ pub fn run_model_add_wizard(agent: &mut Agent) -> anyhow::Result<()> {
         },
     )? {
         None => {
-            cancel(zh);
+            cancel(&mut agent.output, zh);
             return Ok(());
         }
         Some(v) => v,
@@ -391,9 +385,9 @@ pub fn run_model_add_wizard(agent: &mut Agent) -> anyhow::Result<()> {
     let api_key = if api_key_in == "********" || api_key_in.is_empty() {
         if existing_key.is_empty() {
             if zh {
-                eprintln!("未设置 API Key，继续保存但调用会失败，直到配置密钥。");
+                agent.output.eprintln("未设置 API Key，继续保存但调用会失败，直到配置密钥。");
             } else {
-                eprintln!("No API key set; calls will fail until a key is configured.");
+                agent.output.eprintln("No API key set; calls will fail until a key is configured.");
             }
             String::new()
         } else {
@@ -414,7 +408,7 @@ pub fn run_model_add_wizard(agent: &mut Agent) -> anyhow::Result<()> {
         Some(&default_local),
     )? {
         None => {
-            cancel(zh);
+            cancel(&mut agent.output, zh);
             return Ok(());
         }
         Some(v) => v,
@@ -431,39 +425,14 @@ pub fn run_model_add_wizard(agent: &mut Agent) -> anyhow::Result<()> {
         Some(&remote_default),
     )? {
         None => {
-            cancel(zh);
+            cancel(&mut agent.output, zh);
             return Ok(());
         }
         Some(v) => v,
     };
 
-    // Step 7: context window
-    let ctx_default = AppConfig::default_context_window_for(&remote_model).to_string();
-    let ctx_raw = match prompt_line(
-        if zh {
-            "7/7 context_window（token，可回车默认）"
-        } else {
-            "7/7 context_window (tokens, Enter for default)"
-        },
-        Some(&ctx_default),
-    )? {
-        None => {
-            cancel(zh);
-            return Ok(());
-        }
-        Some(v) => v,
-    };
-    let context_window: Option<u64> = match ctx_raw.parse::<u64>() {
-        Ok(n) if n > 0 => Some(n),
-        _ => {
-            if zh {
-                eprintln!("无效 context_window，使用默认 {ctx_default}");
-            } else {
-                eprintln!("Invalid context_window, using default {ctx_default}");
-            }
-            ctx_default.parse().ok()
-        }
-    };
+    // context_window is no longer stored in ModelConfig — it lives in config.toml's
+    // [provider.context_windows]. Skip the context window prompt step.
 
     let switch_default = if zh { "y" } else { "y" };
     let switch_raw = match prompt_line(
@@ -475,7 +444,7 @@ pub fn run_model_add_wizard(agent: &mut Agent) -> anyhow::Result<()> {
         Some(switch_default),
     )? {
         None => {
-            cancel(zh);
+            cancel(&mut agent.output, zh);
             return Ok(());
         }
         Some(v) => v,
@@ -502,16 +471,10 @@ pub fn run_model_add_wizard(agent: &mut Agent) -> anyhow::Result<()> {
     });
     agent.config.upsert_model(ModelConfig {
         name: local_name.clone(),
-        provider: provider_name.clone(),
-        model: if remote_model == local_name {
-            None
-        } else {
-            Some(remote_model.clone())
-        },
-        context_window,
-        max_tokens: None,
+        api_key: None,
+        provider: Some(provider_name.clone()),
+        api: None,
         temperature: None,
-        notes: Some("added via /model add".into()),
     });
 
     // Persist global config
@@ -519,16 +482,16 @@ pub fn run_model_add_wizard(agent: &mut Agent) -> anyhow::Result<()> {
         Ok(()) => {
             let path = AppConfig::config_path();
             if zh {
-                println!("已写入配置: {}", path.display());
+                agent.output.println(format!("已写入配置: {}", path.display()));
             } else {
-                println!("Saved config: {}", path.display());
+                agent.output.println(format!("Saved config: {}", path.display()));
             }
         }
         Err(e) => {
             if zh {
-                eprintln!("保存配置失败: {e}（内存中已更新，可稍后 /init 或手动保存）");
+                agent.output.eprintln(format!("保存配置失败: {e}（内存中已更新，可稍后 /init 或手动保存）"));
             } else {
-                eprintln!("Failed to save config: {e} (in-memory updated)");
+                agent.output.eprintln(format!("Failed to save config: {e} (in-memory updated)"));
             }
         }
     }
@@ -537,17 +500,17 @@ pub fn run_model_add_wizard(agent: &mut Agent) -> anyhow::Result<()> {
         match agent.set_model(&local_name) {
             Ok(()) => {
                 if zh {
-                    println!(
+                    agent.output.println(format!(
                         "已切换: selection=`{}` remote=`{}`",
                         agent.config.model,
                         agent.api_client.model()
-                    );
+                    ));
                 } else {
-                    println!(
+                    agent.output.println(format!(
                         "Switched: selection=`{}` remote=`{}`",
                         agent.config.model,
                         agent.api_client.model()
-                    );
+                    ));
                 }
                 // Persist default model selection too
                 agent.config.set_default_model(local_name.clone());
@@ -555,29 +518,29 @@ pub fn run_model_add_wizard(agent: &mut Agent) -> anyhow::Result<()> {
             }
             Err(e) => {
                 if zh {
-                    eprintln!("模型已添加，但切换失败: {e}");
+                    agent.output.eprintln(format!("模型已添加，但切换失败: {e}"));
                 } else {
-                    eprintln!("Model added, but switch failed: {e}");
+                    agent.output.eprintln(format!("Model added, but switch failed: {e}"));
                 }
             }
         }
     } else if zh {
-        println!("模型已添加。切换: /模型 {local_name}");
+        agent.output.println(format!("模型已添加。切换: /模型 {local_name}"));
     } else {
-        println!("Model added. Switch with: /model {local_name}");
+        agent.output.println(format!("Model added. Switch with: /model {local_name}"));
     }
 
     // Show final status
-    println!();
+    agent.output.println_empty();
     print_model_status(agent);
     Ok(())
 }
 
-fn cancel(zh: bool) {
+fn cancel(out: &mut crate::output::OutputSink, zh: bool) {
     if zh {
-        println!("已取消。");
+        out.println("已取消。");
     } else {
-        println!("Cancelled.");
+        out.println("Cancelled.");
     }
 }
 
@@ -636,6 +599,7 @@ mod tests {
             is_pig: false,
         };
         // smoke: function does not panic
-        print_resolved_detail(&r, "auto");
+        let mut sink = crate::output::OutputSink::Stdout;
+        print_resolved_detail(&mut sink, &r, "auto");
     }
 }

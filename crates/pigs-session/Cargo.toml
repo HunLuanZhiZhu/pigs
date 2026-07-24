@@ -13,6 +13,7 @@ dirs = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 thiserror = { workspace = true }
+rand = { workspace = true }
 
 [lints]
 workspace = true

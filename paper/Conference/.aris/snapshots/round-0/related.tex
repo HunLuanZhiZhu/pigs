@@ -1,0 +1,58 @@
+\section{Related Work}
+\label{sec:related}
+
+\subsection{Multi-Stage LLM Reasoning}
+
+\textbf{ReAct}~\citep{yao2022react} pioneered interleaved reasoning and acting in LLMs. Unlike Pigs, ReAct embeds control flow inside the model's output---the model decides when to reason and when to act. Pigs externalizes control flow to a deterministic state machine, using the model only for semantic content and routing signals.
+
+\textbf{Reflexion}~\citep{shinn2023reflexion} adds verbal reinforcement learning through reflective feedback. The reflection trigger is model-driven, whereas Pigs' Post phase is a mandatory structural step enforced by the state machine.
+
+\textbf{Self-Refine}~\citep{madaan2023selfrefine} uses a single LLM as generator, critic, and refiner. Pigs separates these roles into distinct phases with distinct prompts, and adds a Pre (planning) phase that Self-Refine lacks.
+
+\textbf{Plan-and-Solve}~\citep{wang2023plan} separates planning from execution in prompt structure. Pigs extends this to a three-phase model with an explicit review phase and failure-recovery routing.
+
+\textbf{Tree of Thoughts}~\citep{yao2023tot} and \textbf{Graph of Thoughts}~\citep{besta2023got} generalize chain-of-thought to search structures. These approaches require the model to self-evaluate states, while Pigs uses a dedicated Post phase for evaluation.
+
+\subsection{LLM-as-Code and Deterministic Control}
+
+Recent work has proposed shifting control flow from the LLM to deterministic program structures. \textbf{LLM-as-Code}~\citep{llmascode2026} treats the LLM as an adaptive component that cannot alter the program's execution path. \textbf{Compile, Then Page}~\citep{compilepage2026} compiles standard operating procedures into executable pseudo-code with a stack machine. \textbf{XFlow}~\citep{xflow2026} defines a DSL with lifecycle-governed symbols that stage uncertainty. These systems share Pigs' philosophy of deterministic control flow, but operate at a higher abstraction level (workflow DSLs, compiled programs). Pigs achieves deterministic control at the API middleware level, requiring no DSL or compilation step.
+
+\textbf{Rel(AI)Build}~\citep{relaibuild2026} proposes a deterministic control plane for coding agents with a phase state machine. This is architecturally similar to Pigs, but focuses on supply-chain integrity (SHA-256 addressing, HMAC lockfiles) rather than API-level orchestration.
+
+\subsection{LLM Middleware and Proxies}
+
+A position paper~\citep{dzanic2024middleware} proposes middleware for enterprise LLM deployment, but provides no implementation. Pigs is an implemented system that realizes this vision with a specific orchestration model.
+
+\textbf{TokenMizer}~\citep{liu2026tokenmizer} adds session state management to the proxy layer. While it introduces state at the proxy level, it does not impose phase structure or control markers.
+
+\textbf{STREAM}~\citep{stream2026} is a multi-tier LLM inference routing system (local$\rightarrow$HPC$\rightarrow$cloud) with a complexity judge. Pigs' routing is phase-based (Pre$\rightarrow$Executor$\rightarrow$Post), not tier-based.
+
+\textbf{Dyserve}~\citep{dyserve2027} is a workflow-aware serving layer that reroutes on tool-call failures. Pigs' \texttt{PIGFAIL} marker provides a similar failure-recovery mechanism, but at the phase level rather than the tool-call level.
+
+\subsection{Tool-Use Agent Frameworks}
+
+\textbf{ToolLLM/ToolBench}~\citep{qin2023toolllm} provides a framework and benchmark for tool-augmented LLMs. \textbf{MetaGPT}~\citep{hong2023metagpt} encodes SOPs into prompt sequences. \textbf{MemGPT}~\citep{packer2023memgpt} manages control flow via OS-inspired interrupts. Pigs differs by keeping tool execution external to the orchestration layer---the runtime pauses and returns tool calls to the client, rather than executing them internally.
+
+\subsection{Agent Benchmarks}
+
+Several benchmarks evaluate LLM agents: \textbf{AgentBench}~\citep{liu2023agentbench} (8 environments), \textbf{SWE-bench}~\citep{jimenez2024swebench} (software engineering), \textbf{GAIA}~\citep{mialon2023gaia} (general AI assistants), \textbf{ToolBench}~\citep{qin2023toolllm} (tool use), and \textbf{AgentBoard}~\citep{ma2024agentboard} (multi-turn analysis). These benchmarks evaluate end-to-end agent performance but do not isolate the contribution of orchestration structure. Pigs' phased design enables ablation studies (e.g., Pre-only vs.\ full pipeline) that these benchmarks can measure.
+
+\subsection{Surveys and Foundations}
+
+Several surveys provide comprehensive background for this work. \citet{xi2023rise} and \citet{wang2023agent_survey} survey LLM-based autonomous agents, covering single-agent and multi-agent scenarios. \citet{zhao2023llm_survey} provides a broad survey of large language models. \citet{qin2023tool_learning_survey} surveys tool learning with foundation models, defining a four-stage taxonomy (task planning, tool selection, tool calling, response generation) that maps to Pigs' Pre$\rightarrow$Executor$\rightarrow$Post phases. \citet{sumers2023coala} proposes cognitive architectures for language agents (CoALA), formalizing the distinction between reasoning, acting, and memory. \citet{schulhoff2024prompt} surveys prompt engineering techniques systematically. \citet{kaddour2023challenges} discusses challenges and applications of LLMs.
+
+\subsection{Self-Correction and Verification}
+
+The Post phase in Pigs is related to LLM self-correction. \citet{huang2024selfcorrect} shows that LLMs cannot reliably self-correct reasoning without external feedback, motivating Pigs' use of a dedicated review phase with structured prompts rather than relying on the model's intrinsic self-correction. \citet{asai2023selfrag} proposes Self-RAG for retrieval-augmented self-reflection. \citet{lightman2023verify} demonstrates that step-by-step verification improves reasoning. \citet{bai2022constitutional} introduces Constitutional AI for harmlessness through AI feedback. \citet{peng2023checkfacts} improves LLMs with external knowledge and automated feedback.
+
+\subsection{LLM Serving Systems}
+
+On the infrastructure side, \textbf{vLLM}~\citep{kwon2023vllm} introduces PagedAttention for efficient memory management in LLM serving. \textbf{Orca}~\citep{yu2022orca} proposes distributed serving with iteration-level scheduling. \textbf{S-LoRA}~\citep{sheng2023slora} serves thousands of concurrent LoRA adapters. These systems optimize \emph{inference} performance, while Pigs optimizes \emph{orchestration} structure---the two concerns are orthogonal and complementary.
+
+\subsection{Security Considerations}
+
+Prompt injection attacks~\citep{greshake2023promptinjection, liu2024promptinjection} are a concern for LLM middleware. Pigs' architecture mitigates some risks by separating the orchestration layer from the model's output: control markers are detected by the middleware, not by the model's own reasoning, making it harder for injected content to hijack the control flow. However, a comprehensive security analysis is left for future work.
+
+\subsection{Classical Foundations}
+
+The concept of using a state machine for control flow has deep roots in software engineering. \citet{harel1987statecharts} introduced statecharts as a visual formalism for complex systems. Pigs' Pre$\rightarrow$Executor$\rightarrow$Post state machine with marker-based transitions can be seen as a lightweight instance of this classical pattern, applied at the LLM API middleware level.

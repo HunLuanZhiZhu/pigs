@@ -2,9 +2,9 @@
 //!
 //! A skill is a markdown file (SKILL.md) or any `*.md` file in a skills directory.
 //! Supported locations (priority order; first match of a skill name wins):
-//! - `~/.pigs/skills/`           — pigs user skills
+//! - `~/.pig/skills/`           — pigs user skills
 //! - `~/.agents/skills/`         — common/user agent skills (shared ecosystem)
-//! - `{workspace}/.pigs/skills/` — pigs project skills
+//! - `{workspace}/.pig/skills/` — pigs project skills
 //! - `{workspace}/.agents/skills/` — common project skills (e.g. ARIS junctions)
 //! - `{workspace}/skills/`       — workspace root skills
 //!
@@ -54,16 +54,16 @@ fn env_flag_truthy(name: &str) -> bool {
 /// Load skills from the standard locations.
 ///
 /// Env overrides:
-/// - `PIGS_DISABLE_SKILLS=1` — load no skills (useful for small local models / tests)
-/// - `PIGS_DISABLE_COMMON_AGENT_SKILLS=1` — skip `~/.agents/skills` and `.agents/skills`
+/// - `PIG_DISABLE_SKILLS=1` — load no skills (useful for small local models / tests)
+/// - `PIG_DISABLE_COMMON_AGENT_SKILLS=1` — skip `~/.agents/skills` and `.agents/skills`
 pub fn load_skills(workspace: &Path) -> Vec<Skill> {
-    if env_flag_truthy("PIGS_DISABLE_SKILLS") {
+    if env_flag_truthy("PIG_DISABLE_SKILLS") {
         return Vec::new();
     }
 
     let mut skills = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    let skip_common = env_flag_truthy("PIGS_DISABLE_COMMON_AGENT_SKILLS");
+    let skip_common = env_flag_truthy("PIG_DISABLE_COMMON_AGENT_SKILLS");
 
     for dir in skill_search_dirs(workspace) {
         if skip_common && is_agents_skills_dir(&dir) {

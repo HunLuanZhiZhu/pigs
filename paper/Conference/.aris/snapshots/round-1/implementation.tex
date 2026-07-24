@@ -1,0 +1,64 @@
+\section{Implementation}
+\label{sec:impl}
+
+Pigs is implemented as a Rust workspace with 13 crates, organized in five layers:
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+Layer & Crates & Role \\
+\midrule
+0 & pigs-core & Core types: Message, ContentBlock, ApiClient trait \\
+1 & pigs-config, pigs-permissions, & Config, permissions, session, prompts \\
+  & pigs-session, pigs-prompts & \\
+2 & pigs-llm, pigs-tools, pigs-mcp & LLM clients, built-in tools, MCP client \\
+3 & pigs-api, pigs-proxy & Phased runtime, HTTP proxy + loopback \\
+4 & pigs-cli, pigs & CLI REPL, product binary \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Protocol Codec}
+
+The \texttt{ProtocolCodec} in \texttt{pigs-api} handles parsing, mutation, and response extraction for all three protocols. It validates the ``current user input'' (the last user message, not just the last non-system message) and identifies trailing tool-result groups for continuation matching.
+
+Each protocol has dedicated parsing logic:
+\begin{itemize}[nosep]
+    \item \textbf{Chat}: messages array with role-based content; tool calls as \texttt{tool\_calls} array; tool results as \texttt{role: "tool"} messages.
+    \item \textbf{Anthropic}: messages with content block arrays; tool calls as \texttt{tool\_use} blocks; tool results as \texttt{tool\_result} blocks within user messages.
+    \item \textbf{Responses}: input array with typed items; tool calls as \texttt{function\_call} items; tool results as \texttt{function\_call\_output} items.
+\end{itemize}
+
+The codec clones the original body and modifies only the JSON path leading to the current user input, leaving all other fields structurally identical.
+
+\subsection{HTTP Runtime}
+
+The \texttt{HttpPhasedRuntime} drives the phase loop. For each phase, it:
+\begin{enumerate}[nosep]
+    \item Constructs a phase request via \texttt{phase\_request()} (Pre/Executor/Post prompt + transcript).
+    \item Sends the request via \texttt{PhaseTransport::send\_streaming()} (streaming) or \texttt{send()} (non-streaming).
+    \item Extracts the normalized model output (visible text, tool calls, usage, stop reason).
+    \item Checks for tool calls $\rightarrow$ pauses and stores continuation.
+    \item Advances the state machine via \texttt{OrchestrationState::advance()}.
+\end{enumerate}
+
+The runtime is transport-agnostic: it depends only on the \texttt{PhaseTransport} trait, not on HTTP or axum. This allows the same runtime to be used with any transport implementation.
+
+\subsection{Loopback Transport}
+
+The \texttt{LoopbackPhaseTransport} in \texttt{pigs-proxy} sends phase subrequests via HTTP to the local proxy. It parses both non-streaming JSON and SSE responses from the upstream provider, aggregating:
+\begin{itemize}[nosep]
+    \item Chat: text deltas, tool call deltas (merged by index), finish reason, usage, provider extensions.
+    \item Anthropic: content blocks (text, thinking, signature, tool\_use with \texttt{input\_json\_delta} accumulation), stop reason, usage.
+    \item Responses: output items (message, reasoning, function\_call), status, incomplete details, usage.
+\end{itemize}
+
+Malformed streams (missing termination events, unknown content block indices, open blocks at stream end) are reported as typed errors, not silently accepted.
+
+\subsection{Body Cleaning}
+
+The proxy's \texttt{clean\_empty\_messages} function removes messages with empty content, but preserves assistant messages that contain \texttt{tool\_calls} (even if their content is empty). For messages with empty content and tool calls, the content is replaced with a single space to satisfy upstream providers that reject empty strings.
+
+\subsection{CLI Integration}
+
+The CLI connects to the local API server via HTTP using \texttt{HttpAgentClient}, which implements the \texttt{ApiClient} trait. The CLI sends requests with the real (non-\texttt{-pig}) model name, so the proxy routes them through passthrough. The CLI's local \texttt{PhasedRuntime} performs Pre$\rightarrow$Executor$\rightarrow$Post orchestration, with tools executed in-process. This design gives the CLI real SSE streaming while maintaining local tool execution.

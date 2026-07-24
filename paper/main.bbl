@@ -1,0 +1,169 @@
+\begin{thebibliography}{23}
+\providecommand{\natexlab}[1]{#1}
+\providecommand{\url}[1]{\texttt{#1}}
+\expandafter\ifx\csname urlstyle\endcsname\relax
+  \providecommand{\doi}[1]{doi: #1}\else
+  \providecommand{\doi}{doi: \begingroup \urlstyle{rm}\Url}\fi
+
+\bibitem[Anthropic(2024)]{anthropic_cache}
+Anthropic.
+\newblock Prompt caching with claude.
+\newblock
+  \url{https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching},
+  2024.
+
+\bibitem[Besta et~al.(2024)Besta, Blach, Kubicek, Gerstenberger, Podstawk,
+  Gianinazzi, Gajda, Lehmann, Niewiadomski, Nyczyk, and Hoefler]{besta2023got}
+Maciej Besta, Nils Blach, Ales Kubicek, Robert Gerstenberger, Michal Podstawk,
+  Lukas Gianinazzi, Joanna Gajda, Torsten Lehmann, Hubert Niewiadomski, Piotr
+  Nyczyk, and Torsten Hoefler.
+\newblock Graph of thoughts: Solving elaborate problems with large language
+  models.
+\newblock In \emph{AAAI Conference on Artificial Intelligence}, 2024.
+
+\bibitem[Dzanic et~al.(2024)]{dzanic2024middleware}
+Tario Dzanic et~al.
+\newblock Towards a middleware for large language models.
+\newblock \emph{arXiv preprint arXiv:2411.14513}, 2024.
+
+\bibitem[Hong et~al.(2024)Hong, Zhuge, Chen, Zheng, Cheng, Zhang, Wang, Wang,
+  Yau, Lin, et~al.]{hong2023metagpt}
+Sirui Hong, Mingchen Zhuge, Jonathan Chen, Xiawu Zheng, Yuheng Cheng, Ceyao
+  Zhang, Jinlin Wang, Zili Wang, Steven Ka~Shing Yau, Zijuan Lin, et~al.
+\newblock Metagpt: Meta programming for multi-agent collaborative framework.
+\newblock In \emph{International Conference on Learning Representations
+  (ICLR)}, 2024.
+
+\bibitem[Jimenez et~al.(2024)Jimenez, Yang, Wettig, Yao, Pei, Press, and
+  Narasimhan]{jimenez2024swebench}
+Carlos~E Jimenez, John Yang, Alexander Wettig, Shunyu Yao, Kexin Pei, Ofir
+  Press, and Karthik Narasimhan.
+\newblock Swe-bench: Can language models resolve real-world github issues?
+\newblock In \emph{International Conference on Learning Representations
+  (ICLR)}, 2024.
+
+\bibitem[Liu(2026)]{liu2026tokenmizer}
+others Liu.
+\newblock Tokenmizer: Graph-structured session memory for llm api proxies.
+\newblock \emph{arXiv preprint arXiv:2606.06337}, 2026.
+
+\bibitem[Liu et~al.(2024)Liu, Yu, Zhang, Xu, Lei, Lai, Gu, Ding, Men, Yang,
+  et~al.]{liu2023agentbench}
+Xiao Liu, Hao Yu, Hanchen Zhang, Yifan Xu, Xuanyu Lei, Hanyu Lai, Yu~Gu,
+  Hangliang Ding, Kaiwen Men, Kejuan Yang, et~al.
+\newblock Agentbench: Evaluating llms as agents.
+\newblock In \emph{International Conference on Learning Representations
+  (ICLR)}, 2024.
+
+\bibitem[Ma et~al.(2024)Ma, Ma, Liu, Li, Mei, Zhang, Wang, Gu, Xu, Li,
+  et~al.]{ma2024agentboard}
+Chang Ma, Jun Ma, Kaixin Liu, Junzhe Li, Zhihao Mei, Guang Zhang, Zhan Wang,
+  Yiqun Gu, Zhibo Xu, Zhijian Li, et~al.
+\newblock Agentboard: An analytical evaluation board of multi-turn llm agents.
+\newblock In \emph{Annual Meeting of the Association for Computational
+  Linguistics (ACL)}, 2024.
+
+\bibitem[Madaan et~al.(2023)Madaan, Tandon, Gupta, Hallinan, Gao, Wiegreffe,
+  Alon, Dziri, Prabhumoye, Yang, et~al.]{madaan2023selfrefine}
+Aman Madaan, Niket Tandon, Prakhar Gupta, Skyler Hallinan, Luyu Gao, Sarah
+  Wiegreffe, Uri Alon, Nouha Dziri, Shrimai Prabhumoye, Yiming Yang, et~al.
+\newblock Self-refine: Iterative refinement with self-feedback.
+\newblock In \emph{Advances in Neural Information Processing Systems
+  (NeurIPS)}, 2023.
+
+\bibitem[Mialon et~al.(2023)Mialon, Fourrier, Swift, Wolf, LeCun, and
+  Scialom]{mialon2023gaia}
+Gr{\'e}goire Mialon, Cl{\'e}mentine Fourrier, Craig Swift, Thomas Wolf, Yann
+  LeCun, and Thomas Scialom.
+\newblock Gaia: A benchmark for general ai assistants.
+\newblock \emph{arXiv preprint arXiv:2311.12983}, 2023.
+
+\bibitem[others(2026{\natexlab{a}})]{compilepage2026}
+others.
+\newblock Compile, then page: Program-guided stack machine for llm agents.
+\newblock \emph{arXiv preprint arXiv:2607.11346}, 2026{\natexlab{a}}.
+
+\bibitem[others(2026{\natexlab{b}})]{llmascode2026}
+others.
+\newblock Llm-as-code: Agentic programming.
+\newblock \emph{arXiv preprint arXiv:2606.15874}, 2026{\natexlab{b}}.
+
+\bibitem[others(2026{\natexlab{c}})]{relaibuild2026}
+others.
+\newblock Rel(ai)build: A deterministic control plane for llm coding agents.
+\newblock \emph{arXiv preprint arXiv:2606.26924}, 2026{\natexlab{c}}.
+
+\bibitem[others(2026{\natexlab{d}})]{stream2026}
+others.
+\newblock Stream: Multi-tier llm inference middleware.
+\newblock \emph{arXiv preprint arXiv:2606.13968}, 2026{\natexlab{d}}.
+
+\bibitem[others(2026{\natexlab{e}})]{xflow2026}
+others.
+\newblock Xflow: Executable protocol programming for llm orchestration.
+\newblock \emph{arXiv preprint arXiv:2606.14790}, 2026{\natexlab{e}}.
+
+\bibitem[others(2027)]{dyserve2027}
+others.
+\newblock Dyserve: A workflow-aware serving layer for llm applications.
+\newblock \emph{arXiv preprint arXiv:2607.02942}, 2027.
+
+\bibitem[Packer et~al.(2023)Packer, Wooders, Lin, Fang, Patil, Stoica, and
+  Gonzalez]{packer2023memgpt}
+Charles Packer, Sarah Wooders, Kevin Lin, Vivian Fang, Shishir~G Patil, Ion
+  Stoica, and Joseph~E Gonzalez.
+\newblock Memgpt: Towards llms as operating systems.
+\newblock In \emph{arXiv preprint arXiv:2310.08560}, 2023.
+
+\bibitem[Qin et~al.(2024)Qin, Liang, Ye, Zhu, Yan, Lu, Lin, Cong, Tang, Qian,
+  et~al.]{qin2023toolllm}
+Yujia Qin, Shihao Liang, Yining Ye, Kunlun Zhu, Lan Yan, Yaxi Lu, Yankai Lin,
+  Xin Cong, Xiangru Tang, Bill Qian, et~al.
+\newblock Toolllm: Facilitating large language models to master 16000+
+  real-world apis.
+\newblock In \emph{International Conference on Learning Representations
+  (ICLR)}, 2024.
+
+\bibitem[Shinn et~al.(2023)Shinn, Cassano, Berman, Gopinath, Narasimhan, and
+  Yao]{shinn2023reflexion}
+Noah Shinn, Federico Cassano, Edward Berman, Ashwin Gopinath, Karthik
+  Narasimhan, and Shunyu Yao.
+\newblock Reflexion: Language agents with verbal reinforcement learning.
+\newblock In \emph{Advances in Neural Information Processing Systems
+  (NeurIPS)}, 2023.
+
+\bibitem[Wang et~al.(2023)Wang, Xu, Hu, Lan, Lee, and Lim]{wang2023plan}
+Lei Wang, Yihuai Xu, WanyuLan, Zhiqiang Hu, Yunshi Lan, Roy Ka-Wei Lee, and
+  Ee-Peng Lim.
+\newblock Plan-and-solve prompting: Improving zero-shot chain-of-thought
+  reasoning by large language models.
+\newblock In \emph{Annual Meeting of the Association for Computational
+  Linguistics (ACL)}, 2023.
+
+\bibitem[Wei et~al.(2022)Wei, Wang, Schuurmans, Bosma, Xia, Chi, Le, and
+  Zhou]{wei2022cot}
+Jason Wei, Xuezhi Wang, Dale Schuurmans, Maarten Bosma, Fei Xia, Ed~Chi, Quoc~V
+  Le, and Denny Zhou.
+\newblock Chain-of-thought prompting elicits reasoning in large language
+  models.
+\newblock \emph{Advances in Neural Information Processing Systems},
+  35:\penalty0 24824--24837, 2022.
+
+\bibitem[Yao et~al.(2023{\natexlab{a}})Yao, Yu, Zhao, Shafran, Griffiths, Cao,
+  and Narasimhan]{yao2023tot}
+Shunyu Yao, Dian Yu, Jeffrey Zhao, Izhak Shafran, Thomas~L Griffiths, Yuan Cao,
+  and Karthik Narasimhan.
+\newblock Tree of thoughts: Deliberate problem solving with large language
+  models.
+\newblock In \emph{Advances in Neural Information Processing Systems
+  (NeurIPS)}, 2023{\natexlab{a}}.
+
+\bibitem[Yao et~al.(2023{\natexlab{b}})Yao, Zhao, Yu, Du, Shafran, Narasimhan,
+  and Cao]{yao2022react}
+Shunyu Yao, Jeffrey Zhao, Dian Yu, Nan Du, Izhak Shafran, Karthik Narasimhan,
+  and Yuan Cao.
+\newblock React: Synergizing reasoning and acting in language models.
+\newblock In \emph{International Conference on Learning Representations
+  (ICLR)}, 2023{\natexlab{b}}.
+
+\end{thebibliography}

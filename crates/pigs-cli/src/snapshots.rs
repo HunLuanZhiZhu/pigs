@@ -26,7 +26,7 @@ pub struct SnapshotBatch {
     pub files: Vec<FileSnapshot>,
 }
 
-/// In-memory undo stack (also optionally persisted under .pigs/undo/).
+/// In-memory undo stack (also optionally persisted under .pig/undo/).
 #[derive(Debug, Default)]
 pub struct SnapshotStore {
     batches: VecDeque<SnapshotBatch>,
@@ -64,7 +64,7 @@ impl SnapshotStore {
         self.batches.is_empty()
     }
 
-    /// Load persisted snapshot batches from `{workspace}/.pigs/undo/*.json`.
+    /// Load persisted snapshot batches from `{workspace}/.pig/undo/*.json`.
     /// Newest batches end up on top of the undo stack.
     pub fn load_from_workspace(workspace: &Path) -> Self {
         let mut store = Self::new();
@@ -139,7 +139,7 @@ pub fn restore_batch(batch: &SnapshotBatch) -> Result<Vec<String>, String> {
     Ok(report)
 }
 
-/// Persist batch metadata under `.pigs/undo/`.
+/// Persist batch metadata under `.pig/undo/`.
 pub fn persist_batch(workspace: &Path, batch: &SnapshotBatch) -> Result<PathBuf, String> {
     let dir = workspace.join(".pigs").join("undo");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -192,7 +192,7 @@ mod tests {
         fs::write(&file, "after\n").unwrap();
         let batch = SnapshotBatch {
             id: "snap-test-existing".into(),
-            tool_name: "write_file".into(),
+            tool_name: "write".into(),
             created_at: "now".into(),
             files: vec![snap],
         };
@@ -216,7 +216,7 @@ mod tests {
 
         let batch = SnapshotBatch {
             id: "snap-test-new".into(),
-            tool_name: "write_file".into(),
+            tool_name: "write".into(),
             created_at: "now".into(),
             files: vec![snap],
         };
@@ -236,7 +236,7 @@ mod tests {
 
         let batch = SnapshotBatch {
             id: "snap-test-persist".into(),
-            tool_name: "edit_file".into(),
+            tool_name: "edit".into(),
             created_at: "now".into(),
             files: vec![snap],
         };
@@ -264,7 +264,7 @@ mod tests {
         for i in 0..25 {
             store.push(SnapshotBatch {
                 id: format!("snap-{i}"),
-                tool_name: "write_file".into(),
+                tool_name: "write".into(),
                 created_at: "now".into(),
                 files: vec![],
             });

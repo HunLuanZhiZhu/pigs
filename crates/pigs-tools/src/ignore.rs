@@ -1,13 +1,13 @@
-//! .pigsignore file support — load ignore patterns that tools respect.
+//! .pigignore file support — load ignore patterns that tools respect.
 //!
-//! When a `.pigsignore` file exists in the workspace root, its patterns are
+//! When a `.pigignore` file exists in the workspace root, its patterns are
 //! loaded and used by grep_search, glob_search, and list_files to exclude
 //! matching paths. The format is the same as .gitignore (one pattern per line,
 //! # comments, blank lines ignored).
 
 use std::path::{Path, PathBuf};
 
-/// A set of ignore patterns loaded from a `.pigsignore` file.
+/// A set of ignore patterns loaded from a `.pigignore` file.
 #[derive(Debug, Clone, Default)]
 pub struct IgnorePatterns {
     patterns: Vec<String>,
@@ -16,10 +16,10 @@ pub struct IgnorePatterns {
 }
 
 impl IgnorePatterns {
-    /// Load ignore patterns from a `.pigsignore` file in the given directory.
+    /// Load ignore patterns from a `.pigignore` file in the given directory.
     /// Returns an empty pattern set if the file doesn't exist.
     pub fn load(dir: &Path) -> Self {
-        let path = dir.join(".pigsignore");
+        let path = dir.join(".pigignore");
         match std::fs::read_to_string(&path) {
             Ok(content) => {
                 let patterns: Vec<String> = content
@@ -126,10 +126,10 @@ mod tests {
 
     #[test]
     fn test_load_and_match() {
-        // Create a temp .pigsignore file
+        // Create a temp .pigignore file
         let temp_dir = std::env::temp_dir().join("pigs_ignore_test");
         std::fs::create_dir_all(&temp_dir).unwrap();
-        let ignore_path = temp_dir.join(".pigsignore");
+        let ignore_path = temp_dir.join(".pigignore");
         let mut file = std::fs::File::create(&ignore_path).unwrap();
         writeln!(file, "# Comment line").unwrap();
         writeln!(file, "secrets.env").unwrap();

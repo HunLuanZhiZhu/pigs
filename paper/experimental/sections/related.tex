@@ -1,0 +1,85 @@
+\section{Related Work}
+\label{sec:related}
+
+\subsection{Multi-Stage LLM Reasoning}
+\begin{chinese}
+\subsection*{多阶段 LLM 推理}
+\end{chinese}
+
+\textbf{ReAct}~\citep{yao2022react} pioneered the paradigm of interleaved reasoning and acting in LLMs. Unlike pigs, ReAct embeds control flow within model output---the model itself decides when to reason and when to act. pigs externalizes control flow to a deterministic state machine, with the model responsible only for semantic content and routing signals.
+\begin{chinese}
+\textbf{ReAct}~\citep{yao2022react} 开创了 LLM 中推理与行动交替的范式。与 pigs 不同，ReAct 将控制流嵌入模型输出——模型自行决定何时推理、何时行动。pigs 将控制流外部化到确定性状态机，模型仅负责语义内容和路由信号。
+\end{chinese}
+
+\textbf{Reflexion}~\citep{shinn2023reflexion} enables language reinforcement learning through reflective feedback. Its reflection trigger is model-driven, whereas pigs' Post phase is a structurally enforced step of the state machine.
+\begin{chinese}
+\textbf{Reflexion}~\citep{shinn2023reflexion} 通过反思反馈实现语言强化学习。其反思触发由模型驱动，而 pigs 的 Post 阶段是状态机强制执行的结构性步骤。
+\end{chinese}
+
+\textbf{Self-Refine}~\citep{madaan2023selfrefine} uses a single LLM serving as generator, critic, and refiner simultaneously. pigs separates these roles into different phases, using different prompts, and adds a Pre (planning) phase that Self-Refine lacks.
+\begin{chinese}
+\textbf{Self-Refine}~\citep{madaan2023selfrefine} 使用单一 LLM 兼任生成器、批评器和精炼器。pigs 将这些角色分离到不同相位，使用不同提示词，并增加了 Self-Refine 所缺失的 Pre（规划）阶段。
+\end{chinese}
+
+\begin{chinese}
+\textbf{Plan-and-Solve}~\citep{wang2023plan} 在提示结构中分离规划与执行。pigs 将其扩展为三阶段模型，增加显式审查阶段和失败恢复路由。
+\end{chinese}
+
+\begin{chinese}
+\textbf{Tree of Thoughts}~\citep{yao2023tot} 和 \textbf{Graph of Thoughts}~\citep{besta2023got} 将思维链推广到搜索结构。这些方法要求模型自评估状态，而 pigs 使用专用 Post 阶段进行评估。
+\end{chinese}
+
+\subsection{LLM-as-Code and Deterministic Control}
+\begin{chinese}
+\subsection*{LLM-as-Code 与确定性控制}
+\end{chinese}
+
+\begin{chinese}
+近期工作提出将控制流从 LLM 转移到确定性程序结构。\textbf{LLM-as-Code}~\citep{llmascode2026} 将 LLM 视为不可改变程序执行路径的自适应组件。\textbf{Compile, Then Page}~\citep{compilepage2026} 将标准操作流程编译为可执行伪代码并配合栈机器。\textbf{XFlow}~\citep{xflow2026} 定义了一种通过生命周期管理符号来阶段性控制不确定性的 DSL。这些系统与 pigs 共享确定性控制流理念，但运行在更高抽象层级（工作流 DSL、编译程序）。pigs 在 API 中间件层面实现确定性控制，无需 DSL 或编译步骤。
+\end{chinese}
+
+\begin{chinese}
+\textbf{Rel(AI)Build}~\citep{relaibuild2026} 提出面向编码 Agent 的确定性控制平面，采用相位状态机。其架构与 pigs 相似，但聚焦于供应链完整性（SHA-256 寻址、HMAC 锁文件）而非 API 层编排。
+\end{chinese}
+
+\subsection{LLM Serving Systems}
+\begin{chinese}
+\subsection*{LLM 服务系统}
+\end{chinese}
+
+\begin{chinese}
+\textbf{Orca}~\citep{yu2022orca} 引入了迭代级调度替代批级调度。\textbf{vLLM}~\citep{kwon2023vllm} 通过 PagedAttention 实现显存高效服务。\textbf{SGLang}~\citep{zheng2024sglang} 提供结构化生成语言。这些系统优化模型服务效率，但不涉及跨工具调用的编排结构。pigs 在服务层之上提供相位编排，可与任何后端服务系统协同。
+\end{chinese}
+
+\begin{chinese}
+\textbf{Dyserve}~\citep{dyserve2027} 是一个工作流感知服务层，在工具调用失败时重新路由。pigs 的 \texttt{PIGFAIL} 标记提供了类似的失败恢复机制，但作用于相位层级而非工具调用层级。
+\end{chinese}
+
+\subsection{Tool-Using Agent Frameworks}
+\begin{chinese}
+\subsection*{工具使用 Agent 框架}
+\end{chinese}
+
+\begin{chinese}
+\textbf{ToolLLM/ToolBench}~\citep{qin2023toolllm} 为工具增强 LLM 提供了框架和基准测试。\textbf{MetaGPT}~\citep{hong2023metagpt} 将标准操作流程编码到提示序列中。\textbf{MemGPT}~\citep{packer2023memgpt} 通过操作系统启发的中断机制管理控制流。pigs 的不同之处在于将工具执行保持在编排层外部——运行时暂停并返回工具调用给客户端，而非在内部执行。
+\end{chinese}
+
+\subsection{Agent Benchmarks}
+\begin{chinese}
+\subsection*{Agent 基准测试}
+\end{chinese}
+
+This paper builds on the system design described in the companion paper~\citep{pigs_system_design}. The experimental methodology draws from agent evaluation benchmarks: \textbf{AgentBench}~\citep{liu2023agentbench} for multi-environment evaluation, \textbf{SWE-bench}~\citep{jimenez2024swebench} for software engineering, \textbf{GAIA}~\citep{mialon2023gaia} for general AI assistant evaluation, and \textbf{AgentBoard}~\citep{ma2024agentboard} for fine-grained progress analysis.
+\begin{chinese}
+本文建立在配套论文~\citep{pigs_system_design} 描述的系统设计之上。多个基准测试评估 LLM Agent：\textbf{AgentBench}~\citep{liu2023agentbench}（8 种环境）、\textbf{SWE-bench}~\citep{jimenez2024swebench}（软件工程）、\textbf{GAIA}~\citep{mialon2023gaia}（通用 AI 助手）、\textbf{ToolBench}~\citep{qin2023toolllm}（工具使用）和 \textbf{AgentBoard}~\citep{ma2024agentboard}（多轮分析）。这些基准测试评估端到端 Agent 性能，但未隔离编排结构的贡献。pigs 的相位设计使消融实验（如仅 Pre vs.\ 完整管线）成为可能，这些基准测试可测量其差异。
+\end{chinese}
+
+The cost-benefit analysis follows the methodology of \citet{kaddour2023challenges}, who discuss the trade-offs of LLM complexity. The three-protocol consistency evaluation is novel---no prior work systematically compares agent behavior across different API protocols.
+\begin{chinese}
+成本效益分析遵循 \citet{kaddour2023challenges} 的方法论，他们讨论了 LLM 复杂性的权衡。三协议一致性评估是新颖的——此前没有工作系统比较不同 API 协议间的 Agent 行为。
+\end{chinese}
+
+\citet{huang2024selfcorrect} found that LLMs cannot reliably self-correct reasoning without external feedback, which motivates our Post phase as a structured review step rather than relying on intrinsic self-correction.
+\begin{chinese}
+\citet{huang2024selfcorrect} 发现 LLM 在没有外部反馈的情况下无法可靠地自我纠正推理，这促使我们将 Post 阶段设计为结构化审查步骤，而非依赖内在的自我纠正。
+\end{chinese}

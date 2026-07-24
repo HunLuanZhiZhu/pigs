@@ -23,12 +23,12 @@ impl Default for GrepTool {
 
 impl ToolHandler for GrepTool {
     fn name(&self) -> &str {
-        "grep_search"
+        "grep"
     }
 
     fn spec(&self) -> ToolSpec {
         ToolSpec::new(
-            "grep_search",
+            "grep",
             "Search file contents using a regex pattern. Returns matching lines with file paths and line numbers. \
              Searches recursively from the given directory (defaults to current directory).",
             serde_json::json!({
@@ -181,13 +181,13 @@ async fn search_directory(args: SearchArgs<'_>) {
                         continue;
                     }
                 }
-                // Skip .pigsignore-matched directories
+                // Skip .pigignore-matched directories
                 if ignore_patterns.is_ignored(&path, base) {
                     continue;
                 }
                 stack.push(path);
             } else if path.is_file() {
-                // Skip .pigsignore-matched files
+                // Skip .pigignore-matched files
                 if ignore_patterns.is_ignored(&path, base) {
                     continue;
                 }

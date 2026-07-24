@@ -83,28 +83,35 @@ fn default_api_openai() -> String {
     "openai".to_string()
 }
 
-/// A selectable model entry in the local catalog.
+/// A selectable model entry in the agent's model catalog.
+///
+/// This is intentionally minimal — it only specifies WHICH models the agent
+/// can select and optional per-model overrides. Provider endpoints, context
+/// windows, and base URLs live in `config.toml` (the proxy config).
+///
+/// Fields:
+/// - `name`: model name (must match a model in `config.toml`'s `[[provider]] models`)
+/// - `api_key`: optional per-model key (default: global `api_key`)
+/// - `provider`: optional, only needed when the same model name exists in multiple providers
+/// - `api`: optional API format override ("openai-chat" / "anthropic" / "openai" / "responses")
+///   default selection order: chat → anthropic → responses (based on what the provider supports)
+/// - `temperature`: optional per-model temperature override
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelConfig {
-    /// Local name / alias used by `/model` and `model = "..."`.
+    /// Model name (matches `config.toml` provider's `models` list).
     pub name: String,
-    /// Provider name from `[[providers]]` (or built-in "openai" / "anthropic").
-    pub provider: String,
-    /// Remote model id sent to the API. Defaults to `name` when omitted.
+    /// Optional per-model API key. Default: global `api_key`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-    /// Context window size in tokens (used for auto-compaction).
+    pub api_key: Option<String>,
+    /// Optional provider name. Only needed when the same model exists in multiple providers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub context_window: Option<u64>,
-    /// Optional per-model max output tokens override.
+    pub provider: Option<String>,
+    /// Optional API format override. Default: auto-select (chat → anthropic → responses).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_tokens: Option<u32>,
+    pub api: Option<String>,
     /// Optional per-model temperature override.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
-    /// Optional notes shown by `/models`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub notes: Option<String>,
 }
 
 /// Fully resolved model + provider credentials for client creation.
@@ -165,6 +172,11 @@ pub struct AppConfig {
     /// Default model to use.
     #[serde(default = "default_model")]
     pub model: String,
+    /// API key for the upstream LLM provider.
+    /// Sent to the proxy via Authorization header; the proxy transparently passes it through.
+    /// This is the only place API keys live — the proxy's config.toml does NOT contain keys.
+    #[serde(default)]
+    pub api_key: String,
     /// Default permission mode.
     #[serde(default = "default_permission_mode")]
     pub permission_mode: String,
@@ -175,8 +187,8 @@ pub struct AppConfig {
     /// - phased agent (PRE / Executor / Post) system prompts and user payloads
     ///
     /// Slash commands accept Chinese / pinyin aliases regardless of this setting.
-    /// Set in `~/.pigs/config.toml` or workspace `.pigs/config.toml`, or via
-    /// env `PIGS_LANGUAGE` / CLI `--language`.
+    /// Set in `~/.pigs/pig.toml` or workspace `.pigs/pig.toml`, or via
+    /// env `PIG_LANGUAGE` / CLI `--language`.
     #[serde(default = "default_language")]
     pub language: String,
     /// Maximum number of agent loop iterations per turn.
@@ -197,7 +209,7 @@ pub struct AppConfig {
     /// Custom system prompt (prepended to the default one).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
-    /// Enable file logging to ~/.pigs/logs/.
+    /// Enable file logging to ~/.pig/logs/.
     #[serde(default = "default_log_to_file")]
     pub log_to_file: bool,
     /// Log level: error, warn, info, debug, trace.
@@ -206,12 +218,6 @@ pub struct AppConfig {
     /// MCP servers to auto-connect on startup.
     #[serde(default)]
     pub mcp_servers: Vec<McpServerConfigEntry>,
-    /// Auto-compact estimated-token threshold.
-    #[serde(default = "default_compact_token_threshold")]
-    pub compact_token_threshold: u64,
-    /// Messages retained fully during compaction.
-    #[serde(default = "default_compact_keep_recent")]
-    pub compact_keep_recent: usize,
     /// Named provider endpoints (multi-vendor). Prefer this over legacy openai/anthropic blocks.
     #[serde(default)]
     pub providers: Vec<NamedProviderConfig>,
@@ -291,25 +297,16 @@ fn default_temperature() -> f32 {
     1.0
 }
 
-fn default_compact_token_threshold() -> u64 {
-    100_000
-}
-
-fn default_compact_keep_recent() -> usize {
-    4
-}
-
 impl Default for AppConfig {
     fn default() -> Self {
         AppConfig {
             model: default_model(),
+            api_key: String::new(),
             permission_mode: default_permission_mode(),
             language: default_language(),
             max_turns: default_max_turns(),
             max_tokens: default_max_tokens(),
             temperature: default_temperature(),
-            compact_token_threshold: default_compact_token_threshold(),
-            compact_keep_recent: default_compact_keep_recent(),
             openai: ProviderConfig::default(),
             anthropic: ProviderConfig::default(),
             system_prompt: None,
@@ -324,7 +321,7 @@ impl Default for AppConfig {
 }
 
 impl AppConfig {
-    /// Load configuration from the default location (`~/.pigs/config.toml`).
+    /// Load configuration from the default location (`~/.pigs/pig.toml`).
     /// Falls back to defaults if the file doesn't exist.
     pub fn load() -> Result<Self, ConfigError> {
         let config_path = Self::config_path();
@@ -336,19 +333,19 @@ impl AppConfig {
     }
 
     /// Load layered configuration:
-    /// 1. `~/.pigs/config.toml` (global)
-    /// 2. `{workspace}/.pigs/config.toml` (project overrides, if present)
-    /// 3. `{workspace}/.pigs/config.local.toml` (machine-local overrides; gitignored)
+    /// 1. `~/.pigs/pig.toml` (global)
+    /// 2. `{workspace}/.pigs/pig.toml` (project overrides, if present)
+    /// 3. `{workspace}/.pigs/pig.local.toml` (machine-local overrides; gitignored)
     pub fn load_layered(workspace: &Path) -> Result<Self, ConfigError> {
         let mut config = Self::load()?;
-        let project_path = workspace.join(".pigs").join("config.toml");
+        let project_path = workspace.join(".pigs").join("pig.toml");
         if project_path.exists() {
             let project = Self::load_from(&project_path)?;
             config.merge_project_overrides(project);
         }
         // Local-only overlay for machine-specific endpoints (e.g. llama-server).
-        // Intended to stay out of git via `.pigs/config.local.toml` / `.pigs/*.local.*`.
-        let local_path = workspace.join(".pigs").join("config.local.toml");
+        // Intended to stay out of git via `.pigs/pig.local.toml` / `.pigs/*.local.*`.
+        let local_path = workspace.join(".pigs").join("pig.local.toml");
         if local_path.exists() {
             let local = Self::load_from(&local_path)?;
             config.merge_project_overrides(local);
@@ -365,6 +362,9 @@ impl AppConfig {
         if project.model != defaults.model {
             self.model = project.model;
         }
+        if !project.api_key.is_empty() {
+            self.api_key = project.api_key;
+        }
         if project.permission_mode != defaults.permission_mode {
             self.permission_mode = project.permission_mode;
         }
@@ -379,12 +379,6 @@ impl AppConfig {
         }
         if (project.temperature - defaults.temperature).abs() > f32::EPSILON {
             self.temperature = project.temperature;
-        }
-        if project.compact_token_threshold != defaults.compact_token_threshold {
-            self.compact_token_threshold = project.compact_token_threshold;
-        }
-        if project.compact_keep_recent != defaults.compact_keep_recent {
-            self.compact_keep_recent = project.compact_keep_recent;
         }
         if project.system_prompt.is_some() {
             self.system_prompt = project.system_prompt;
@@ -447,19 +441,19 @@ impl AppConfig {
         Ok(config)
     }
 
-    /// Get the default config file path (`~/.pigs/config.toml`).
+    /// Get the default config file path (`~/.pigs/pig.toml`).
     pub fn config_path() -> PathBuf {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        home.join(".pigs").join("config.toml")
+        home.join(".pigs").join("pig.toml")
     }
 
-    /// Get the sessions directory (`~/.pigs/sessions/`).
+    /// Get the sessions directory (`~/.pig/sessions/`).
     pub fn sessions_dir() -> PathBuf {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
         home.join(".pigs").join("sessions")
     }
 
-    /// Get the logs directory (`~/.pigs/logs/`).
+    /// Get the logs directory (`~/.pig/logs/`).
     pub fn logs_dir() -> PathBuf {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
         home.join(".pigs").join("logs")
@@ -468,41 +462,31 @@ impl AppConfig {
     /// Apply environment variable overrides.
     /// Priority: env vars > config file values.
     pub fn with_env_overrides(mut self) -> Self {
-        if let Ok(model) = std::env::var("PIGS_MODEL") {
+        if let Ok(model) = std::env::var("PIG_MODEL") {
             self.model = model;
         }
-        if let Ok(mode) = std::env::var("PIGS_PERMISSION_MODE") {
+        if let Ok(mode) = std::env::var("PIG_PERMISSION_MODE") {
             self.permission_mode = mode;
         }
-        if let Ok(lang) = std::env::var("PIGS_LANGUAGE") {
+        if let Ok(lang) = std::env::var("PIG_LANGUAGE") {
             self.language = lang;
         }
-        if let Ok(max_turns) = std::env::var("PIGS_MAX_TURNS") {
+        if let Ok(max_turns) = std::env::var("PIG_MAX_TURNS") {
             if let Ok(parsed) = max_turns.parse::<u32>() {
                 self.max_turns = parsed;
             }
         }
-        if let Ok(max_tokens) = std::env::var("PIGS_MAX_TOKENS") {
+        if let Ok(max_tokens) = std::env::var("PIG_MAX_TOKENS") {
             if let Ok(parsed) = max_tokens.parse::<u32>() {
                 self.max_tokens = parsed;
             }
         }
-        if let Ok(temp) = std::env::var("PIGS_TEMPERATURE") {
+        if let Ok(temp) = std::env::var("PIG_TEMPERATURE") {
             if let Ok(parsed) = temp.parse::<f32>() {
                 self.temperature = parsed;
             }
         }
-        if let Ok(v) = std::env::var("PIGS_COMPACT_TOKEN_THRESHOLD") {
-            if let Ok(parsed) = v.parse::<u64>() {
-                self.compact_token_threshold = parsed;
-            }
-        }
-        if let Ok(v) = std::env::var("PIGS_COMPACT_KEEP_RECENT") {
-            if let Ok(parsed) = v.parse::<usize>() {
-                self.compact_keep_recent = parsed;
-            }
-        }
-        if let Ok(prompt) = std::env::var("PIGS_SYSTEM_PROMPT") {
+        if let Ok(prompt) = std::env::var("PIG_SYSTEM_PROMPT") {
             self.system_prompt = Some(prompt);
         }
 
@@ -519,10 +503,10 @@ impl AppConfig {
         if let Ok(url) = std::env::var("ANTHROPIC_BASE_URL") {
             self.anthropic.base_url = Some(url);
         }
-        if let Ok(level) = std::env::var("PIGS_LOG_LEVEL") {
+        if let Ok(level) = std::env::var("PIG_LOG_LEVEL") {
             self.log_level = level;
         }
-        if let Ok(log_to_file) = std::env::var("PIGS_LOG_TO_FILE") {
+        if let Ok(log_to_file) = std::env::var("PIG_LOG_TO_FILE") {
             self.log_to_file = matches!(log_to_file.to_lowercase().as_str(), "1" | "true" | "yes");
         }
 
@@ -731,7 +715,7 @@ impl AppConfig {
             if let Some(entry) = self
                 .models
                 .iter()
-                .find(|m| m.name == remote || m.model.as_deref() == Some(remote))
+                .find(|m| m.name == remote)
             {
                 return self.resolve_from_catalog_entry(entry, &providers);
             }
@@ -790,25 +774,61 @@ impl AppConfig {
         entry: &ModelConfig,
         providers: &[NamedProviderConfig],
     ) -> Result<ResolvedModel, ConfigError> {
-        let provider = providers
-            .iter()
-            .find(|p| p.name == entry.provider)
-            .ok_or_else(|| {
-                ConfigError::Invalid(format!(
-                    "model '{}' references unknown provider '{}'",
-                    entry.name, entry.provider
-                ))
-            })?;
-        let remote = entry.model.clone().unwrap_or_else(|| entry.name.clone());
+        // Provider: use entry.provider if specified, otherwise find first provider with this model
+        let provider = if let Some(ref pname) = entry.provider {
+            providers
+                .iter()
+                .find(|p| p.name == *pname)
+                .ok_or_else(|| {
+                    ConfigError::Invalid(format!(
+                        "model '{}' references unknown provider '{}'",
+                        entry.name, pname
+                    ))
+                })?
+        } else {
+            // No provider specified: use the first available provider.
+            // (Typically there's only one provider configured in config.toml.)
+            providers
+                .first()
+                .ok_or_else(|| {
+                    ConfigError::Invalid("no providers configured".into())
+                })?
+        };
+
+        // API format: use entry.api if specified, otherwise auto-select (chat → anthropic → responses)
+        let api_format = if let Some(ref api) = entry.api {
+            api.clone()
+        } else {
+            // Auto-select based on what the provider supports (from NamedProviderConfig)
+            // Default selection order: openai-chat → anthropic → openai(responses)
+            // Since NamedProviderConfig has a single `api` field, we use that.
+            provider.api.clone()
+        };
+
+        // Remote model = entry.name (no more alias mapping)
+        let remote = entry.name.clone();
+
+        // Context window: not in ModelConfig anymore, use default
+        let context_window = Some(Self::default_context_window_for(&remote));
+
+        // Temperature: optional per-model override
+        let temperature = entry.temperature;
+
+        // Build a temporary provider with the resolved api format
+        let resolved_provider = NamedProviderConfig {
+            name: provider.name.clone(),
+            api: api_format,
+            api_key: entry.api_key.clone().or_else(|| provider.api_key.clone()),
+            base_url: provider.base_url.clone(),
+        };
+
         self.resolve_with_provider(
             &entry.name,
             &remote,
-            provider,
-            entry
-                .context_window
-                .or(Some(Self::default_context_window_for(&remote))),
-            entry.max_tokens,
-            entry.temperature,
+            &resolved_provider,
+            context_window,
+            None, // max_tokens no longer in ModelConfig
+            temperature,
         )
     }
 
@@ -822,13 +842,21 @@ impl AppConfig {
         temperature: Option<f32>,
     ) -> Result<ResolvedModel, ConfigError> {
         let api = ApiFormat::parse(&provider.api).map_err(ConfigError::Invalid)?;
+        // API key: prefer provider-level key, fall back to global AppConfig.api_key
         let api_key = provider
             .api_key
             .clone()
             .filter(|s| !s.is_empty())
+            .or_else(|| {
+                if !self.api_key.is_empty() {
+                    Some(self.api_key.clone())
+                } else {
+                    None
+                }
+            })
             .ok_or_else(|| {
                 ConfigError::Invalid(format!(
-                    "provider '{}' is missing api_key (set [[providers]] or env)",
+                    "provider '{}' is missing api_key (set api_key in pig.toml or [[providers]])",
                     provider.name
                 ))
             })?;
@@ -883,13 +911,13 @@ mod tests {
 
     #[test]
     fn test_env_overrides() {
-        std::env::set_var("PIGS_MODEL", "gpt-4o");
-        std::env::set_var("PIGS_PERMISSION_MODE", "readonly");
+        std::env::set_var("PIG_MODEL", "gpt-4o");
+        std::env::set_var("PIG_PERMISSION_MODE", "readonly");
         let config = AppConfig::default().with_env_overrides();
         assert_eq!(config.model, "gpt-4o");
         assert_eq!(config.permission_mode, "readonly");
-        std::env::remove_var("PIGS_MODEL");
-        std::env::remove_var("PIGS_PERMISSION_MODE");
+        std::env::remove_var("PIG_MODEL");
+        std::env::remove_var("PIG_PERMISSION_MODE");
     }
 
     #[test]
@@ -953,12 +981,10 @@ mod tests {
             }],
             models: vec![ModelConfig {
                 name: "ds-chat".into(),
-                provider: "deepseek".into(),
-                model: Some("deepseek-chat".into()),
-                context_window: Some(64_000),
-                max_tokens: Some(2048),
+                api_key: None,
+                provider: Some("deepseek".into()),
+                api: None,
                 temperature: None,
-                notes: Some("DeepSeek chat".into()),
             }],
             openai: ProviderConfig {
                 api_key: Some("sk-oai".into()),
@@ -972,13 +998,15 @@ mod tests {
         };
 
         let resolved = config.resolve_model("ds-chat").unwrap();
-        assert_eq!(resolved.remote_model, "deepseek-chat");
+        // remote_model = entry.name (no more alias mapping in ModelConfig)
+        assert_eq!(resolved.remote_model, "ds-chat");
         assert_eq!(resolved.provider_name, "deepseek");
         assert_eq!(resolved.api, ApiFormat::OpenAI);
         assert_eq!(resolved.base_url, "https://api.deepseek.com");
-        assert_eq!(resolved.context_window, 64_000);
-        assert_eq!(resolved.max_tokens, Some(2048));
-        assert_eq!(resolved.compact_threshold(100_000), 48_000);
+        // context_window is now inferred from model name, not stored in ModelConfig
+        assert_eq!(resolved.context_window, AppConfig::default_context_window_for("ds-chat"));
+        // max_tokens is no longer in ModelConfig
+        assert_eq!(resolved.max_tokens, None);
 
         let slash = config.resolve_model("deepseek/deepseek-reasoner").unwrap();
         assert_eq!(slash.remote_model, "deepseek-reasoner");

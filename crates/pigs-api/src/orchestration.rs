@@ -131,6 +131,16 @@ impl OrchestrationState {
         &self.failure_outputs
     }
 
+    /// Returns the current Pre replan count.
+    pub fn pre_replan_count(&self) -> u32 {
+        self.pre_replans
+    }
+
+    /// Returns the current Post iteration count.
+    pub fn post_iteration_count(&self) -> u32 {
+        self.post_iterations
+    }
+
     /// Formats failures for the next Pre prompt.
     pub fn numbered_failures(&self) -> String {
         self.failure_outputs

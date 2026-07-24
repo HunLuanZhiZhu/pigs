@@ -1,8 +1,8 @@
 //! Cross-session memory notes.
 //!
 //! Memory is stored as markdown bullet notes in:
-//! - global: `~/.pigs/memory.md`
-//! - project: `{workspace}/.pigs/memory.md`
+//! - global: `~/.pig/memory.md`
+//! - project: `{workspace}/.pig/memory.md`
 //!
 //! Notes are injected into the system prompt so the agent can recall preferences
 //! and durable facts across sessions.
@@ -68,13 +68,13 @@ impl MemoryStore {
     }
 }
 
-/// Global memory file path: `~/.pigs/memory.md`.
+/// Global memory file path: `~/.pig/memory.md`.
 pub fn global_memory_path() -> PathBuf {
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
     home.join(".pigs").join("memory.md")
 }
 
-/// Project memory file path: `{workspace}/.pigs/memory.md`.
+/// Project memory file path: `{workspace}/.pig/memory.md`.
 pub fn project_memory_path(workspace: &Path) -> PathBuf {
     workspace.join(".pigs").join("memory.md")
 }

@@ -1,0 +1,17 @@
+allowed_paths:
+  - "sections/*.tex"
+  - "main.tex"
+  - "appendix.tex"
+forbidden_paths:
+  - "**/*.bib"
+  - "**/*.sty"
+  - "**/*.bst"
+  - "../*Submission/**"
+  - "../*Camera/**"
+  - "templates/**"
+forbidden_operations:
+  - new_cite
+  - new_bibitem
+  - new_theorem_env
+  - numerical_claim
+rationale: "Resubmit mode: text-only microedits, paper structure frozen by user constraint."

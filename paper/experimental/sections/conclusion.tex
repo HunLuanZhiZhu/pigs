@@ -1,0 +1,15 @@
+\section{Conclusion}
+\label{sec:conclusion}
+
+We designed an experimental evaluation framework for Pigs phased orchestration, comprising four experiments: ablation, control marker effectiveness, three-protocol consistency, and cost-benefit analysis. All experiments use public benchmarks and require only API access. Experimental results are pending and will be reported upon completion of the evaluation.
+\begin{chinese}
+本文介绍了 pigs 的相位编排系统的实验评估框架。我们设计了四组实验：消融研究、控制标记评估、协议一致性验证和成本效益分析，分别检验三阶段管线各组件的贡献、PIGFAIL 失败恢复机制的效果、三协议原生支持的一致性，以及编排开销与性能提升的权衡。
+\end{chinese}
+\begin{chinese}
+该评估框架的核心优势在于其完全基于 API 的特性：所有实验通过标准 HTTP 接口执行，无需 GPU 推理或专用硬件，使得评估可在任何标准服务器上复现。这使 pigs 的编排设计可被独立验证，并与其他 Agent 框架进行公平比较。
+\end{chinese}
+
+Future work includes: (1) multi-model orchestration evaluation (different models for different phases), (2) extended benchmarks (AgentBoard, ToolBench), (3) formal verification of state machine properties, and (4) security analysis against prompt injection attacks~\citep{greshake2023promptinjection}.
+\begin{chinese}
+当前实验结果尚待填充。未来的工作将包括：在完整基准测试集上执行评估、与其他编排框架进行系统比较、探索相位数量和提示词策略的最优配置，以及将评估扩展到更多领域和任务类型。
+\end{chinese}

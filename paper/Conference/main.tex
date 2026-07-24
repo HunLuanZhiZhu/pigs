@@ -1,0 +1,87 @@
+% Pigs: Protocol-Native Phased Orchestration for LLM API Requests
+% Full Conference Paper (Bilingual: EN + ZH via three switches)
+
+%% ====================================================================
+%% 中文开关说明（参考 md_en.tex 三开关机制）
+%% ====================================================================
+%% 开关0: \PassOptionsToPackage{no-math}{fontspec}
+%%   - 注释掉此行则不传递 no-math 选项给 fontspec
+%% 开关1: \usepackage[scheme=plain]{ctex}
+%%   - 注释掉此行则不加载 ctex 中文支持
+%% 开关2: \excludecomment{chinese} / \specialcomment{chinese}{...}
+%%   - 启用 \excludecomment{chinese}（取消注释）→ 英文模式，隐藏所有中文
+%%   - 启用 \specialcomment{chinese}（取消注释）→ 中文模式，显示所有中文
+%% 三个开关全开（默认）= 中文模式
+%% ====================================================================
+
+\PassOptionsToPackage{no-math}{fontspec} % 中文开关0
+\documentclass[10pt]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{fontspec}
+\usepackage{xeCJK}
+\setCJKmainfont{SimSun}[AutoFakeBold=2]
+\usepackage{xcolor}
+
+\usepackage[a4paper, margin=1in]{geometry}
+\usepackage{amsmath, amssymb}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{graphicx}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta, positioning, shapes.geometric, fit, backgrounds}
+\usepackage{listings}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{cleveref}
+\usepackage{natbib}
+
+\lstdefinelanguage{Rust}{
+  keywords={fn,let,mut,pub,struct,enum,impl,trait,use,mod,async,await,return,if,else,match,for,while,loop,break,continue,move,ref,self,Self,where,as,in,box,dyn,unsafe,extern,crate,const,static,type,true,false},
+  sensitive=true,
+  comment=[l]{//},
+  morecomment=[s]{/*}{*/},
+  morestring=[b]",
+  morestring=[b]',
+}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  frame=single,
+  language=Rust,
+  keywordstyle=\color{blue!70!black},
+  commentstyle=\color{green!50!black},
+  stringstyle=\color{red!60!black},
+}
+
+\title{Pigs: Protocol-Native Phased Orchestration for LLM API Requests}
+\author{Anonymous}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Large Language Model (LLM) agents typically interact with providers through stateless API calls, lacking built-in mechanisms for planning, execution verification, and failure recovery. While frameworks like ReAct and Reflexion add multi-stage reasoning within a single conversation, they rely on the LLM itself to manage control flow---an approach that is fragile, protocol-specific, and opaque to downstream tooling. We present \textbf{Pigs}, a phased orchestration middleware that wraps LLM API requests with a deterministic Pre$\rightarrow$Executor$\rightarrow$Post state machine using lightweight text control markers (\texttt{PIGEND}/\texttt{PIGFAIL}) for routing. Pigs preserves the complete protocol-native HTTP request---method, path, headers, and JSON body---across three API protocols (OpenAI Chat Completions, Anthropic Messages, OpenAI Responses), modifying only the model identifier, current user input, and phase transcript. Phase subrequests re-enter the local proxy via HTTP loopback, transparently inheriting channel selection, model mapping, body cleaning, and retry logic. External tool execution is supported through a bounded in-memory continuation store with TTL and capacity limits. We evaluate Pigs through four experiments: an ablation study isolating each phase's contribution, a control marker effectiveness study, a three-protocol consistency evaluation, and a cost-benefit analysis. \textbf{Experimental results are pending and will be filled upon completion of the evaluation.}
+\end{abstract}
+
+\input{sections/introduction}
+\input{sections/background}
+\input{sections/design}
+\input{sections/implementation}
+\input{sections/experiments}
+\input{sections/results}
+\input{sections/related}
+\input{sections/discussion}
+\input{sections/conclusion}
+
+\appendix
+\input{sections/appendix}
+
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+\end{document}

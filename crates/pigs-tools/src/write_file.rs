@@ -23,12 +23,12 @@ impl Default for WriteFileTool {
 
 impl ToolHandler for WriteFileTool {
     fn name(&self) -> &str {
-        "write_file"
+        "write"
     }
 
     fn spec(&self) -> ToolSpec {
         ToolSpec::new(
-            "write_file",
+            "write",
             "Write content to a file. Creates the file if it doesn't exist, \
              or overwrites it if it does. Creates parent directories if needed.",
             serde_json::json!({

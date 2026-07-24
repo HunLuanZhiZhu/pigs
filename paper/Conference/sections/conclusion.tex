@@ -1,0 +1,11 @@
+\section{Conclusion}
+\label{sec:conclusion}
+
+We presented Pigs, a phased orchestration middleware for LLM API requests that combines a deterministic Pre$\rightarrow$Executor$\rightarrow$Post state machine with protocol-native request preservation, HTTP loopback transport, and bounded in-memory continuation. By elevating orchestration from a prompting technique to a middleware concern, Pigs separates deterministic control flow from stochastic LLM calls, making the orchestration transparent, debuggable, and protocol-agnostic. The system is implemented as a 13-crate Rust workspace and supports three major API protocols with real SSE streaming.
+我们提出了 Pigs，一种面向 LLM API 请求的分阶段编排中间件，将确定性的 Pre$\rightarrow$Executor$\rightarrow$Post 状态机与协议原生请求保留、HTTP 回环传输和有界内存续传相结合。通过将编排从提示技术提升为中间件关注点，Pigs 将确定性控制流与随机性 LLM 调用分离，使编排变得透明、可调试且协议无关。该系统以 13 个 crate 的 Rust workspace 实现，支持三种主要 API 协议及真实 SSE 流式传输。
+
+We designed an experimental evaluation framework comprising four experiments: an ablation study isolating each phase's contribution, a control marker effectiveness study evaluating PIGFAIL-based failure recovery, a three-protocol consistency evaluation, and a cost-benefit analysis. All experiments use public benchmarks (SWE-bench, GAIA, AgentBoard) and require only API access---no GPU resources. \textbf{Experimental results are pending and will be reported upon completion of the evaluation.}
+我们设计了一套包含四组实验的评估框架：隔离各阶段贡献的消融研究、评估基于 \texttt{PIGFAIL} 的故障恢复的控制标记有效性研究、三协议一致性评估，以及成本效益分析。所有实验均使用公开基准测试（SWE-bench、GAIA、AgentBoard），仅需 API 访问——无需 GPU 资源。\textbf{实验结果待补充，将在评估完成后报告。}
+
+Future work includes: (1) multi-model phase orchestration (different models for different phases), (2) formal verification of the state machine, (3) extended benchmarks (ToolBench, BFCL), (4) security analysis against prompt injection attacks~\citep{greshake2023promptinjection}, and (5) marker robustness improvements using fine-tuned detection models.
+未来工作包括：（1）多模型阶段编排（不同阶段使用不同模型），（2）状态机的形式化验证，（3）扩展基准测试（ToolBench、BFCL），（4）针对提示注入攻击的安全分析~\citep{greshake2023promptinjection}，（5）使用微调检测模型提升标记鲁棒性。

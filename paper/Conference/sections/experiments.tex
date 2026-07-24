@@ -1,0 +1,95 @@
+\section{Experiments}
+\label{sec:experiments}
+
+To evaluate whether phased orchestration improves task completion quality, we design four experiments that collectively address the concerns raised in prior review: (1) an ablation study isolating each phase's contribution, (2) a control marker effectiveness study, (3) a three-protocol consistency evaluation, and (4) a cost-benefit analysis. All experiments are conducted through the Pigs HTTP API, requiring only API access---no GPU resources.
+为评估分阶段编排是否能提升任务完成质量，我们设计了四组实验，以共同回应先前评审中提出的关注点：（1）隔离各阶段贡献的消融研究，（2）控制标记有效性研究，（3）三协议一致性评估，（4）成本效益分析。所有实验均通过 Pigs HTTP API 执行，仅需 API 访问——无需 GPU 资源。
+
+\subsection{Experimental Setup}
+
+\textbf{System configuration.} All experiments use the Pigs API server with default orchestration limits (\texttt{max\_post\_iterations=3}, \texttt{max\_pre\_replans=2}), continuation TTL of 30 minutes, capacity of 256, and Chinese (zh) phase prompts. Thinking effort is set to xhigh for OpenAI and max for Anthropic.
+\textbf{系统配置。} 所有实验使用 Pigs API 服务器，采用默认编排限制（\texttt{max\_post\_iterations=3}、\texttt{max\_pre\_replans=2}），续传 TTL 为 30 分钟，容量为 256，阶段提示采用中文（zh）。思考力度对 OpenAI 设为 xhigh，对 Anthropic 设为 max。
+
+\textbf{Benchmarks.} We use three public benchmarks:
+\textbf{基准测试。} 我们使用三个公开基准测试：
+
+\begin{center}
+\begin{tabular}{lllr}
+\toprule
+Benchmark & Domain & Tasks & Public \\
+\midrule
+SWE-bench Lite~\citep{jimenez2024swebench} & Software engineering & 300 & \checkmark \\
+GAIA~\citep{mialon2023gaia} & General AI assistant & 300 & \checkmark \\
+AgentBoard~\citep{ma2024agentboard} & Multi-turn agent & 9 tasks & \checkmark \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Ablation conditions.} For Experiment 1, we define four conditions:
+\textbf{消融条件。} 对于实验一，我们定义四种条件：
+\begin{itemize}[nosep]
+    \item \textbf{Condition A (Baseline)}: Direct API call without orchestration (non-\texttt{-pig} model, passthrough).
+    \textbf{条件 A（基线）}：不经过编排的直接 API 调用（非 \texttt{-pig} 模型，透传）。
+    \item \textbf{Condition B (Full)}: Complete Pre$\rightarrow$Executor$\rightarrow$Post orchestration (\texttt{-pig} model).
+    \textbf{条件 B（完整）}：完整的 Pre$\rightarrow$Executor$\rightarrow$Post 编排（\texttt{-pig} 模型）。
+    \item \textbf{Condition C (Pre-only)}: Only the Pre phase (planning without execution verification).
+    \textbf{条件 C（仅 Pre）}：仅 Pre 阶段（规划但不执行验证）。
+    \item \textbf{Condition D (Executor+Post)}: Skip Pre, directly execute and review.
+    \textbf{条件 D（Executor+Post）}：跳过 Pre，直接执行并审查。
+\end{itemize}
+
+\textbf{Metrics.} We measure: (1) task completion rate (benchmark-specific), (2) average LLM API calls per task, (3) total input + output tokens per task, (4) wall-clock latency, and (5) error recovery rate (percentage of tasks where PIGFAIL triggered a successful replan).
+\textbf{指标。} 我们测量：（1）任务完成率（基准测试特定），（2）每任务平均 LLM API 调用次数，（3）每任务总输入 + 输出令牌数，（4）端到端延迟，（5）错误恢复率（\texttt{PIGFAIL} 触发成功重新规划的任务百分比）。
+
+\subsection{Experiment 1: Ablation Study}
+
+\textbf{Setup.} We evaluate four conditions (A: baseline, B: full orchestration, C: Pre-only, D: Executor+Post) on SWE-bench Lite (300 tasks) and GAIA (300 tasks). Each task is sent as a \texttt{-pig} model request (Condition B/C/D) or a passthrough request (Condition A) to the Pigs API.
+\textbf{设置。} 我们在 SWE-bench Lite（300 个任务）和 GAIA（300 个任务）上评估四种条件（A：基线，B：完整编排，C：仅 Pre，D：Executor+Post）。每个任务作为 \texttt{-pig} 模型请求（条件 B/C/D）或透传请求（条件 A）发送至 Pigs API。
+
+\textbf{Procedure.} For each task:
+\textbf{流程。} 对于每个任务：
+\begin{enumerate}[nosep]
+    \item Send the task prompt to the Pigs API endpoint.
+    将任务提示发送至 Pigs API 端点。
+    \item If tool calls are returned, execute them locally and send results back.
+    若返回工具调用，在本地执行并将结果发回。
+    \item Repeat until the API returns a final response (no tool calls).
+    重复直至 API 返回最终响应（无工具调用）。
+    \item Evaluate the final response against the benchmark's ground truth.
+    将最终响应与基准测试的标准答案进行评估。
+\end{enumerate}
+
+\textbf{Hypothesis.} Full orchestration (B) outperforms baseline (A) on task completion rate, with the Pre phase contributing planning and the Post phase contributing verification.
+\textbf{假设。} 完整编排（B）在任务完成率上优于基线（A），其中 Pre 阶段贡献规划能力，Post 阶段贡献验证能力。
+
+\subsection{Experiment 2: Control Marker Effectiveness}
+
+\textbf{Setup.} We compare two configurations on GAIA: (A) with \texttt{PIGFAIL} enabled (failure triggers replan), (B) with \texttt{PIGFAIL} disabled (failure treated as completion).
+\textbf{设置。} 我们在 GAIA 上比较两种配置：（A）启用 \texttt{PIGFAIL}（失败触发重新规划），（B）禁用 \texttt{PIGFAIL}（失败被视为完成）。
+
+\textbf{Procedure.} We count: (1) tasks where PIGFAIL was emitted, (2) tasks where replan led to successful completion, (3) tasks that failed despite replan.
+\textbf{流程。} 我们统计：（1）发出 \texttt{PIGFAIL} 的任务数，（2）重新规划后成功完成的任务数，（3）尽管重新规划仍然失败的任务数。
+
+\textbf{Hypothesis.} PIGFAIL-based replan improves outcomes on tasks where the initial approach was flawed.
+\textbf{假设。} 基于 \texttt{PIGFAIL} 的重新规划在初始方法有缺陷的任务上能改善结果。
+
+\subsection{Experiment 3: Three-Protocol Consistency}
+
+\textbf{Setup.} We send the same set of 100 tasks through three API protocols: OpenAI Chat (\texttt{/chat/completions}), Anthropic Messages (\texttt{/v1/messages}), and OpenAI Responses (\texttt{/responses}).
+\textbf{设置.} 我们将同一组 100 个任务通过三种 API 协议发送：OpenAI Chat（\texttt{/chat/completions}）、Anthropic Messages（\texttt{/v1/messages}）和 OpenAI Responses（\texttt{/responses}）。
+
+\textbf{Procedure.} For each task and protocol, we record: (1) whether the task completed, (2) the visible text output, (3) any tool calls made. We measure consistency as the percentage of tasks where all three protocols agree on completion status.
+\textbf{流程.} 对于每个任务和协议，我们记录：（1）任务是否完成，（2）可见文本输出，（3）所执行的工具调用。我们将一致性定义为三种协议在完成状态上达成一致的任务百分比。
+
+\textbf{Hypothesis.} The protocol-native request preservation ensures consistent behavior across all three protocols.
+\textbf{假设.} 协议原生请求保留确保了三种协议间行为的一致性。
+
+\subsection{Experiment 4: Cost-Benefit Analysis}
+
+\textbf{Setup.} On SWE-bench Lite, we measure per-task: (1) total input tokens, (2) total output tokens, (3) number of API calls, (4) wall-clock latency, (5) task completion.
+\textbf{设置.} 在 SWE-bench Lite 上，我们逐任务测量：（1）总输入令牌数，（2）总输出令牌数，（3）API 调用次数，（4）端到端延迟，（5）任务完成情况。
+
+\textbf{Procedure.} We compare Condition A (baseline) vs.\ Condition B (full orchestration) and compute the overhead ratio for each metric.
+\textbf{流程.} 我们比较条件 A（基线）与条件 B（完整编排），并计算各指标的开销比率。
+
+\textbf{Hypothesis.} The token overhead of orchestration (3 phases vs.\ 1) is justified by improved completion rate.
+\textbf{假设.} 编排的令牌开销（3 阶段 vs.\ 1 阶段）可通过提升的完成率来证明其合理性。

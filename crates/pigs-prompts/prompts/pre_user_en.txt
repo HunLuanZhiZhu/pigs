@@ -5,4 +5,4 @@ Do not execute the task in this response. Analyze it before execution and answer
 2. What external information is needed, such as machine state, network information, user clarification, or model knowledge?
 3. What is the execution plan for the task?
 4. What is the task goal used to decide whether it is complete?
-5. Only when questions 1 through 4 need nothing or are extremely simple, classify this as a simple task, give the reason, and end the response with `PIGEND`.
+5. Decide whether this is a simple task. Only when questions 1 through 4 need nothing or are extremely simple, classify it as simple, and you must give the reason; when classified as simple, output the answer directly, and output PIGEND alone on the last line. If it is not simple, do not output PIGEND.

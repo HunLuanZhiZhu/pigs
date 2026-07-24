@@ -93,7 +93,8 @@ mod tests {
         assert!(pre.contains("严格按要求输出这5个问题的回答"));
         assert!(pre.contains("本任务需要哪些项目内部信息？"));
         assert!(pre.contains("当且仅当1）-4）均不需要或极其简单"));
-        assert!(pre.trim_end().ends_with("PIGEND`"));
+        assert!(pre.contains("不要输出 PIGEND"));
+        assert!(pre.trim_end().ends_with("PIGEND"));
 
         let executor = executor_user_payload(Language::Zh, "完整 PRE", "ignored");
         assert!(executor.starts_with("以下是对本次任务在"));

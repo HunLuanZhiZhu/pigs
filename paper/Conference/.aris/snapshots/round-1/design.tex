@@ -1,0 +1,213 @@
+\section{System Design}
+\label{sec:design}
+
+Pigs is structured as a three-layer system: a \emph{proxy} layer that routes HTTP requests, a \emph{phased runtime} layer that orchestrates the Pre$\rightarrow$Executor$\rightarrow$Post state machine, and a \emph{CLI} layer that provides an interactive agent interface. This section describes the core design of each layer.
+
+\subsection{Architecture Overview}
+\label{sec:overview}
+
+The system operates as a single-process server listening on one port (default 3927). All three API protocols are served from the same port, distinguished by request path:
+
+\begin{itemize}[nosep]
+    \item \texttt{/chat/completions} $\rightarrow$ OpenAI Chat
+    \item \texttt{/v1/messages} $\rightarrow$ Anthropic Messages
+    \item \texttt{/responses} $\rightarrow$ OpenAI Responses
+\end{itemize}
+
+Requests are routed by model identifier: models without the \texttt{-pig} suffix are passed through to the upstream provider (with retry, body cleaning, and thinking-effort injection); models with the \texttt{-pig} suffix enter the phased runtime. Each configured model is automatically exposed as two identifiers: \texttt{\{model\}} (passthrough) and \texttt{\{model\}-pig} (phased).
+
+\Cref{fig:arch} illustrates the request flow. When a \texttt{-pig} request arrives, the proxy constructs a \texttt{HttpRequestEnvelope} and hands it to the \texttt{HttpPhasedRuntime}. Each phase subrequest is sent back to the proxy via HTTP loopback (with an internal token header), re-entering the passthrough path with the \texttt{-pig} suffix removed. This design ensures that phase subrequests transparently inherit all proxy-level features.
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[
+  node distance=0.8cm,
+  box/.style={draw, rounded corners, minimum width=3.5cm, minimum height=0.8cm, align=center, font=\small},
+  client/.style={box, fill=blue!10},
+  proxy/.style={box, fill=green!10},
+  runtime/.style={box, fill=orange!10},
+  provider/.style={box, fill=red!10},
+  arr/.style={-Stealth, thick},
+  loopback/.style={-Stealth, thick, dashed, draw=purple!70},
+]
+\node[client] (client) {Client (model: X-pig)};
+\node[proxy, below=of client] (proxy1) {pigs-proxy\\(route by -pig)};
+\node[runtime, below=of proxy1] (runtime) {HttpPhasedRuntime\\Pre $\to$ Executor $\to$ Post};
+\node[proxy, below=of runtime] (proxy2) {pigs-proxy\\(passthrough, model: X)};
+\node[provider, below=of proxy2] (provider) {Upstream Provider};
+
+\draw[arr] (client) -- (proxy1);
+\draw[arr] (proxy1) -- (runtime);
+\draw[loopback] (runtime) -- node[right, font=\scriptsize, text=purple!70] {HTTP loopback} (proxy2);
+\draw[arr] (proxy2) -- (provider);
+\end{tikzpicture}
+\caption{Request flow for a \texttt{-pig} model. Phase subrequests re-enter the proxy via HTTP loopback (dashed), inheriting passthrough features.}
+\label{fig:arch}
+\end{figure}
+\subsection{Phase State Machine}
+\label{sec:state}
+
+The core of Pigs is a pure state machine with three phases and three transition signals. The state is encapsulated in \texttt{OrchestrationState}, which tracks the current phase, accumulated outputs, failure history, and iteration counters.
+
+\begin{algorithm}[t]
+\caption{Phase state machine transition}
+\label{alg:state}
+\begin{algorithmic}[1]
+\Function{advance}{output}
+  \State $phase \gets \text{current phase}$
+  \If{$phase = \text{Pre}$}
+    \If{$\text{detect}(output) = \texttt{PIGEND}$}
+      \State \Return Complete \Comment{Short-circuit: trivially simple task}
+    \ElsIf{$\text{detect}(output) = \texttt{PIGFAIL}$}
+      \State \Return replan(output) \Comment{Failure: return to Pre}
+    \Else
+      \State $\text{pre\_output} \gets \text{strip}(output)$
+      \State \Return Continue(Executor)
+    \EndIf
+  \ElsIf{$phase = \text{Executor}$}
+    \State $\text{executor\_outputs} \gets \text{strip}(output)$
+    \State \Return Continue(Post) \Comment{Always proceed to Post}
+  \Else \Comment{$phase = \text{Post}$}
+    \If{$\text{detect}(output) = \texttt{PIGEND}$}
+      \State \Return Complete
+    \ElsIf{$\text{detect}(output) = \texttt{PIGFAIL}$}
+      \State \Return replan(output)
+    \Else
+      \If{$\text{post\_iterations} \geq \text{max}$}
+        \State \Return Error(PostBudgetExceeded)
+      \EndIf
+      \State $\text{post\_iterations} \mathrel{+}= 1$
+      \State \Return Continue(Post) \Comment{Stay in Post}
+    \EndIf
+  \EndIf
+\EndFunction
+\end{algorithmic}
+\end{algorithm}
+
+The state machine has several key properties:
+
+\textbf{Markerless Post stays in Post.} When the Post phase produces output without a control marker, the state machine continues in Post (not back to Executor). This design choice prevents infinite Executor$\leftrightarrow$Post loops: the model is expected to make incremental progress within Post until it either completes or fails.
+
+\textbf{Budget exhaustion is an error, not success.} When the Post iteration budget is exhausted, the state machine returns an \texttt{OrchestrationError}, not a successful completion. This prevents the system from silently accepting incomplete work.
+
+\textbf{Failure preserves history.} When \texttt{PIGFAIL} triggers a replan, the failure output is preserved and presented to the next Pre phase as numbered failure records (``1st failure: \ldots'', ``2nd failure: \ldots''). This allows the model to learn from previous attempts.
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[
+  node distance=2cm,
+  state/.style={draw, circle, minimum size=1.6cm, align=center, font=\small},
+  terminal/.style={draw, rounded corners, minimum width=1.8cm, minimum height=0.8cm, align=center, font=\small, fill=gray!10},
+  arr/.style={-Stealth, thick},
+  every label/.style={font=\scriptsize},
+]
+\node[state, fill=blue!10] (pre) {Pre};
+\node[state, fill=orange!10, right=of pre] (exec) {Exec.};
+\node[state, fill=green!10, right=of exec] (post) {Post};
+\node[terminal, right=of post] (done) {Complete};
+\node[terminal, below=1.2cm of post, fill=red!10] (error) {Error};
+
+\draw[arr] (pre) -- node[above] {no marker} (exec);
+\draw[arr] (exec) -- node[above] {always} (post);
+\draw[arr] (post) -- node[above] {\texttt{PIGEND}} (done);
+\draw[arr] (pre) -- node[above, sloped] {\texttt{PIGEND}} (done);
+\draw[arr, dashed] (post.south) -- node[right] {\texttt{PIGFAIL}} (pre.south);
+\draw[arr, dashed] (post) -- node[right, sloped] {budget} (error);
+\draw[arr, loop above] (post) to node[above] {no marker} (post);
+\end{tikzpicture}
+\caption{Phase state machine transitions. Solid arrows are forward transitions; dashed arrows are failure/budget paths. The self-loop on Post represents markerless continuation.}
+\label{fig:state}
+\end{figure}
+
+\Cref{fig:state} illustrates the complete state machine. The Pre phase can short-circuit to Complete (trivially simple tasks), and the Post phase has a self-loop for markerless continuation.
+
+\subsection{Control Markers}
+\label{sec:markers}
+
+Control markers are short text tokens that the model appends to its output to signal phase transitions:
+
+\begin{itemize}[nosep]
+    \item \texttt{PIGEND}: signals successful completion. The turn ends, and the accumulated visible text is returned to the client.
+    \item \texttt{PIGFAIL}: signals that the current approach has failed and the task should be replanned from Pre.
+\end{itemize}
+
+Marker detection follows two rules:
+
+\textbf{Last non-empty line only.} Only the final non-empty line of the model's output is checked for a marker. Earlier occurrences (e.g., the marker appearing in a sentence like ``the system outputs PIGEND when done'') are ignored. This prevents false positives from prose mentions.
+
+\textbf{Reason required.} A marker is valid only if at least one non-marker line precedes it. A bare \texttt{PIGEND} with no preceding content is rejected, forcing the model to provide a reason before signaling completion.
+
+Markers are stripped from the visible output via \texttt{strip\_markers}, which removes exact control lines while preserving prose that happens to contain marker words.
+
+\subsection{Protocol-Native Request Envelope}
+\label{sec:envelope}
+
+The \texttt{HttpRequestEnvelope} is the central data structure that preserves the complete protocol-native request:
+
+\begin{lstlisting}
+pub struct HttpRequestEnvelope {
+    pub method: String,           // HTTP method
+    pub path_and_query: String,   // path + query string
+    pub headers: Vec<HeaderPair>, // raw header bytes
+    pub body: Value,              // complete JSON body
+    pub protocol: Protocol,       // Chat / Anthropic / Responses
+    pub client_model: String,     // e.g. "gpt-4-pig"
+    pub real_model: String,       // e.g. "gpt-4" (-pig stripped)
+    pub stream: bool,             // streaming requested?
+    // ... internal fields for current user location,
+    //     tool result IDs, tool result groups
+}
+\end{lstlisting}
+
+Each phase clones the envelope and applies \emph{point mutations}:
+
+\begin{enumerate}[nosep]
+    \item \textbf{Model}: replaced with the real (non-\texttt{-pig}) model name.
+    \item \textbf{Current user input}: appended with the phase-specific prompt suffix (Pre questions, Executor plan, Post review instructions).
+    \item \textbf{Phase transcript}: native assistant/tool messages from prior phases are appended to the message history.
+    \item \textbf{Stream}: set to \texttt{true} for streaming phase subrequests.
+\end{enumerate}
+
+All other fields---system/instructions, historical messages, tools/tool\_choice, reasoning parameters, cache controls, metadata, media blocks, and unknown provider extensions---remain untouched. This ensures that provider-specific features (e.g., Anthropic's \texttt{cache\_control}, OpenAI's \texttt{reasoning\_effort}) pass through without modification.
+
+\subsection{HTTP Loopback Transport}
+\label{sec:loopback}
+
+Each phase subrequest is sent back to the local proxy via HTTP, not through an in-process function call. The \texttt{LoopbackPhaseTransport} implements the \texttt{PhaseTransport} trait:
+
+\begin{itemize}[nosep]
+    \item Converts wildcard listen addresses (\texttt{0.0.0.0}, \texttt{[::]}) to loopback (\texttt{127.0.0.1}, \texttt{::1}).
+    \item Disables environment HTTP proxy settings (\texttt{.no\_proxy()}) to prevent external proxy interception.
+    \item Adds a random internal token header (\texttt{x-pigs-phase-loopback}) that the proxy validates to identify legitimate phase subrequests.
+    \item Strips hop-by-hop headers and the internal token before forwarding to the upstream provider.
+\end{itemize}
+
+This design has two benefits. First, phase subrequests transparently inherit all proxy-level features: channel selection, model mapping, body cleaning (e.g., removing empty content messages), thinking-effort injection, and retry logic. Second, the control flow is explicit and debuggable---each phase subrequest appears in proxy logs as a normal HTTP request, and the internal token distinguishes it from client requests.
+
+\subsection{Bounded In-Memory Continuation}
+\label{sec:continuation}
+
+When the model returns tool calls during a phase, the runtime pauses and returns the tool calls to the client (or external agent). The complete phase state---including the orchestration state, phase transcript, visible text, and pending tool IDs---is stored in a \texttt{ContinuationStore}:
+
+\begin{itemize}[nosep]
+    \item \textbf{TTL}: each continuation expires after a configurable duration (default 30 minutes).
+    \item \textbf{Capacity}: at most $N$ continuations are retained (default 256); the oldest is evicted when capacity is reached.
+    \item \textbf{Tombstones}: when a continuation is expired, evicted, or consumed, a tombstone is placed for each tool ID, enabling distinct error reporting (Expired vs.\ Evicted vs.\ Consumed vs.\ Unknown).
+    \item \textbf{No auth headers}: authentication headers are cleared before storing; the continuation uses the incoming request's headers on resume.
+\end{itemize}
+
+When the next request arrives with tool results, the runtime matches them by tool-call ID, validates protocol and model consistency, and resumes the paused phase. Partial parallel results (multiple tool calls returning in separate requests) are accumulated until all pending IDs are present.
+
+\subsection{Continuous SSE Output}
+\label{sec:sse}
+
+For streaming requests, the runtime produces a continuous SSE stream that concatenates visible text from all phases. A \emph{marker line buffer} holds back the last non-empty line of each phase's output until the phase completes, then checks for control markers. If a marker is found, the held-back line is stripped; otherwise, it is forwarded. This prevents \texttt{PIGEND}/\texttt{PIGFAIL} from leaking into the client-visible stream, even when markers are split across network chunks.
+
+The outer SSE encoder generates protocol-native event sequences for all three protocols:
+\begin{itemize}[nosep]
+    \item \textbf{Chat}: \texttt{chat.completion.chunk} deltas with role/content/tool\_calls, terminated by \texttt{finish\_reason} + \texttt{[DONE]}.
+    \item \textbf{Anthropic}: \texttt{message\_start} $\rightarrow$ \texttt{content\_block\_start/delta/stop} $\rightarrow$ \texttt{message\_delta} $\rightarrow$ \texttt{message\_stop}.
+    \item \textbf{Responses}: \texttt{response.created} $\rightarrow$ \texttt{output\_item/content\_part/text\_delta/done} $\rightarrow$ \texttt{response.completed}, with monotonic sequence numbers.
+\end{itemize}
+
+Error streams emit protocol-native error events (Chat: \texttt{error} in data; Anthropic: \texttt{event: error}; Responses: \texttt{response.failed}) without any success terminal frame.

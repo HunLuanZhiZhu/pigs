@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use pigs_config::Language;
 use serde_json::{Map, Number, Value};
+use tracing::{debug, info};
 
 use crate::continuation::{
     Continuation, ContinuationConfig, ContinuationError, ContinuationStore, Lookup,
@@ -132,7 +133,16 @@ impl HttpPhasedRuntime {
         request: HttpRequestEnvelope,
         progress: Option<PhaseProgressSink>,
     ) -> Result<HttpTurnResult, RuntimeError> {
-        if request.is_continuation() {
+        let is_continuation = request.is_continuation();
+        info!(
+            is_continuation,
+            protocol = %request.protocol,
+            model = %request.client_model,
+            real_model = %request.real_model,
+            stream = request.stream,
+            "pigs phase runtime: starting turn"
+        );
+        if is_continuation {
             self.resume(request, progress).await
         } else {
             self.execute(
@@ -180,11 +190,27 @@ impl HttpPhasedRuntime {
         mut session: Session,
         progress: Option<PhaseProgressSink>,
     ) -> Result<HttpTurnResult, RuntimeError> {
+        let mut loop_count: u32 = 0;
         loop {
+            loop_count += 1;
             let phase = session.orchestration.phase();
             session.phase = phase;
+            info!(
+                loop_count,
+                phase = phase.as_str(),
+                pre_replans = session.orchestration.pre_replan_count(),
+                post_iterations = session.orchestration.post_iteration_count(),
+                "pigs phase: entering phase"
+            );
             let mut phase_request = self.phase_request(&session, progress.is_some())?;
             phase_request = phase_request.with_appended_transcript(&session.phase_transcript)?;
+            let is_streaming = progress.is_some();
+            debug!(
+                phase = phase.as_str(),
+                is_streaming,
+                transcript_items = session.phase_transcript.len(),
+                "pigs phase: sending request to upstream"
+            );
             let response = if let Some(progress) = &progress {
                 progress(PhaseProgress::PhaseStart);
                 let buffer = Arc::new(Mutex::new(MarkerLineBuffer::new(Arc::clone(progress))));
@@ -209,9 +235,33 @@ impl HttpPhasedRuntime {
             let output = phase_request.extract_response(&response.body)?;
             session.push_output(&output);
 
+            let phase_raw_output = join_visible(&session.phase_raw_parts);
+            let tool_call_count = output.tool_calls.len();
+            let visible_len = output.visible_text.len();
+            let stop_reason = output.stop_reason.as_deref().unwrap_or("none");
+            info!(
+                phase = phase.as_str(),
+                tool_call_count,
+                visible_len,
+                stop_reason,
+                raw_output_len = phase_raw_output.len(),
+                raw_output_last_line = phase_raw_output.lines().last().unwrap_or("(empty)"),
+                "pigs phase: upstream response received"
+            );
+
             if !output.tool_calls.is_empty() {
                 let visible_text = join_visible(&session.visible_parts);
                 let usage = aggregate_usage(&session.usage_values);
+                let tool_ids: Vec<&str> = output
+                    .tool_calls
+                    .iter()
+                    .map(|call| call.id.as_str())
+                    .collect();
+                info!(
+                    phase = phase.as_str(),
+                    tool_ids = ?tool_ids,
+                    "pigs phase: pausing for external tool execution"
+                );
                 let continuation = session.into_continuation(output.tool_calls.clone());
                 let continuation_id = self
                     .continuations
@@ -235,10 +285,19 @@ impl HttpPhasedRuntime {
                     .extend(session.phase_transcript.iter().cloned());
             }
             session.phase_transcript.clear();
-            let phase_raw_output = join_visible(&session.phase_raw_parts);
             session.phase_raw_parts.clear();
+            let detected_marker = crate::phased_markers::detect_marker(&phase_raw_output);
+            info!(
+                phase = phase.as_str(),
+                detected_marker = ?detected_marker,
+                "pigs phase: checking control marker in raw output"
+            );
             match session.orchestration.advance(&phase_raw_output)? {
                 Advance::Complete => {
+                    info!(
+                        phase = phase.as_str(),
+                        loop_count, "pigs phase: turn complete (Advance::Complete)"
+                    );
                     return Ok(HttpTurnResult {
                         visible_text: join_visible(&session.visible_parts),
                         usage: aggregate_usage(&session.usage_values),
@@ -246,7 +305,13 @@ impl HttpPhasedRuntime {
                         latest_output: output,
                     });
                 }
-                Advance::Continue(_) => {}
+                Advance::Continue(next_phase) => {
+                    info!(
+                        from = phase.as_str(),
+                        to = next_phase.as_str(),
+                        "pigs phase: transitioning to next phase"
+                    );
+                }
             }
         }
     }

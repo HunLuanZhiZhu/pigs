@@ -1,0 +1,31 @@
+\section{Introduction}
+\label{sec:intro}
+
+Modern LLM-based agents interact with model providers through HTTP APIs that are fundamentally stateless: a client sends messages and receives a completion, with no built-in notion of planning, execution verification, or failure recovery. To achieve complex multi-step behavior, practitioners have developed orchestration frameworks---from simple chain-of-thought prompting~\citep{wei2022cot} to interleaved reasoning-acting loops~\citep{yao2022react} and reflective self-improvement~\citep{shinn2023reflexion,madaan2023selfrefine}. These approaches share a common limitation: they place the LLM in charge of its own control flow. The model must decide when to plan, when to execute, and when to reflect, using natural language cues that are inherently ambiguous and error-prone.
+
+This design creates three problems. First, \textbf{control-flow fragility}: if the model deviates from the expected reasoning pattern (e.g., skipping the planning phase or prematurely declaring completion), the entire agent loop breaks. Second, \textbf{protocol coupling}: most orchestration frameworks are tightly coupled to a single API protocol (typically OpenAI Chat Completions), requiring reimplementation when switching providers. Third, \textbf{opacity}: external tooling (proxies, observability platforms, cost monitors) cannot inspect or influence the orchestration logic because it is embedded inside the agent's prompt engineering rather than exposed as a system-level concern.
+
+We argue that LLM orchestration should be elevated from a prompting technique to a \emph{middleware concern}---a transparent layer between the client and the provider that enforces a deterministic control-flow structure while leaving semantic decisions to the model. This separation mirrors the classical middleware pattern in distributed systems, where transport-level concerns (routing, retry, load balancing) are handled outside the application logic.
+
+We present \textbf{Pigs}, a phased orchestration middleware that implements this vision. Pigs wraps each LLM API request with a three-phase state machine:
+
+\begin{enumerate}[nosep]
+    \item \textbf{Pre} (planning): the model analyzes the task, identifies required information, and formulates an execution plan. If the task is trivially simple, the model may short-circuit with a \texttt{PIGEND} marker.
+    \item \textbf{Executor} (execution): the model executes the plan, gathering information and producing output. Tool calls are returned to the external agent for execution.
+    \item \textbf{Post} (review): the model independently reviews the executor's output against the goal. It may confirm completion (\texttt{PIGEND}), signal failure (\texttt{PIGFAIL}), or continue working (no marker).
+\end{enumerate}
+
+The state machine is driven by \emph{control markers}---short text tokens (\texttt{PIGEND}, \texttt{PIGFAIL}) that the model appends to its output. These markers are detected by the middleware, not the model's own reasoning; they serve as routing signals, not as content. Crucially, the middleware strips these markers from the visible output, so the client sees only the model's substantive text.
+
+Pigs makes six key contributions:
+
+\begin{enumerate}
+    \item \textbf{Phased orchestration via text control markers}: a deterministic Pre$\rightarrow$Executor$\rightarrow$Post state machine that uses lightweight text markers for routing, without injecting orchestration-specific tools or system prompts into the model's context.
+    \item \textbf{Protocol-native request preservation}: the complete HTTP request---method, path/query, headers, and JSON body---is preserved across three API protocols, with only the model identifier, current user input, and phase transcript modified. Unknown fields, media blocks, and provider extensions pass through untouched.
+    \item \textbf{HTTP loopback transport}: phase subrequests re-enter the local proxy via HTTP, transparently inheriting channel selection, model mapping, body cleaning, thinking-effort injection, and retry logic---without requiring a separate in-process dispatch path.
+    \item \textbf{Bounded in-memory continuation}: external tool execution is supported through a continuation store with TTL, capacity limits, and tombstone-based error reporting, never persisting authentication headers to disk.
+    \item \textbf{Ablation study} isolating the contribution of each phase (Pre, Executor, Post) to overall task performance on public benchmarks (SWE-bench, GAIA).
+    \item \textbf{Control marker effectiveness study} showing whether PIGFAIL-based failure recovery improves outcomes, plus a \textbf{three-protocol consistency evaluation} and \textbf{cost-benefit analysis} quantifying the token, latency, and API call overhead of orchestration.
+\end{enumerate}
+
+The remainder of this paper describes the architecture (\Cref{sec:design}), implementation (\Cref{sec:impl}), experimental evaluation (\Cref{sec:experiments}), related work (\Cref{sec:related}), and design discussion (\Cref{sec:discussion}).

@@ -1,0 +1,20 @@
+## Reviewer 1 — Venue A (Workshop)
+
+**Summary:** The paper presents Pigs, a phased orchestration middleware for LLM API requests. The system wraps API calls with a Pre→Executor→Post state machine using text control markers. The architecture is well-described, but the paper lacks any experimental evaluation.
+
+**Strengths:**
+- Novel middleware approach to LLM orchestration
+- Protocol-native request preservation is a strong design choice
+- The HTTP loopback transport is elegant and ensures feature inheritance
+
+**Weaknesses:**
+
+**W1 (Critical, experiment-coverage):** The paper presents a system design but no experimental evaluation. There is no evidence that phased orchestration actually improves task completion quality. The claim that "phased orchestration improves outcomes" is unsupported.
+
+**W2 (Major, novelty):** The relationship to existing multi-stage reasoning approaches (ReAct, Reflexion, Self-Refine) is discussed conceptually, but there is no quantitative comparison. It is unclear whether the three-phase structure outperforms simpler approaches.
+
+**W3 (Major, scope):** The paper claims the system supports three API protocols, but does not verify that behavior is consistent across protocols. Are there edge cases where protocol-native preservation fails?
+
+**W4 (Minor, framing):** The cost overhead of three-phase orchestration (3x LLM calls) is not discussed. Is the improvement (if any) worth the cost?
+
+**Recommendation:** Reject. The system design is sound, but the paper reads as a position paper without empirical validation. The authors should add ablation studies comparing full orchestration against no orchestration and partial configurations, using public benchmarks (SWE-bench, GAIA).

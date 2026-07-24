@@ -1,0 +1,20 @@
+## Reviewer 2 — Venue A (Workshop)
+
+**Summary:** A well-architected system paper describing a Rust-based LLM API middleware with phased orchestration. The design is thorough, but the evaluation gap is the main weakness.
+
+**Strengths:**
+- Clean separation of control flow (deterministic state machine) from semantic decisions (model)
+- Bounded in-memory continuation for tool execution is well-designed with TTL, capacity, and tombstones
+- The discussion section honestly addresses design trade-offs
+
+**Weaknesses:**
+
+**W5 (Critical, experiment-coverage):** No experiments. The paper says "future work includes empirical evaluation on public agent benchmarks" — this should be the core of the paper, not future work. Without evaluation, the contribution claims are unverifiable.
+
+**W6 (Major, rigor):** The PIGFAIL failure-recovery mechanism is a key contribution, but there is no evaluation of how often PIGFAIL triggers, whether replanning leads to success, or whether it introduces overhead. This mechanism needs empirical validation.
+
+**W7 (Minor, scope):** The single-model assumption (same model for all phases) is listed as a limitation but not explored. Would using different models for different phases change the results?
+
+**W8 (Minor, framing):** The paper should discuss the marker robustness problem more carefully. What happens if the model outputs PIGEND in the wrong context? The detection algorithm mitigates this, but what is the false positive/negative rate?
+
+**Recommendation:** Reject. The system design is publishable, but only with experiments. Suggest the authors combine the system design with an experimental evaluation and resubmit to a main conference.

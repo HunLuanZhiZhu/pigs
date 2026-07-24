@@ -1,0 +1,81 @@
+% Pigs: Protocol-Native Phased Orchestration for LLM API Requests
+% System Design Paper (Bilingual: EN + ZH via three switches)
+
+%% ====================================================================
+%% 中文开关说明（参考 md_en.tex 三开关机制）
+%% ====================================================================
+%% 开关0: \PassOptionsToPackage{no-math}{fontspec}
+%% 开关1: \usepackage[scheme=plain]{ctex}
+%% 开关2: \excludecomment{chinese} / \specialcomment{chinese}{...}
+%% 三个开关全开（默认）= 中文模式
+%% ====================================================================
+
+\PassOptionsToPackage{no-math}{fontspec} % 中文开关0
+\documentclass[10pt]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[scheme=plain]{ctex} % 中文开关1
+\usepackage{comment}
+\definecolor{chinesecolor}{RGB}{0,128,0}
+\excludecomment{chinese}
+% \specialcomment{chinese}{\begingroup\color{chinesecolor}\itshape 中文：}{\endgroup} %中文开关2
+
+\usepackage[a4paper, margin=1in]{geometry}
+\usepackage{amsmath, amssymb}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta, positioning, shapes.geometric, fit, backgrounds}
+\usepackage{listings}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{cleveref}
+\usepackage{natbib}
+
+\lstdefinelanguage{Rust}{
+  keywords={fn,let,mut,pub,struct,enum,impl,trait,use,mod,async,await,return,if,else,match,for,while,loop,break,continue,move,ref,self,Self,where,as,in,box,dyn,unsafe,extern,crate,const,static,type,true,false},
+  sensitive=true,
+  comment=[l]{//},
+  morecomment=[s]{/*}{*/},
+  morestring=[b]",
+  morestring=[b]',
+}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  frame=single,
+  language=Rust,
+  keywordstyle=\color{blue!70!black},
+  commentstyle=\color{green!50!black},
+  stringstyle=\color{red!60!black},
+}
+
+\title{Pigs: Protocol-Native Phased Orchestration for LLM API Requests}
+\author{Anonymous}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Large Language Model (LLM) agents typically interact with providers through stateless API calls, lacking built-in mechanisms for planning, execution verification, and failure recovery. While frameworks like ReAct and Reflexion add multi-stage reasoning within a single conversation, they rely on the LLM itself to manage control flow---an approach that is fragile, protocol-specific, and opaque to downstream tooling. We present \textbf{Pigs}, a phased orchestration middleware that wraps LLM API requests with a deterministic Pre$\rightarrow$Executor$\rightarrow$Post state machine using lightweight text control markers (\texttt{PIGEND}/\texttt{PIGFAIL}) for routing. Pigs preserves the complete protocol-native HTTP request---method, path, headers, and JSON body---across three API protocols (OpenAI Chat Completions, Anthropic Messages, OpenAI Responses), modifying only the model identifier, current user input, and phase transcript. Phase subrequests re-enter the local proxy via HTTP loopback, transparently inheriting channel selection, model mapping, body cleaning, and retry logic. External tool execution is supported through a bounded in-memory continuation store with TTL and capacity limits. We describe the architecture, key design decisions, and implementation in a 13-crate Rust workspace.
+\begin{chinese}
+大语言模型（LLM）智能体通常通过无状态 API 调用与模型提供商交互，缺乏内置的规划、执行验证和失败恢复机制。虽然 ReAct 和 Reflexion 等框架在单一对话中添加了多阶段推理，但它们依赖 LLM 自身管理控制流——这种方式脆弱、协议特定且对下游工具不透明。我们提出 \textbf{Pigs}，一种相位编排中间件，通过确定性 Pre$\rightarrow$Executor$\rightarrow$Post 状态机和轻量级文本控制标记（\texttt{PIGEND}/\texttt{PIGFAIL}）进行路由，包装 LLM API 请求。Pigs 在三种 API 协议（OpenAI Chat Completions、Anthropic Messages、OpenAI Responses）间完整保留协议原生 HTTP 请求——方法、路径、headers 和 JSON body——仅修改模型标识符、当前用户输入和相位轨迹。相位子请求通过 HTTP 本机回环重新进入代理，透明继承渠道选择、模型映射、body 清洗和重试逻辑。外部工具执行通过受 TTL 和容量限制的有界内存 continuation 存储支持。我们在 13 个 crate 的 Rust workspace 中描述了该架构、关键设计决策和实现。
+\end{chinese}
+\end{abstract}
+
+\input{sections/introduction}
+\input{sections/background}
+\input{sections/design}
+\input{sections/implementation}
+\input{sections/related}
+\input{sections/discussion}
+
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+\end{document}

@@ -111,17 +111,22 @@ mod tests {
 
     #[test]
     fn test_no_compaction_needed() {
-        let mut session = Session::new("test");
+        let dir = std::env::temp_dir().join("pigs_test_compact_1");
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut session = Session::new("test", &dir);
         session.add_message(Message::user("Hello"));
         session.add_message(Message::assistant(vec![ContentBlock::text("Hi!")]));
         let config = CompactConfig::default();
         assert!(!needs_compaction(&session, &config));
         assert!(!compact_session(&mut session, &config));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn test_compaction_with_low_threshold() {
-        let mut session = Session::new("test");
+        let dir = std::env::temp_dir().join("pigs_test_compact_2");
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut session = Session::new("test", &dir);
         for i in 0..20 {
             session.add_message(Message::user(format!(
                 "Message number {i} with some text content"
@@ -137,11 +142,14 @@ mod tests {
         assert!(compact_session(&mut session, &config));
         assert_eq!(session.message_count(), 5);
         assert_eq!(session.messages[0].role, MessageRole::System);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn test_force_compaction() {
-        let mut session = Session::new("test");
+        let dir = std::env::temp_dir().join("pigs_test_compact_3");
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut session = Session::new("test", &dir);
         for i in 0..6 {
             session.add_message(Message::user(format!("m{i}")));
         }
@@ -153,5 +161,6 @@ mod tests {
         };
         assert!(compact_session(&mut session, &config));
         assert_eq!(session.message_count(), 3);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

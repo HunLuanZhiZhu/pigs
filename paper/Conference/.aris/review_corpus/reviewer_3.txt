@@ -1,0 +1,22 @@
+## Reviewer 3 — Venue A (Workshop)
+
+**Summary:** The paper describes Pigs, a middleware for LLM API orchestration. The architecture is solid, but the paper is incomplete without evaluation.
+
+**Strengths:**
+- The protocol-native request preservation across three protocols is technically interesting
+- The HTTP loopback design is clean and well-justified
+- The bounded in-memory continuation store handles edge cases (TTL, eviction, tombstones) thoroughly
+
+**Weaknesses:**
+
+**W9 (Critical, experiment-coverage):** The biggest weakness is the complete absence of experimental evaluation. The paper makes claims about improved task completion quality but provides zero evidence. This is unacceptable for a systems paper.
+
+**W10 (Major, novelty):** The three-phase structure (Pre→Executor→Post) is essentially Plan-and-Solve + review. The paper should empirically demonstrate that the three-phase structure outperforms a two-phase (plan+execute) or single-phase (direct) approach. An ablation study is needed.
+
+**W11 (Major, scope):** The three-protocol consistency claim is made but not verified. The authors should run the same tasks through all three protocols and measure consistency.
+
+**W12 (Minor, experiment-coverage):** The cost-benefit analysis is mentioned as future work but should be included. How much extra latency/cost does three-phase orchestration add?
+
+**W13 (Minor, framing):** The conclusion says "future work includes empirical evaluation" — this suggests the paper was submitted prematurely. The evaluation should be the contribution, not future work.
+
+**Recommendation:** Reject. Strong system design, but the paper is incomplete. The authors should add: (1) ablation study, (2) control marker effectiveness, (3) protocol consistency, (4) cost-benefit analysis. Then resubmit as a full paper.

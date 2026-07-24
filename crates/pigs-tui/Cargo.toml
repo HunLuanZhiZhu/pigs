@@ -1,0 +1,23 @@
+[package]
+name = "pigs-tui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Terminal UI for pig — ratatui + crossterm, aligned with PI"
+
+[dependencies]
+pigs-core = { workspace = true }
+pigs-config = { workspace = true }
+ratatui = { workspace = true }
+crossterm = { workspace = true }
+pulldown-cmark = { workspace = true }
+textwrap = { workspace = true }
+unicode-width = { workspace = true }
+arboard = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+tui-textarea = "0.7"

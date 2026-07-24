@@ -15,5 +15,5 @@ pub use api::{
     ApiClient, ApiError, ApiFuture, ApiRequest, ApiResponse, StreamCallback, StreamEvent,
 };
 pub use message::{ContentBlock, Message, MessageRole};
-pub use tool::{ToolError, ToolHandler, ToolRegistry, ToolResult, ToolSpec};
+pub use tool::{ToolError, ToolFuture, ToolHandler, ToolRegistry, ToolResult, ToolSpec};
 pub use usage::TokenUsage;

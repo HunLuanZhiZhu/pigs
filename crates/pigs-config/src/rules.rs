@@ -1,4 +1,4 @@
-//! Project rules loader — inject `.pigs/rules/**/*.md` into the system prompt.
+//! Project rules loader — inject `.pig/rules/**/*.md` into the system prompt.
 
 use std::path::{Path, PathBuf};
 
@@ -10,7 +10,7 @@ pub struct RuleDoc {
     pub path: PathBuf,
 }
 
-/// Load rules from `{workspace}/.pigs/rules/` (markdown files, recursive one level).
+/// Load rules from `{workspace}/.pig/rules/` (markdown files, recursive one level).
 pub fn load_rules(workspace: &Path) -> Vec<RuleDoc> {
     let dir = workspace.join(".pigs").join("rules");
     if !dir.is_dir() {

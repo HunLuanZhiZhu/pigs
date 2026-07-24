@@ -1,0 +1,83 @@
+\section*{Appendix: Phase Prompt Templates}
+\label{sec:appendix}
+
+This appendix presents the phase prompt templates used by the Pigs API orchestration runtime. Each phase has a user-level instruction that is appended to the current user message at runtime. Both Chinese (zh) and English (en) versions are provided. The templates use \texttt{\{pre\_output\}} and \texttt{\{failure\_paths\}} as placeholder variables filled at runtime via string replacement.
+
+\subsection*{A.1 Pre Phase (Planning) --- User Payload}
+
+\paragraph*{Chinese (zh)}
+\begin{lstlisting}[basicstyle=\ttfamily\scriptsize, frame=single]
+以上是本任务要求
+{failure_paths}
+本次回答不需要具体执行任务，而是对任务进行执行前分析，
+严格按要求输出这5个问题的回答
+1）本任务需要哪些项目内部信息？
+2）本任务需要哪些项目外部信息？
+3）为本任务的执行制定执行计划
+4）总结本任务的目标（goal），用于判断任务是否完成
+5）判断本任务是否为简单问题。当且仅当1）-4）均不需要或
+   极其简单时，才判定为简单问题，并必须给出理由，然后在
+   回答最后单独一行输出 PIGEND。若不是简单问题，不要输出 PIGEND
+\end{lstlisting}
+
+\paragraph*{English (en)}
+\begin{lstlisting}[basicstyle=\ttfamily\scriptsize, frame=single]
+The text above is the task requirement.
+{failure_paths}
+Do not execute the task in this response. Analyze it before
+execution and answer exactly these five questions:
+1. What project-internal information is needed?
+2. What external information is needed?
+3. What is the execution plan for the task?
+4. What is the task goal used to decide whether it is complete?
+5. Decide whether this is a simple task. Only when questions 1-4
+   need nothing or are extremely simple, classify it as simple,
+   give the reason, and output PIGEND alone on the last line.
+   If not simple, do not output PIGEND.
+\end{lstlisting}
+
+\subsection*{A.2 Executor Phase --- User Payload}
+
+\paragraph*{Chinese (zh)}
+\begin{lstlisting}[basicstyle=\ttfamily\scriptsize, frame=single]
+以下是对本次任务在 1.内部信息的需求 2.外部信息的需求
+3.执行计划 4.任务目标 5.任务难度方面的分析：
+{pre_output}
+完成对内部信息和外部信息的获取后，按照执行计划全力完成任务目标
+\end{lstlisting}
+
+\paragraph*{English (en)}
+\begin{lstlisting}[basicstyle=\ttfamily\scriptsize, frame=single]
+The following is the complete analysis of 1. internal information,
+2. external information, 3. execution plan, 4. task goal, and
+5. task difficulty:
+{pre_output}
+After obtaining the required internal and external information,
+follow the execution plan and fully complete the task goal.
+\end{lstlisting}
+
+\subsection*{A.3 Post Phase (Review) --- User Payload}
+
+\paragraph*{Chinese (zh)}
+\begin{lstlisting}[basicstyle=\ttfamily\scriptsize, frame=single]
+根据设定的目标，独立验收结果，对任务的执行情况进行全面审查。
+先输出评审报告，进行如下判断：
+1. 判定目标是否完全完成。仅当任务完成时，在回答最后输出 PIGEND
+2. 判定任务是否是执行错误的，也就是当前离目标的距离比执行前
+   更远，在回答最后输出 PIGFAIL
+3. 如果是推进了任务，但没有完全完成任务；在输出评审报告后，
+   继续执行任务，最后不输出标记
+\end{lstlisting}
+
+\paragraph*{English (en)}
+\begin{lstlisting}[basicstyle=\ttfamily\scriptsize, frame=single]
+Using the stated goal, independently verify the result and
+comprehensively review execution of the task.
+First output a review report, then make these judgments:
+1. Decide whether the goal is fully complete. Only when it is
+   complete, end the response with PIGEND.
+2. Decide whether execution was wrong, meaning it moved farther
+   from the goal than before execution. End with PIGFAIL.
+3. If the task progressed but is not fully complete, continue
+   executing it after the review report and do not output a marker.
+\end{lstlisting}

@@ -1,0 +1,66 @@
+{
+  "audit_skill": "resubmit-pipeline",
+  "verdict": "WARN",
+  "reason_code": "partially_addressed_concerns",
+  "timestamp_start": "2026-07-14T00:00:00Z",
+  "timestamp_end": "2026-07-14T04:30:00Z",
+  "source_dir": "paper/system-design/",
+  "target_venue": "Conference",
+  "new_venue_dir": "paper/Conference/",
+  "assurance_level": "submission",
+  "effort": "max",
+  "rounds_completed": 1,
+  "convergence_achieved": true,
+  "artifacts": {
+    "BASELINE.md": "Phase 0.5 health snapshot",
+    "PROOF_AUDIT.md": "Phase 1 proof audit (restatement check)",
+    "PAPER_CLAIM_AUDIT.md": "Phase 1 numerical fidelity audit",
+    "CITATION_AUDIT.md": "Phase 1 citation audit (soft-only)",
+    "KNOWN_WEAKNESSES.md": "Atomized prior reviewer concerns (13 items, W1-W13)",
+    "PAPER_IMPROVEMENT_LOG.md": "Phase 2 per-round edit trace",
+    "KILL_ARGUMENT.md": "Phase 3 adversarial gate (6 attack points)",
+    "DIFF_REPORT.md": "Full diff vs base venue body"
+  },
+  "phase_results": {
+    "phase_0": "PASS — physical isolation, new dir created, files composed",
+    "phase_0_5": "PASS — compile clean (15 pages), anonymity scan clean (0/5 layers), no residual coloring",
+    "phase_1": "PASS — 3 audits non-blocking, 13 weaknesses atomized (3 critical, 4 major, 6 minor)",
+    "phase_2": "CONVERGED after round 1 — 5 edits applied, all critical/major concerns addressed",
+    "phase_3": "WARN — 2 unresolved points (AP2: no results, AP5: protocol unverifiable) require experiments; 2 text-fixable improvements applied"
+  },
+  "review_corpus": "paper/Conference/.aris/review_corpus/ (3 reviewers, 13 concerns)",
+  "edit_whitelist": "paper/Conference/.aris/edit_whitelist.yaml",
+  "page_count": 15,
+  "citation_count": 41,
+  "bib_entry_count": 54,
+  "skipped_constraints": [],
+  "decision_log": [
+    {"timestamp": "2026-07-14T01:00:00Z", "phase": 0, "decision": "Proceed with physical isolation"},
+    {"timestamp": "2026-07-14T01:15:00Z", "phase": "0.5", "decision": "Compile passed, anonymity clean"},
+    {"timestamp": "2026-07-14T02:00:00Z", "phase": 1, "decision": "All 3 audits non-blocking, proceed to Phase 2"},
+    {"timestamp": "2026-07-14T03:00:00Z", "phase": 2, "decision": "Round 1 converged, no Round 2 needed"},
+    {"timestamp": "2026-07-14T03:30:00Z", "phase": 3, "decision": "AP2/AP5 escalated (need experiments), AP1/AP3 text-fixable applied"},
+    {"timestamp": "2026-07-14T04:00:00Z", "phase": 4, "decision": "Final compile passed, 15 pages, 0 undefined citations"}
+  ],
+  "user_escalation_queue": [
+    {
+      "attack_point": "AP2",
+      "severity": "critical",
+      "issue": "No experimental results — all result tables show '---'. Authors acknowledge results are pending.",
+      "fixable_under_constraints": false,
+      "recommendation": "Run the evaluation (Experiments 1-4) and fill in results.tex. This is outside text-only resubmit scope."
+    },
+    {
+      "attack_point": "AP5",
+      "severity": "major",
+      "issue": "Three-protocol consistency claim unverifiable without results.",
+      "fixable_under_constraints": false,
+      "recommendation": "Subsumed by AP2 — run Experiment 3 to verify."
+    }
+  ],
+  "hashes": {
+    "main.tex": "see file",
+    "references.bib": "see file",
+    "main.pdf": "348323 bytes, 15 pages"
+  }
+}

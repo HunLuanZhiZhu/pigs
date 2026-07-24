@@ -1,0 +1,8 @@
+\section{Conclusion}
+\label{sec:conclusion}
+
+We presented Pigs, a phased orchestration middleware for LLM API requests that combines a deterministic Pre$\rightarrow$Executor$\rightarrow$Post state machine with protocol-native request preservation, HTTP loopback transport, and bounded in-memory continuation. By elevating orchestration from a prompting technique to a middleware concern, Pigs separates deterministic control flow from stochastic LLM calls, making the orchestration transparent, debuggable, and protocol-agnostic. The system is implemented as a 13-crate Rust workspace and supports three major API protocols with real SSE streaming.
+
+We designed an experimental evaluation framework comprising four experiments: an ablation study isolating each phase's contribution, a control marker effectiveness study evaluating PIGFAIL-based failure recovery, a three-protocol consistency evaluation, and a cost-benefit analysis. All experiments use public benchmarks (SWE-bench, GAIA, AgentBoard) and require only API access---no GPU resources. \textbf{Experimental results are pending and will be reported upon completion of the evaluation.}
+
+Future work includes: (1) multi-model phase orchestration (different models for different phases), (2) formal verification of the state machine, (3) extended benchmarks (ToolBench, BFCL), (4) security analysis against prompt injection attacks~\citep{greshake2023promptinjection}, and (5) marker robustness improvements using fine-tuned detection models.

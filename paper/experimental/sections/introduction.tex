@@ -1,0 +1,40 @@
+\section{Introduction}
+\label{sec:intro}
+
+The companion system design paper~\citep{pigs_system_design} introduced Pigs, a phased orchestration middleware for LLM API requests. Pigs wraps each request with a Pre$\rightarrow$Executor$\rightarrow$Post state machine, using text control markers (\texttt{PIGEND}/\texttt{PIGFAIL}) for routing. The system preserves protocol-native HTTP requests across three API protocols and supports external tool execution through bounded in-memory continuation.
+\begin{chinese}
+配套的系统设计论文~\citep{pigs_system_design} 介绍了 Pigs，一种面向 LLM API 请求的相位编排中间件。Pigs 通过 Pre$\rightarrow$Executor$\rightarrow$Post 状态机包装每个请求，使用文本控制标记（\texttt{PIGEND}/\texttt{PIGFAIL}）进行路由。系统在三种 API 协议间保留协议原生 HTTP 请求，并通过有界内存 continuation 支持外部工具执行。
+\end{chinese}
+
+While the system design is described in detail, a key question remains: \emph{does phased orchestration actually improve task completion quality?} This paper addresses that question through a systematic experimental evaluation.
+\begin{chinese}
+系统设计已有详细描述，但一个关键问题仍待回答：\textbf{相位编排是否确实提升了任务完成质量？} 本文通过系统性实验评估来回答这一问题。
+\end{chinese}
+
+We make the following contributions:
+\begin{chinese}
+我们做出以下贡献：
+\end{chinese}
+\begin{enumerate}
+    \item An \textbf{ablation study} isolating the contribution of each phase (Pre, Executor, Post) to overall task performance.
+    \begin{chinese}
+    \textbf{消融实验}，隔离每个相位（Pre、Executor、Post）对整体任务性能的贡献。
+    \end{chinese}
+    \item A \textbf{control marker effectiveness study} showing whether PIGFAIL-based failure recovery improves outcomes.
+    \begin{chinese}
+    \textbf{控制标记有效性研究}，验证 PIGFAIL 失败恢复是否改善结果。
+    \end{chinese}
+    \item A \textbf{three-protocol consistency evaluation} verifying that the system produces consistent results across OpenAI Chat, Anthropic Messages, and OpenAI Responses.
+    \begin{chinese}
+    \textbf{三协议一致性评估}，验证系统在 OpenAI Chat、Anthropic Messages 和 OpenAI Responses 间产生一致结果。
+    \end{chinese}
+    \item A \textbf{cost-benefit analysis} quantifying the token, latency, and API call overhead of orchestration.
+    \begin{chinese}
+    \textbf{成本效益分析}，量化编排的 token、延迟和 API 调用开销。
+    \end{chinese}
+\end{enumerate}
+
+All experiments use public benchmarks (SWE-bench, GAIA, AgentBoard) and require only API access---no GPU resources.
+\begin{chinese}
+所有实验使用公开基准测试（SWE-bench、GAIA、AgentBoard），仅需 API 访问——无需 GPU 资源。
+\end{chinese}

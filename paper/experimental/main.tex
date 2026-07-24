@@ -1,0 +1,59 @@
+% Pigs: Evaluating Phased Orchestration for LLM API Requests
+% Experimental Paper (Bilingual: EN + ZH via three switches)
+
+%% ====================================================================
+%% 中文开关说明（参考 md_en.tex 三开关机制）
+%% ====================================================================
+%% 开关0: \PassOptionsToPackage{no-math}{fontspec}
+%% 开关1: \usepackage[scheme=plain]{ctex}
+%% 开关2: \excludecomment{chinese} / \specialcomment{chinese}{...}
+%% 三个开关全开（默认）= 中文模式
+%% ====================================================================
+
+\PassOptionsToPackage{no-math}{fontspec} % 中文开关0
+\documentclass[10pt]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[scheme=plain]{ctex} % 中文开关1
+\usepackage{comment}
+\definecolor{chinesecolor}{RGB}{0,128,0}
+\excludecomment{chinese}
+% \specialcomment{chinese}{\begingroup\color{chinesecolor}\itshape 中文：}{\endgroup} %中文开关2
+
+\usepackage[a4paper, margin=1in]{geometry}
+\usepackage{amsmath, amssymb}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta, positioning, shapes.geometric, fit}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{cleveref}
+\usepackage{natbib}
+
+\title{Pigs: Evaluating Phased Orchestration for LLM API Requests}
+\author{Anonymous}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We present an experimental evaluation of Pigs, a phased orchestration middleware that wraps LLM API requests with a Pre$\rightarrow$Executor$\rightarrow$Post state machine using text control markers (PIGEND/PIGFAIL). While the companion system design paper~\citep{pigs_system_design} describes the architecture, this paper focuses on \emph{whether} phased orchestration improves task completion quality. We design four experiments: (1) an ablation study comparing full orchestration against no orchestration and partial configurations; (2) a control marker effectiveness study isolating the contribution of PIGFAIL-based failure recovery; (3) a three-protocol consistency evaluation across OpenAI Chat, Anthropic Messages, and OpenAI Responses; and (4) a cost-benefit analysis quantifying the overhead of orchestration. We use public benchmarks including SWE-bench, GAIA, and AgentBoard. \textbf{Experimental results are pending and will be filled upon completion of the evaluation.}
+\begin{chinese}
+我们对 Pigs——一种通过 Pre$\rightarrow$Executor$\rightarrow$Post 状态机和文本控制标记（PIGEND/PIGFAIL）包装 LLM API 请求的相位编排中间件——进行了实验评估。配套的系统设计论文~\citep{pigs_system_design} 描述了架构，本文聚焦于\textbf{相位编排是否确实提升任务完成质量}。我们设计了四组实验：（1）消融实验，对比完整编排与无编排及部分配置；（2）控制标记有效性研究，隔离 PIGFAIL 失败恢复的贡献；（3）三协议一致性评估，覆盖 OpenAI Chat、Anthropic Messages 和 OpenAI Responses；（4）成本效益分析，量化编排开销。我们使用公开基准测试包括 SWE-bench、GAIA 和 AgentBoard。\textbf{实验结果待填，将在评估完成后补充。}
+\end{chinese}
+\end{abstract}
+
+\input{sections/introduction}
+\input{sections/method}
+\input{sections/experiments}
+\input{sections/results}
+\input{sections/related}
+\input{sections/conclusion}
+
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+\end{document}

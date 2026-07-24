@@ -35,39 +35,39 @@ pub async fn handle_command(agent: &mut Agent, line: &str) -> anyhow::Result<Com
 
     match cmd {
         "help" => {
-            print_help(agent.language);
+            print_help(&mut agent.output, agent.language);
             Ok(CommandResult::Continue)
         }
 
         "quit" => {
-            println!("{}", i18n::t(agent.language, "goodbye"));
+            agent.output.println(i18n::t(agent.language, "goodbye"));
             Ok(CommandResult::Quit)
         }
 
         "lang" => {
             if bare_chinese_switch {
                 agent.set_language(Language::Zh);
-                println!("{}", i18n::t(agent.language, "lang_set_zh"));
+                agent.output.println(i18n::t(agent.language, "lang_set_zh"));
                 return Ok(CommandResult::Continue);
             }
             if arg.is_empty() {
-                println!(
+                agent.output.println(format!(
                     "{}: {} ({})",
                     i18n::t(agent.language, "language"),
                     agent.language.as_str(),
                     agent.language.display_name()
-                );
-                println!("{}", i18n::t(agent.language, "lang_usage"));
+                ));
+                agent.output.println(i18n::t(agent.language, "lang_usage"));
             } else {
                 match arg.parse::<Language>() {
                     Ok(lang) => {
                         agent.set_language(lang);
                         match lang {
-                            Language::En => println!("{}", i18n::t(agent.language, "lang_set_en")),
-                            Language::Zh => println!("{}", i18n::t(agent.language, "lang_set_zh")),
+                            Language::En => agent.output.println(i18n::t(agent.language, "lang_set_en")),
+                            Language::Zh => agent.output.println(i18n::t(agent.language, "lang_set_zh")),
                         }
                     }
-                    Err(e) => eprintln!("{e}"),
+                    Err(e) => agent.output.eprintln(e),
                 }
             }
             Ok(CommandResult::Continue)
@@ -80,28 +80,28 @@ pub async fn handle_command(agent: &mut Agent, line: &str) -> anyhow::Result<Com
 
         "mode" => {
             if arg.is_empty() {
-                println!(
+                agent.output.println(format!(
                     "Current permission mode: {}",
                     agent.permission_policy.active_mode
-                );
-                println!("Usage: /mode <readonly|workspace_write|danger|ask|allow>");
-                println!("       (alias: /模式 /权限 /moshi /quanxian)");
+                ));
+                agent.output.println("Usage: /mode <readonly|workspace_write|danger|ask|allow>");
+                agent.output.println("       (alias: /模式 /权限 /moshi /quanxian)");
             } else {
                 match arg {
                     "ask" => {
                         agent.permission_policy = agent.permission_policy.clone().always_ask();
-                        println!("Permission mode: ask (prompt for every tool)");
+                        agent.output.println("Permission mode: ask (prompt for every tool)");
                     }
                     "allow" => {
                         agent.permission_policy = agent.permission_policy.clone().allow_all();
-                        println!("Permission mode: allow (all tools allowed without prompting)");
+                        agent.output.println("Permission mode: allow (all tools allowed without prompting)");
                     }
                     _ => match PermissionMode::from_str(arg) {
                         Ok(mode) => {
                             agent.set_permission_mode(mode.clone());
-                            println!("Permission mode: {mode}");
+                            agent.output.println(format!("Permission mode: {mode}"));
                         }
-                        Err(e) => eprintln!("{e}"),
+                        Err(e) => agent.output.eprintln(e),
                     },
                 }
             }
@@ -110,19 +110,16 @@ pub async fn handle_command(agent: &mut Agent, line: &str) -> anyhow::Result<Com
 
         "clear" => {
             agent.clear_session();
-            println!("{}", i18n::t(agent.language, "session_cleared"));
+            agent.output.println(i18n::t(agent.language, "session_cleared"));
             Ok(CommandResult::Continue)
         }
 
         "save" => {
-            match agent.session.save(&agent.sessions_dir) {
-                Ok(()) => println!("Session saved: {}", agent.session_id()),
-                Err(e) => eprintln!("Failed to save session: {e}"),
-            }
+            agent.output.println("Sessions are auto-saved after each turn. No manual save needed.");
             Ok(CommandResult::Continue)
         }
 
-        "sessions" => {
+        "ses" => {
             let parts: Vec<&str> = arg.splitn(2, " ").collect();
             let sub_raw = parts.first().copied().unwrap_or("");
             let sub = if sub_raw.is_empty() {
@@ -131,74 +128,80 @@ pub async fn handle_command(agent: &mut Agent, line: &str) -> anyhow::Result<Com
                 canonicalize_sessions_sub(sub_raw)
             };
             match sub {
-                "list" => match Agent::list_sessions() {
-                    Ok(sessions) => {
-                        if sessions.is_empty() {
-                            println!("No saved sessions.");
-                        } else {
-                            println!(
-                                "{:<10} {:<24} {:<18} {:<6} {:<16}",
-                                "ID", "Title", "Model", "Msgs", "Updated"
-                            );
-                            println!("{}", "-".repeat(80));
-                            for s in sessions.iter().take(20) {
-                                let short_id = &s.session_id[..8.min(s.session_id.len())];
-                                let updated = s.updated_at.format("%Y-%m-%d %H:%M");
-                                let title =
-                                    s.title.clone().unwrap_or_else(|| "(untitled)".to_string());
-                                let title = if title.chars().count() > 22 {
-                                    let t: String = title.chars().take(19).collect();
-                                    format!("{t}...")
-                                } else {
-                                    title
-                                };
-                                println!(
-                                    "{short_id:<10} {title:<24} {:<18} {:<6} {updated}",
-                                    s.model, s.message_count
-                                );
+                "list" => {
+                    // List all agents: Active (in memory) + History (on disk)
+                    let mgr = agent.sub_agent_manager.lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    let current_focus = mgr.current_focus().to_string();
+                    let in_memory_ids: std::collections::HashSet<String> = mgr.agents.keys()
+                        .cloned()
+                        .collect();
+                    let main_id = agent.session.session_id.clone();
+
+                    // Active section: main agent + in-memory sub-agents
+                    agent.output.println("Active (in memory):");
+                    // Main agent
+                    let main_marker = if current_focus == main_id { " ← viewing" } else { "" };
+                    let main_title = agent.session.display_title();
+                    agent.output.println(format!("  {main_id:<8} [main]    active     {main_title}{main_marker}"));
+                    // Sub-agents in memory
+                    for (id, task, status, mode) in mgr.list() {
+                        let marker = if current_focus == id { " ← viewing" } else { "" };
+                        let task_preview: String = task.chars().take(40).collect();
+                        agent.output.println(format!("  {id:<8} [sub]     {mode_str:<10} {status_str:<20} {}{}", task_preview, marker,
+                            mode_str = mode.as_str(),
+                            status_str = status.display(),
+                        ));
+                    }
+                    drop(mgr);
+
+                    // History section: on disk but not in memory
+                    match Agent::list_sessions() {
+                        Ok(sessions) => {
+                            let history: Vec<_> = sessions.iter()
+                                .filter(|s| s.session_id != main_id && !in_memory_ids.contains(s.session_id.as_str()))
+                                .collect();
+                            if !history.is_empty() {
+                                agent.output.println_empty();
+                                agent.output.println("History (on disk):");
+                                for s in history.iter().take(20) {
+                                    let updated = s.updated_at.format("%Y-%m-%d %H:%M");
+                                    let title = s.title.clone().unwrap_or_else(|| "(untitled)".to_string());
+                                    let title = if title.chars().count() > 30 {
+                                        let t: String = title.chars().take(27).collect();
+                                        format!("{t}...")
+                                    } else {
+                                        title
+                                    };
+                                    let agent_type = if s.agent_type.is_empty() { "?" } else { &s.agent_type };
+                                    agent.output.println(format!("  {:<8} [{:<4}]    {}  {}", s.session_id, agent_type, title, updated));
+                                }
                             }
                         }
+                        Err(e) => agent.output.eprintln(format!("Failed to list history: {e}")),
                     }
-                    Err(e) => eprintln!("Failed to list sessions: {e}"),
-                },
+                }
                 "rm" => {
                     let id = parts.get(1).map(|s| s.trim()).unwrap_or("");
                     if id.is_empty() {
-                        println!("Usage: /sessions rm <id-or-prefix>");
+                        agent.output.println("Usage: /ses rm <id-or-prefix>");
                     } else {
                         match Agent::delete_session(id) {
                             Ok(path) => {
-                                println!("Deleted session file: {}", path.display());
+                                agent.output.println(format!("Deleted session file: {}", path.display()));
                                 let cur = agent.session.short_id();
                                 if agent.session.session_id.starts_with(id) || id.starts_with(cur) {
-                                    println!("Note: current in-memory session was not cleared. Use /clear if needed.");
+                                    agent.output.println("Note: current in-memory session was not cleared.");
                                 }
                             }
-                            Err(e) => eprintln!("Failed to delete session: {e}"),
-                        }
-                    }
-                }
-                "open" => {
-                    let id = parts.get(1).map(|s| s.trim()).unwrap_or("");
-                    if id.is_empty() {
-                        println!("Usage: /sessions open <id-or-prefix>");
-                    } else {
-                        match agent.switch_session(id) {
-                            Ok(()) => {
-                                println!(
-                                    "Switched to session {} ({})",
-                                    agent.session.short_id(),
-                                    agent.session.display_title()
-                                );
-                            }
-                            Err(e) => eprintln!("Failed to open session: {e}"),
+                            Err(e) => agent.output.eprintln(format!("Failed to delete session: {e}")),
                         }
                     }
                 }
                 "search" => {
                     let q = parts.get(1).map(|s| s.trim()).unwrap_or("");
                     if q.is_empty() {
-                        println!("Usage: /sessions search <text>");
+                        agent.output.println("Usage: /ses search <text>");
                     } else {
                         match Agent::list_sessions() {
                             Ok(sessions) => {
@@ -215,54 +218,61 @@ pub async fn handle_command(agent: &mut Agent, line: &str) -> anyhow::Result<Com
                                     })
                                     .collect();
                                 if filtered.is_empty() {
-                                    println!("No sessions matched `{q}`.");
+                                    agent.output.println(format!("No sessions matched `{q}`."));
                                 } else {
-                                    println!("Matches for `{q}` ({}):", filtered.len());
-                                    println!(
-                                        "{:<10} {:<24} {:<18} {:<6} {:<16}",
-                                        "ID", "Title", "Model", "Msgs", "Updated"
-                                    );
-                                    println!("{}", "-".repeat(80));
+                                    agent.output.println(format!("Matches for `{}` ({}):", q, filtered.len()));
                                     for s in filtered.iter().take(50) {
-                                        let short_id = &s.session_id[..8.min(s.session_id.len())];
-                                        let updated = s.updated_at.format("%Y-%m-%d %H:%M");
-                                        let title = s
-                                            .title
-                                            .clone()
-                                            .unwrap_or_else(|| "(untitled)".to_string());
-                                        let title = if title.chars().count() > 22 {
-                                            let t: String = title.chars().take(19).collect();
-                                            format!("{t}...")
-                                        } else {
-                                            title
-                                        };
-                                        println!(
-                                            "{short_id:<10} {title:<24} {:<18} {:<6} {updated}",
-                                            s.model, s.message_count
-                                        );
+                                        let title = s.title.clone().unwrap_or_else(|| "(untitled)".to_string());
+                                        agent.output.println(format!("  {}  {}  {} msgs", s.session_id, title, s.message_count));
                                     }
                                 }
                             }
-                            Err(e) => eprintln!("Failed to search sessions: {e}"),
+                            Err(e) => agent.output.eprintln(format!("Failed to search: {e}")),
                         }
                     }
                 }
-                "current" => {
-                    println!(
-                        "Current: {}  title={}  model={}  msgs={}",
-                        agent.session.short_id(),
-                        agent.session.display_title(),
-                        agent.session.model,
-                        agent.session.message_count()
-                    );
-                }
                 _ => {
-                    println!("Session commands:");
-                    println!("  /sessions                List saved sessions");
-                    println!("  /sessions current        Show current session");
-                    println!("  /sessions open <id>      Switch to a saved session");
-                    println!("  /sessions rm <id>        Delete a saved session file");
-                    println!("  /sessions search <text>  Filter by id/title/model");
+                    // /ses <id> — smart navigate
+                    let id = sub_raw.trim();
+                    // Check if it's a subcommand keyword
+                    if id == "list" || id == "current" || id == "open" {
+                        // Legacy subcommands — treat "open <id>" as "/ses <id>"
+                        if id == "open" {
+                            let target = parts.get(1).map(|s| s.trim()).unwrap_or("");
+                            if !target.is_empty() {
+                                match agent.switch_session(target) {
+                                    Ok(()) => {
+                                        agent.output.println(format!("Switched to session {} ({})",
+                                            agent.session.session_id,
+                                            agent.session.display_title()));
+                                    }
+                                    Err(e) => agent.output.eprintln(format!("Failed to switch: {e}")),
+                                }
+                            }
+                        }
+                    } else if !id.is_empty() {
+                        // Smart: check if in memory
+                        let in_memory = agent.sub_agent_manager.lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .is_in_memory(id);
+                        if in_memory {
+                            // Just switch focus (navigation), no reload
+                            agent.sub_agent_manager.lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .switch_to(id);
+                            agent.output.println(format!("Switched focus to: {id}"));
+                        } else {
+                            // Load from disk (includes sub-agent restoration)
+                            match agent.switch_session(id) {
+                                Ok(()) => {
+                                    agent.output.println(format!("Loaded session {} ({})",
+                                        agent.session.session_id,
+                                        agent.session.display_title()));
+                                }
+                                Err(e) => agent.output.eprintln(format!("Failed to load: {e}")),
+                            }
+                        }
+                    }
                 }
             }
             Ok(CommandResult::Continue)
@@ -270,12 +280,12 @@ pub async fn handle_command(agent: &mut Agent, line: &str) -> anyhow::Result<Com
 
         "tools" => {
             if agent.no_tools {
-                println!("Tools are disabled (--no-tools flag).");
+                agent.output.println("Tools are disabled (--no-tools flag).");
             } else {
                 let names = agent.tool_registry.names();
-                println!("Available tools ({}):", names.len());
+                agent.output.println(format!("Available tools ({}):", names.len()));
                 for name in &names {
-                    println!("  - {name}");
+                    agent.output.println(format!("  - {name}"));
                 }
             }
             Ok(CommandResult::Continue)
@@ -286,7 +296,7 @@ pub async fn handle_command(agent: &mut Agent, line: &str) -> anyhow::Result<Com
             match todos {
                 Ok(todos) => {
                     if todos.is_empty() {
-                        println!("Todo list is empty.");
+                        agent.output.println("Todo list is empty.");
                     } else {
                         let total = todos.len();
                         let completed = todos
@@ -295,8 +305,8 @@ pub async fn handle_command(agent: &mut Agent, line: &str) -> anyhow::Result<Com
                                 matches!(t.status, pigs_tools::todo_write::TodoStatus::Completed)
                             })
                             .count();
-                        println!("Todo list ({completed}/{total} completed):");
-                        println!("{}", "-".repeat(60));
+                        agent.output.println(format!("Todo list ({completed}/{total} completed):"));
+                        agent.output.println("-".repeat(60));
                         for (i, item) in todos.iter().enumerate() {
                             let status_icon = match item.status {
                                 pigs_tools::todo_write::TodoStatus::Completed => "[x]",
@@ -308,100 +318,99 @@ pub async fn handle_command(agent: &mut Agent, line: &str) -> anyhow::Result<Com
                                 pigs_tools::todo_write::TodoPriority::Medium => "MED ",
                                 pigs_tools::todo_write::TodoPriority::Low => "LOW ",
                             };
-                            println!(
-                                "  {} {priority_tag}  {}. {}",
+                            agent.output.println(format!("  {} {}  {}. {}", priority_tag,
                                 status_icon,
                                 i + 1,
                                 item.content
-                            );
+                            ));
                         }
                     }
                 }
-                Err(e) => eprintln!("Failed to read todo list: {e}"),
+                Err(e) => agent.output.eprintln(format!("Failed to read todo list: {e}")),
             }
             Ok(CommandResult::Continue)
         }
 
         "status" => {
-            println!("Pigs status");
-            println!("{}", "-".repeat(60));
-            println!(
+            agent.output.println("Pigs status");
+            agent.output.println("-".repeat(60));
+            agent.output.println(format!(
                 "Session:    {} ({})",
                 agent.session.display_title(),
                 agent.session.short_id()
-            );
-            println!("Model:      {}", agent.api_client.model());
-            println!(
+            ));
+            agent.output.println(format!("Model:      {}", agent.api_client.model()));
+            agent.output.println(format!(
                 "{}:   {} ({})",
                 i18n::t(agent.language, "language"),
                 agent.language.as_str(),
                 agent.language.display_name()
-            );
-            println!("Permission: {}", agent.permission_policy.active_mode);
-            println!("Messages:   {}", agent.session.message_count());
-            println!("Est tokens: {}", agent.session.estimated_tokens());
-            println!("Usage:      {}", agent.session.total_usage);
+            ));
+            agent.output.println(format!("Permission: {}", agent.permission_policy.active_mode));
+            agent.output.println(format!("Messages:   {}", agent.session.message_count()));
+            agent.output.println(format!("Est tokens: {}", agent.session.estimated_tokens()));
+            agent.output.println(format!("Usage:      {}", agent.session.total_usage));
             if let Some(cost) = agent
                 .session
                 .total_usage
                 .estimate_cost_for_model(agent.api_client.model())
             {
-                println!("Est cost:   ${cost:.4}");
+                agent.output.println("Est cost:   ${cost:.4}");
             }
-            println!(
+            agent.output.println(format!(
                 "Tools:      {}",
                 if agent.no_tools {
                     0
                 } else {
                     agent.tool_registry.len()
                 }
-            );
-            println!("Skills:     {}", agent.skills.len());
-            println!("Rules:      {}", agent.rules.len());
-            println!("Memory:     {} note(s)", agent.memory.len());
+            ));
+            agent.output.println(format!("Skills:     {}", agent.skills.len()));
+            agent.output.println(format!("Rules:      {}", agent.rules.len()));
+            agent.output.println(format!("Memory:     {} note(s)", agent.memory.len()));
             let servers = agent.list_mcp_servers().await;
-            println!("MCP:        {} server(s)", servers.len());
+            agent.output.println(format!("MCP:        {} server(s)", servers.len()));
             if !servers.is_empty() {
-                println!("            {}", servers.join(", "));
+                agent.output.println(format!("            {}", servers.join(", ")));
             }
-            println!("Workspace:  {}", agent.workspace_root.display());
-            println!(
+            agent.output.println(format!("Workspace:  {}", agent.workspace_root.display()));
+            agent.output.println(format!(
                 "Logs:       {}",
                 pigs_config::AppConfig::logs_dir().display()
-            );
+            ));
             Ok(CommandResult::Continue)
         }
 
         "info" => {
-            println!("Session ID:   {}", agent.session_id());
-            println!("Model:        {}", agent.api_client.model());
-            println!("Permission:   {}", agent.permission_policy.active_mode);
-            println!("Messages:     {}", agent.session.message_count());
-            println!("Est. tokens:  {}", agent.session.estimated_tokens());
-            println!("Usage:        {}", agent.session.total_usage);
-            println!(
+            agent.output.println(format!("Session ID:   {}", agent.session_id()));
+            agent.output.println(format!("Model:        {}", agent.api_client.model()));
+            agent.output.println(format!("Permission:   {}", agent.permission_policy.active_mode));
+            agent.output.println(format!("Messages:     {}", agent.session.message_count()));
+            agent.output.println(format!("Est. tokens:  {}", agent.session.estimated_tokens()));
+            agent.output.println(format!("Usage:        {}", agent.session.total_usage));
+            agent.output.println(format!(
                 "Tools:        {}",
                 if agent.no_tools {
                     "disabled"
                 } else {
                     "enabled"
                 }
-            );
-            println!("Max turns:    {}", agent.max_turns);
-            println!("Skills:       {}", agent.skills.len());
+            ));
+            agent.output.println(format!("Max turns:    {}", agent.max_turns));
+            agent.output.println(format!("Skills:       {}", agent.skills.len()));
             Ok(CommandResult::Continue)
         }
 
         "title" => {
             if arg.is_empty() {
-                println!("Current title: {}", agent.session.display_title());
-                println!("Usage: /title <new title>");
+                agent.output.println(format!("Current title: {}", agent.session.display_title()));
+                agent.output.println("Usage: /title <new title>");
             } else {
                 agent.session.set_title(arg);
                 if let Err(e) = agent.session.save(&agent.sessions_dir) {
-                    eprintln!("Failed to save session title: {e}");
+                    agent.output.eprintln(format!("Failed to save session title: {e}"));
                 } else {
-                    println!("Title set to: {}", agent.session.display_title());
+                    agent.output.println(format!("Title set to: {}", agent.session.display_title()));
                 }
             }
             Ok(CommandResult::Continue)
@@ -410,20 +419,20 @@ pub async fn handle_command(agent: &mut Agent, line: &str) -> anyhow::Result<Com
         "cost" => {
             let usage = &agent.session.total_usage;
             let model = agent.api_client.model();
-            println!("Token usage for this session:");
-            println!("  Model:         {model}");
-            println!("  Input tokens:  {}", usage.input_tokens);
-            println!("  Output tokens: {}", usage.output_tokens);
+            agent.output.println("Token usage for this session:");
+            agent.output.println(format!("  Model:         {model}"));
+            agent.output.println(format!("  Input tokens:  {}", usage.input_tokens));
+            agent.output.println(format!("  Output tokens: {}", usage.output_tokens));
             if let Some(cached) = usage.cache_read_tokens {
-                println!("  Cached tokens: {cached}");
+                agent.output.println(format!("  Cached tokens: {cached}"));
             }
-            println!("  Total tokens:  {}", usage.total_tokens());
+            agent.output.println(format!("  Total tokens:  {}", usage.total_tokens()));
             match usage.estimate_cost_for_model(model) {
                 Some(cost) => {
-                    println!("  Est. cost:     ${cost:.4} USD (approximate list pricing)");
+                    agent.output.println("  Est. cost:     ${cost:.4} USD (approximate list pricing)");
                 }
                 None => {
-                    println!("  Est. cost:     (unknown model pricing)");
+                    agent.output.println("  Est. cost:     (unknown model pricing)");
                 }
             }
             Ok(CommandResult::Continue)
@@ -434,10 +443,10 @@ pub async fn handle_command(agent: &mut Agent, line: &str) -> anyhow::Result<Com
             match agent.config.clone().save() {
                 Ok(()) => {
                     let config_path = pigs_config::AppConfig::config_path();
-                    println!("Config file created at: {}", config_path.display());
-                    println!("Edit it to set your API keys and preferences.");
+                    agent.output.println(format!("Config file created at: {}", config_path.display()));
+                    agent.output.println("Edit it to set your API keys and preferences.");
                 }
-                Err(e) => eprintln!("Failed to create config: {e}"),
+                Err(e) => agent.output.eprintln(format!("Failed to create config: {e}")),
             }
             Ok(CommandResult::Continue)
         }
@@ -445,18 +454,18 @@ pub async fn handle_command(agent: &mut Agent, line: &str) -> anyhow::Result<Com
         "reload" => {
             match agent.reload_config() {
                 Ok(()) => {
-                    println!("{}", i18n::t(agent.language, "config_reloaded"));
-                    println!("  Model:      {}", agent.api_client.model());
-                    println!("  Permission: {}", agent.permission_policy.active_mode);
-                    println!(
+                    agent.output.println(i18n::t(agent.language, "config_reloaded"));
+                    agent.output.println(format!("  Model:      {}", agent.api_client.model()));
+                    agent.output.println(format!("  Permission: {}", agent.permission_policy.active_mode));
+                    agent.output.println(format!(
                         "  {}:     {} ({})",
                         i18n::t(agent.language, "language"),
                         agent.language.as_str(),
                         agent.language.display_name()
-                    );
-                    println!("  Max turns:  {}", agent.max_turns);
+                    ));
+                    agent.output.println(format!("  Max turns:  {}", agent.max_turns));
                 }
-                Err(e) => eprintln!("Failed to reload config: {e}"),
+                Err(e) => agent.output.eprintln(format!("Failed to reload config: {e}")),
             }
             Ok(CommandResult::Continue)
         }
@@ -472,20 +481,20 @@ pub async fn handle_command(agent: &mut Agent, line: &str) -> anyhow::Result<Com
             match sub {
                 "" | "list" | "ls" => {
                     if agent.memory.is_empty() {
-                        println!("Memory is empty.");
-                        println!("Use: /memory add [--global] <note>");
+                        agent.output.println("Memory is empty.");
+                        agent.output.println("Use: /memory add [--global] <note>");
                     } else {
-                        println!("Memory notes ({}):", agent.memory.len());
+                        agent.output.println(format!("Memory notes ({}):", agent.memory.len()));
                         if !agent.memory.global.is_empty() {
-                            println!("[global]");
+                            agent.output.println("[global]");
                             for (i, n) in agent.memory.global.iter().enumerate() {
-                                println!("  {}. {n}", i + 1);
+                                agent.output.println(format!("  {}. {}", n, i + 1));
                             }
                         }
                         if !agent.memory.project.is_empty() {
-                            println!("[project]");
+                            agent.output.println("[project]");
                             for (i, n) in agent.memory.project.iter().enumerate() {
-                                println!("  {}. {n}", i + 1);
+                                agent.output.println(format!("  {}. {}", n, i + 1));
                             }
                         }
                     }
@@ -495,24 +504,24 @@ pub async fn handle_command(agent: &mut Agent, line: &str) -> anyhow::Result<Com
                     let (source, note) = if let Some(n) = rest.strip_prefix("--global ") {
                         (pigs_config::MemorySource::Global, n.trim())
                     } else if rest == "--global" {
-                        println!("Usage: /memory add [--global] <note>");
+                        agent.output.println("Usage: /memory add [--global] <note>");
                         return Ok(CommandResult::Continue);
                     } else {
                         (pigs_config::MemorySource::Project, rest)
                     };
                     if note.is_empty() {
-                        println!("Usage: /memory add [--global] <note>");
+                        agent.output.println("Usage: /memory add [--global] <note>");
                     } else {
                         match pigs_config::add_memory_note(&agent.workspace_root, source, note) {
                             Ok(path) => {
                                 agent.reload_memory();
-                                println!(
+                                agent.output.println(format!(
                                     "Added {} memory note -> {}",
                                     source.as_str(),
                                     path.display()
-                                );
+                                ));
                             }
-                            Err(e) => eprintln!("Failed to add memory: {e}"),
+                            Err(e) => agent.output.eprintln(format!("Failed to add memory: {e}")),
                         }
                     }
                 }
@@ -524,7 +533,7 @@ pub async fn handle_command(agent: &mut Agent, line: &str) -> anyhow::Result<Com
                         (pigs_config::MemorySource::Project, rest)
                     };
                     if needle.is_empty() {
-                        println!("Usage: /memory rm [--global] <substring>");
+                        agent.output.println("Usage: /memory rm [--global] <substring>");
                     } else {
                         match pigs_config::remove_memory_notes(
                             &agent.workspace_root,
@@ -533,26 +542,25 @@ pub async fn handle_command(agent: &mut Agent, line: &str) -> anyhow::Result<Com
                         ) {
                             Ok((n, path)) => {
                                 agent.reload_memory();
-                                println!(
-                                    "Removed {n} {} note(s) from {}",
+                                agent.output.println(format!("Removed {} {} note(s) from {}", n,
                                     source.as_str(),
                                     path.display()
-                                );
+                                ));
                             }
-                            Err(e) => eprintln!("Failed to remove memory: {e}"),
+                            Err(e) => agent.output.eprintln(format!("Failed to remove memory: {e}")),
                         }
                     }
                 }
                 "reload" => {
                     agent.reload_memory();
-                    println!("Memory reloaded ({} notes).", agent.memory.len());
+                    agent.output.println(format!("Memory reloaded ({} notes).", agent.memory.len()));
                 }
                 _ => {
-                    println!("Memory commands:");
-                    println!("  /memory list");
-                    println!("  /memory add [--global] <note>");
-                    println!("  /memory rm  [--global] <substring>");
-                    println!("  /memory reload");
+                    agent.output.println("Memory commands:");
+                    agent.output.println("  /memory list");
+                    agent.output.println("  /memory add [--global] <note>");
+                    agent.output.println("  /memory rm  [--global] <substring>");
+                    agent.output.println("  /memory reload");
                 }
             }
             Ok(CommandResult::Continue)
@@ -561,15 +569,15 @@ pub async fn handle_command(agent: &mut Agent, line: &str) -> anyhow::Result<Com
         "rules" => {
             if arg == "reload" {
                 agent.reload_rules();
-                println!("Rules reloaded ({}).", agent.rules.len());
+                agent.output.println(format!("Rules reloaded ({}).", agent.rules.len()));
             }
             if agent.rules.is_empty() {
-                println!("No project rules loaded.");
-                println!("Add markdown files under .pigs/rules/");
+                agent.output.println("No project rules loaded.");
+                agent.output.println("Add markdown files under .pig/rules/");
             } else {
-                println!("Project rules ({}):", agent.rules.len());
+                agent.output.println(format!("Project rules ({}):", agent.rules.len()));
                 for rule in &agent.rules {
-                    println!("  - {}  ({})", rule.name, rule.path.display());
+                    agent.output.println(format!("  - {}  ({})", rule.name, rule.path.display()));
                 }
             }
             Ok(CommandResult::Continue)
@@ -578,29 +586,29 @@ pub async fn handle_command(agent: &mut Agent, line: &str) -> anyhow::Result<Com
         "skills" => {
             if arg == "reload" {
                 agent.reload_skills();
-                println!("Skills reloaded ({} skill(s)).", agent.skills.len());
+                agent.output.println(format!("Skills reloaded ({} skill(s)).", agent.skills.len()));
             }
             if agent.skills.is_empty() {
-                println!("No skills loaded.");
-                println!("Place SKILL.md or *.md files in (first match of a name wins):");
-                println!("  ~/.pigs/skills/          # pigs user");
-                println!("  ~/.agents/skills/        # common user agent skills");
-                println!("  .pigs/skills/            # pigs project");
-                println!("  .agents/skills/          # common project skills (e.g. ARIS)");
-                println!("  skills/                  # workspace root");
+                agent.output.println("No skills loaded.");
+                agent.output.println("Place SKILL.md or *.md files in (first match of a name wins):");
+                agent.output.println("  ~/.pig/skills/          # pigs user");
+                agent.output.println("  ~/.agents/skills/        # common user agent skills");
+                agent.output.println("  .pig/skills/            # pigs project");
+                agent.output.println("  .agents/skills/          # common project skills (e.g. ARIS)");
+                agent.output.println("  skills/                  # workspace root");
             } else {
-                println!(
+                agent.output.println(format!(
                     "Skill catalog ({}): names+descriptions in system prompt; full body via tool `skill`",
                     agent.skills.len()
-                );
+                ));
                 for skill in &agent.skills {
                     let desc = if skill.description.is_empty() {
                         "(no description)"
                     } else {
                         skill.description.as_str()
                     };
-                    println!("  - {}  {}", skill.name, desc);
-                    println!("    {}", skill.path.display());
+                    agent.output.println(format!("  - {}  {}", skill.name, desc));
+                    agent.output.println(format!("    {}", skill.path.display()));
                 }
             }
             Ok(CommandResult::Continue)
@@ -609,39 +617,41 @@ pub async fn handle_command(agent: &mut Agent, line: &str) -> anyhow::Result<Com
         "undo" => {
             match arg {
                 "list" | "ls" => {
-                    let items = agent.list_write_snapshots();
+                    // Clone to release the immutable borrow on `agent` so we
+                    // can mutably borrow `agent.output` inside the loop below.
+                    let items: Vec<_> = agent.list_write_snapshots().into_iter().cloned().collect();
                     if items.is_empty() {
-                        println!("No undo snapshots.");
+                        agent.output.println("No undo snapshots.");
                     } else {
-                        println!("Undoable write batches (most recent first):");
+                        agent.output.println("Undoable write batches (most recent first):");
                         for (i, b) in items.iter().enumerate() {
-                            println!(
+                            agent.output.println(format!(
                                 "  {}. {}  tool={}  files={}  at={}",
                                 i + 1,
                                 b.id,
                                 b.tool_name,
                                 b.files.len(),
                                 b.created_at
-                            );
+                            ));
                             for f in b.files.iter().take(5) {
-                                println!("      - {}", f.path.display());
+                                agent.output.println(format!("      - {}", f.path.display()));
                             }
                         }
                     }
                 }
                 "" => match agent.undo_last_write() {
                     Ok(report) => {
-                        println!("Undo complete:");
+                        agent.output.println("Undo complete:");
                         for line in report {
-                            println!("  {line}");
+                            agent.output.println(format!("  {line}"));
                         }
                     }
-                    Err(e) => eprintln!("Undo failed: {e}"),
+                    Err(e) => agent.output.eprintln(format!("Undo failed: {e}")),
                 },
                 _ => {
-                    println!("Usage:");
-                    println!("  /undo        Undo last write tool batch");
-                    println!("  /undo list   List undoable batches");
+                    agent.output.println("Usage:");
+                    agent.output.println("  /undo        Undo last write tool batch");
+                    agent.output.println("  /undo list   List undoable batches");
                 }
             }
             Ok(CommandResult::Continue)
@@ -654,20 +664,21 @@ pub async fn handle_command(agent: &mut Agent, line: &str) -> anyhow::Result<Com
                 arg.to_string()
             };
             match export_session_markdown(agent, &path) {
-                Ok(()) => println!("Session exported to: {path}"),
-                Err(e) => eprintln!("Failed to export session: {e}"),
+                Ok(()) => agent.output.println(format!("Session exported to: {path}")),
+                Err(e) => agent.output.eprintln(format!("Failed to export session: {e}")),
             }
             Ok(CommandResult::Continue)
         }
 
         "doctor" => {
             let items = crate::doctor::run_doctor(agent);
-            crate::doctor::print_doctor_report(&items);
+            crate::doctor::print_doctor_report(&mut agent.output, &items);
             Ok(CommandResult::Continue)
         }
 
         "models" => {
             crate::models::print_models(
+                &mut agent.output,
                 &agent.config,
                 &agent.config.model,
                 agent.api_client.model(),
@@ -676,28 +687,28 @@ pub async fn handle_command(agent: &mut Agent, line: &str) -> anyhow::Result<Com
         }
 
         "hooks" => {
-            println!("{}", crate::hooks::summarize_hooks(&agent.config.hooks));
-            println!();
-            println!("Configure hooks in ~/.pigs/config.toml:");
-            println!("  [[hooks.pre_tool_use]]");
-            println!("  matcher = \"bash\"");
-            println!("  command = \"echo checking $PIGS_TOOL_NAME\"");
-            println!("  timeout = 10");
-            println!("  enabled = true");
+            agent.output.println(crate::hooks::summarize_hooks(&agent.config.hooks));
+            agent.output.println_empty();
+            agent.output.println("Configure hooks in ~/.pigs/pig.toml:");
+            agent.output.println("  [[hooks.pre_tool_use]]");
+            agent.output.println("  matcher = \"bash\"");
+            agent.output.println("  command = \"echo checking $PIG_TOOL_NAME\"");
+            agent.output.println("  timeout = 10");
+            agent.output.println("  enabled = true");
             Ok(CommandResult::Continue)
         }
 
         "history" => {
             let messages = &agent.session.messages;
             if messages.is_empty() {
-                println!("No messages in this session.");
+                agent.output.println("No messages in this session.");
             } else {
-                println!(
+                agent.output.println(format!(
                     "Session history ({} messages, est. {} tokens):",
                     messages.len(),
                     agent.session.estimated_tokens()
-                );
-                println!("{}", "-".repeat(60));
+                ));
+                agent.output.println("-".repeat(60));
                 for (i, msg) in messages.iter().enumerate() {
                     let role = match msg.role {
                         pigs_core::MessageRole::System => "system",
@@ -720,40 +731,518 @@ pub async fn handle_command(agent: &mut Agent, line: &str) -> anyhow::Result<Com
                     } else {
                         text
                     };
-                    println!("{:>3}. [{role:<9}] {preview}", i + 1);
+                    agent.output.println(format!("{:>3}. [{role:<9}] {}", preview, i + 1));
                 }
             }
             Ok(CommandResult::Continue)
         }
 
         "compact" => {
-            use pigs_session::{compact_session, CompactConfig};
-            let config = CompactConfig {
-                token_threshold: agent.config.compact_token_threshold,
-                keep_recent: agent.config.compact_keep_recent.max(1),
-                summary_message_chars: 400,
-                force: true,
-            };
-            let compacted = compact_session(&mut agent.session, &config);
-            if compacted {
-                println!(
-                    "Session compacted (est. tokens: {})",
-                    agent.session.estimated_tokens()
-                );
+            // 手动压缩命令。默认使用 LLM 摘要式压缩。
+            // /compact          — LLM 摘要式压缩（默认）
+            // /compact truncate — 截断式压缩（不调 LLM，每条旧消息截断到 400 字符）
+            //
+            // 自动压缩在 API 层（pigs-proxy）实现，agent 层不需要自动压缩。
+            let keep_recent: usize = 4;
+            let msg_count = agent.session.messages.len();
+
+            if msg_count <= keep_recent {
+                agent.output.println(format!("Only {msg_count} messages (keep_recent={keep_recent}), nothing to compact."));
+                return Ok(CommandResult::Continue);
+            }
+
+            // /compact truncate — 截断式压缩（显式请求）
+            if arg.trim() == "truncate" || arg.trim() == "截断" {
+                use pigs_session::{compact_session, CompactConfig};
+                let old_count = agent.session.messages.len();
+                let config = CompactConfig {
+                    token_threshold: 0,
+                    keep_recent,
+                    summary_message_chars: 400,
+                    force: true,
+                };
+                let compacted = compact_session(&mut agent.session, &config);
+                if compacted {
+                    let _ = agent.session.save(&agent.sessions_dir);
+                    agent.output.println(format!(
+                        "Truncation compaction done: {} messages → summary + {} recent (est. tokens: {})",
+                        old_count - keep_recent,
+                        keep_recent,
+                        agent.session.estimated_tokens()
+                    ));
+                } else {
+                    agent.output.println(format!("No compaction needed (est. tokens: {})", agent.session.estimated_tokens()));
+                }
+                return Ok(CommandResult::Continue);
+            }
+
+            // 默认：LLM 摘要式压缩
+            use pigs_core::{ApiRequest, Message};
+
+            let messages = agent.session.messages.clone();
+            let split_point = messages.len() - keep_recent;
+            let old_messages = &messages[..split_point];
+
+            // Serialize old messages into text for the summarization prompt
+            let mut conversation_text = String::new();
+            for (i, msg) in old_messages.iter().enumerate() {
+                let role = match msg.role {
+                    pigs_core::MessageRole::System => "system",
+                    pigs_core::MessageRole::User => "user",
+                    pigs_core::MessageRole::Assistant => "assistant",
+                    pigs_core::MessageRole::Tool => "tool",
+                };
+                conversation_text.push_str(&format!("--- Message {i} [{role}] ---\\\\n"));
+                for block in &msg.content {
+                    match block {
+                        pigs_core::ContentBlock::Text { text } => {
+                            let truncated = if text.len() > 2000 {
+                                format!("{}...(truncated)", &text[..2000])
+                            } else {
+                                text.clone()
+                            };
+                            conversation_text.push_str(&truncated);
+                            conversation_text.push('\n');
+                        }
+                        pigs_core::ContentBlock::ToolUse { name, input, .. } => {
+                            conversation_text.push_str(&format!("[Tool Call: {name}]\\\\n"));
+                            let input_str = serde_json::to_string_pretty(input).unwrap_or_default();
+                            let truncated = if input_str.len() > 1000 {
+                                format!("{}...(truncated)", &input_str[..1000])
+                            } else {
+                                input_str
+                            };
+                            conversation_text.push_str(&truncated);
+                            conversation_text.push('\n');
+                        }
+                        pigs_core::ContentBlock::ToolResult { output, .. } => {
+                            conversation_text.push_str("[Tool Result]\n");
+                            let truncated = if output.len() > 1000 {
+                                format!("{}...(truncated)", &output[..1000])
+                            } else {
+                                output.clone()
+                            };
+                            conversation_text.push_str(&truncated);
+                            conversation_text.push('\n');
+                        }
+                    }
+                }
+                conversation_text.push('\n');
+            }
+
+            let summary_prompt = r#"You are a conversation summarizer. Summarize the following conversation context into a structured summary with these sections:
+
+## Objective
+What the user is trying to accomplish.
+
+## Important Details
+Key technical decisions, constraints, and context.
+
+## Work State
+- Completed: What has been done.
+- Active: What is being worked on.
+- Blocked: Any blockers.
+
+## Relevant Files
+Files that have been read, modified, or discussed.
+
+## Key Code & Commands
+Important code snippets, commands, or configurations.
+
+## Next Step
+What should happen next.
+
+Rules:
+- Preserve exact file paths, symbol names, and commands.
+- Be concise but complete.
+- Never mention the compaction process."#;
+
+            agent.output.println(format!("Compacting {split_point} messages via LLM summarization..."));
+
+            let request = ApiRequest::new(
+                &agent.config.model,
+                vec![Message::user(format!("Summarize the following conversation:\\\\n\\\\n{conversation_text}"))],
+            )
+            .with_system_prompt(summary_prompt)
+            .with_max_tokens(4096);
+
+            match agent.api_client.send_message(request).await {
+                Ok(response) => {
+                    let summary_text = response.text_content();
+                    if summary_text.trim().is_empty() {
+                        agent.output.eprintln("Compaction failed: LLM returned empty summary.");
+                        return Ok(CommandResult::Continue);
+                    }
+
+                    // Build the summary system message
+                    let full_summary = format!("--- Conversation Summary (compacted) ---\\\\n{summary_text}\\\\n--- End Summary ---");
+
+                    // Replace old messages with the summary + keep recent
+                    let recent: Vec<Message> = messages[split_point..].to_vec();
+                    agent.session.messages.clear();
+                    agent.session.add_message(Message::system(full_summary));
+                    for msg in recent {
+                        agent.session.messages.push(msg);
+                    }
+                    agent.session.dirty = true;
+
+                    // Auto-save after compaction
+                    let _ = agent.session.save(&agent.sessions_dir);
+
+                    agent.output.println(format!(
+                        "Session compacted: {} messages → 1 summary + {} recent (est. tokens: {})",
+                        split_point,
+                        keep_recent,
+                        agent.session.estimated_tokens()
+                    ));
+                }
+                Err(e) => {
+                    agent.output.eprintln(format!("Compaction failed: LLM request error: {e}"));
+                    agent.output.eprintln("Use '/compact truncate' for truncation-based compaction (no LLM call).");
+                }
+            }
+            Ok(CommandResult::Continue)
+        }
+
+        // PI-aligned commands
+
+        "copy" => {
+            let last_assistant = agent
+                .session
+                .messages
+                .iter()
+                .rev()
+                .find(|m| matches!(m.role, pigs_core::MessageRole::Assistant))
+                .map(|m| m.text_content());
+            if let Some(text) = last_assistant {
+                match clipboard_copy(&text) {
+                    Ok(()) => agent.output.println(format!("Copied {} chars to clipboard.", text.len())),
+                    Err(e) => agent.output.eprintln(format!("Failed to copy: {e}")),
+                }
             } else {
-                println!(
-                    "No compaction needed (est. tokens: {})",
-                    agent.session.estimated_tokens()
-                );
+                agent.output.eprintln("No assistant message to copy.");
+            }
+            Ok(CommandResult::Continue)
+        }
+
+        "name" => {
+            if arg.is_empty() {
+                agent.output.println(format!(
+                    "Session name: {}",
+                    agent.session.title.as_deref().unwrap_or("(unnamed)")
+                ));
+            } else {
+                agent.session.title = Some(arg.to_string());
+                agent.output.println(format!("Session name set to: {arg}"));
+            }
+            Ok(CommandResult::Continue)
+        }
+
+        "new" => {
+            let _ = agent.session.save(&agent.sessions_dir);
+            agent.session = pigs_session::Session::new(&agent.config.model, &agent.sessions_dir);
+            agent.output.println(format!("New session started: {}", agent.session.session_id));
+            Ok(CommandResult::Continue)
+        }
+
+        "resume" => {
+            if arg.is_empty() {
+                agent.output.eprintln("Usage: /resume <agent-code> (or use /ses <id>)");
+                return Ok(CommandResult::Continue);
+            }
+            match agent.switch_session(arg) {
+                Ok(()) => agent.output.println(format!("Resumed session {}.", agent.session.session_id)),
+                Err(e) => agent.output.eprintln(format!("Failed to resume: {e}")),
+            }
+            Ok(CommandResult::Continue)
+        }
+
+        "hotkeys" => {
+            agent.output.println("Keyboard shortcuts:");
+            agent.output.println("  Enter          Submit message");
+            agent.output.println("  Ctrl+C         Interrupt / clear input");
+            agent.output.println("  Ctrl+D         Exit pig");
+            agent.output.println("  /<tab>         Autocomplete slash commands");
+            agent.output.println("  !<command>     Run bash directly");
+            agent.output.println("  Up/Down        Navigate input history");
+            Ok(CommandResult::Continue)
+        }
+
+        "settings" => {
+            agent.output.println("Current settings:");
+            agent.output.println(format!("  language:     {}", agent.language));
+            agent.output.println(format!("  model:        {}", agent.config.model));
+            agent.output.println(format!(
+                "  permission:   {}",
+                agent.permission_policy.active_mode
+            ));
+            agent.output.println(format!("  max_turns:    {:?}", agent.max_turns));
+            agent.output.println(format!("  log_to_file:  {}", agent.config.log_to_file));
+            agent.output.println(
+                "  config path:  ~/.pigs/pig.toml"
+            );
+            agent.output.println("\nEdit the config file to change settings, then /reload.");
+            Ok(CommandResult::Continue)
+        }
+
+        "changelog" => {
+            agent.output.println("pig changelog:");
+            agent.output.println("  0.1.3  Aligned CLI with PI: tool names, prompts, paths");
+            agent.output.println("  0.1.2  Phase orchestration runtime + HTTP loopback");
+            agent.output.println("  0.1.1  Three-protocol API support");
+            agent.output.println("  0.1.0  Initial release");
+            Ok(CommandResult::Continue)
+        }
+
+        "login" => {
+            if arg.is_empty() {
+                agent.output.eprintln("Usage: /login <provider>");
+                agent.output.eprintln("Providers: anthropic, openai");
+                return Ok(CommandResult::Continue);
+            }
+            agent.output.println(format!("Configure {arg} authentication by setting the API key:"));
+            match arg.to_lowercase().as_str() {
+                "anthropic" => agent.output.println("  export ANTHROPIC_API_KEY=sk-ant-..."),
+                "openai" => agent.output.println("  export OPENAI_API_KEY=sk-..."),
+                _ => agent.output.println(format!("  Unknown provider: {arg}")),
+            }
+            Ok(CommandResult::Continue)
+        }
+
+        "logout" => {
+            if arg.is_empty() {
+                agent.output.eprintln("Usage: /logout <provider>");
+                return Ok(CommandResult::Continue);
+            }
+            agent.output.println(format!("To log out from {arg}, unset the corresponding environment variable."));
+            Ok(CommandResult::Continue)
+        }
+
+        "fork" => {
+            // Fork: save current session, create a fork with parent_id set
+            let old_id = agent.session_id().to_string();
+            let _ = agent.session.save(&agent.sessions_dir);
+            let model = agent.config.model.clone();
+            let new_session = agent.session.fork_from(&model, &agent.sessions_dir);
+            let new_id = new_session.session_id.clone();
+            agent.session = new_session;
+            agent.output.println(format!("Forked session {old_id} -> new session {new_id} (parent: {old_id})"));
+            Ok(CommandResult::Continue)
+        }
+
+        "clone" => {
+            // Clone: duplicate current session at current position
+            let _ = agent.session.save(&agent.sessions_dir);
+            let model = agent.config.model.clone();
+            let title = agent.session.title.clone();
+            let new_session = agent.session.fork_from(&model, &agent.sessions_dir);
+            let mut new_session = new_session;
+            new_session.title = title;
+            let new_id = new_session.session_id.clone();
+            agent.session = new_session;
+            agent.output.println(format!("Cloned to new session {new_id} (parent: previous)"));
+            Ok(CommandResult::Continue)
+        }
+
+        "tree" => {
+            // Tree: show session history as a simple list (no branching support yet)
+            // Show session tree with parent/branch info
+            agent.output.println(format!("Session: {} ({})", agent.session_id(), agent.session.title.as_deref().unwrap_or("(unnamed)")));
+            if let Some(parent) = agent.session.parent_id() {
+                agent.output.println(format!("  Parent: {parent}"));
+            }
+            agent.output.println(format!("  Messages: {}", agent.session.messages.len()));
+            agent.output.println_empty();
+            agent.output.println("Message tree:");
+            for (i, msg) in agent.session.messages.iter().enumerate() {
+                let role = match msg.role {
+                    pigs_core::MessageRole::System => "SYS",
+                    pigs_core::MessageRole::User => "USR",
+                    pigs_core::MessageRole::Assistant => "AST",
+                    pigs_core::MessageRole::Tool => "TOL",
+                };
+                let preview: String = msg.text_content().chars().take(60).collect();
+                agent.output.println(format!("  {i:>3} [{role}] {preview}"));
+            }
+            if agent.session.is_fork() {
+                agent.output.println("\nThis session is a fork. Use /sessions to see all sessions.");
+            }
+            Ok(CommandResult::Continue)
+        }
+
+        "import" => {
+            // Import: load a session from a JSONL file
+            if arg.is_empty() {
+                agent.output.eprintln("Usage: /import <path-to-jsonl>");
+                return Ok(CommandResult::Continue);
+            }
+            let path = std::path::PathBuf::from(arg);
+            let parent = path.parent().unwrap_or(std::path::Path::new("."));
+            let filename = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            match pigs_session::Session::load(parent, filename) {
+                Ok(session) => {
+                    agent.output.println(format!("Imported session {} ({} messages)", session.session_id, session.messages.len()));
+                    agent.session = session;
+                }
+                Err(e) => {
+                    agent.output.eprintln(format!("Failed to import: {e}"));
+                }
+            }
+            Ok(CommandResult::Continue)
+        }
+
+        "scoped-models" => {
+            // List models available for cycling (Ctrl+P in TUI)
+            let models: Vec<String> = agent.config.models.iter()
+                .map(|m| m.name.clone())
+                .collect();
+            if models.is_empty() {
+                agent.output.println("No models configured. Use /model add to add a provider.");
+            } else {
+                agent.output.println("Scoped models (for Ctrl+P cycling):");
+                for (i, m) in models.iter().enumerate() {
+                    let marker = if m == &agent.config.model { " ← current" } else { "" };
+                    agent.output.println(format!("  {}. {}{}", i + 1, m, marker));
+                }
+            }
+            Ok(CommandResult::Continue)
+        }
+
+        "share" => {
+            // Share: export session to a file (simplified — no GitHub gist integration)
+            let default_path = format!("pig-session-{}.md", &agent.session_id()[..8.min(agent.session_id().len())]);
+            let path = if arg.is_empty() { &default_path } else { arg };
+            match export_session_markdown(agent, path) {
+                Ok(()) => {
+                    agent.output.println(format!("Session exported to: {path}"));
+                    agent.output.println("Share this file with others to share the conversation.");
+                }
+                Err(e) => agent.output.eprintln(format!("Failed to export: {e}")),
+            }
+            Ok(CommandResult::Continue)
+        }
+
+        "theme" => {
+            // Switch color theme (for TUI mode)
+            let themes = ["dark", "light", "high-contrast"];
+            if arg.is_empty() {
+                agent.output.println(format!("Available themes: {}", themes.join(", ")));
+                agent.output.println("Usage: /theme <name>");
+                agent.output.println("Or press Ctrl+T in TUI to cycle themes.");
+            } else if themes.contains(&arg) {
+                agent.output.println(format!("Theme set to: {arg} (restart or /reload to apply in TUI)"));
+            } else {
+                agent.output.eprintln(format!("Unknown theme: {}. Available: {}", arg, themes.join(", ")));
+            }
+            Ok(CommandResult::Continue)
+        }
+
+        "sub" => {
+            // /sub is deprecated — merged into /ses and /back
+            // Keep as compatibility alias for /ses
+            agent.output.println("Note: /sub is now /ses. Use /ses to list and navigate agents.");
+            // Delegate to /ses behavior
+            if arg.is_empty() || arg == "list" {
+                // Re-run /ses list by falling through
+                // Show sub-agents in memory
+                let mgr = agent.sub_agent_manager.lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                if mgr.is_empty() {
+                    agent.output.println("No sub-agents in memory.");
+                    agent.output.println("Use the 'spawn' tool to create sub-agents.");
+                } else {
+                    let focus = mgr.current_focus().to_string();
+                    for (id, task, status, mode) in mgr.list() {
+                        let marker = if focus == id { " ← viewing" } else { "" };
+                        let task_preview: String = task.chars().take(40).collect();
+                        agent.output.println(format!("  {id:<8} [{}] {}  {}{}",
+                            mode.as_str(), status.display(), task_preview, marker));
+                    }
+                }
+            } else if arg == "back" {
+                let prev = agent.sub_agent_manager.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .switch_back();
+                if let Some(id) = prev {
+                    // Check if target is in memory or needs disk load
+                    let in_mem = agent.sub_agent_manager.lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .is_in_memory(&id);
+                    if !in_mem && id != agent.session.session_id {
+                        let _ = agent.switch_session(&id);
+                    }
+                    agent.output.println(format!("Navigated back to: {id}"));
+                } else {
+                    agent.output.println("Already at the beginning of navigation history.");
+                }
+            } else {
+                // /sub <id> → treat as /ses <id>
+                let id = arg.trim();
+                let in_memory = agent.sub_agent_manager.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .is_in_memory(id);
+                if in_memory {
+                    agent.sub_agent_manager.lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .switch_to(id);
+                    agent.output.println(format!("Switched focus to: {id}"));
+                } else {
+                    match agent.switch_session(id) {
+                        Ok(()) => agent.output.println(format!("Loaded session {} ({})",
+                            agent.session.session_id,
+                            agent.session.display_title())),
+                        Err(e) => agent.output.eprintln(format!("Failed to load: {e}")),
+                    }
+                }
+            }
+            Ok(CommandResult::Continue)
+        }
+
+        "back" => {
+            // Navigate back in history (pointer -1, no reload, doesn't affect running agents)
+            let prev = agent.sub_agent_manager.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .switch_back();
+            match prev {
+                Some(id) => {
+                    // If target not in memory, load from disk
+                    let in_mem = agent.sub_agent_manager.lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .is_in_memory(&id);
+                    if !in_mem && id != agent.session.session_id {
+                        let _ = agent.switch_session(&id);
+                    }
+                    agent.output.println(format!("← {id}"));
+                }
+                None => agent.output.println("Already at the beginning of navigation history."),
+            }
+            Ok(CommandResult::Continue)
+        }
+
+        "next" => {
+            // Navigate forward in history (pointer +1, /back's reverse)
+            let fwd = agent.sub_agent_manager.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .switch_forward();
+            match fwd {
+                Some(id) => {
+                    let in_mem = agent.sub_agent_manager.lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .is_in_memory(&id);
+                    if !in_mem && id != agent.session.session_id {
+                        let _ = agent.switch_session(&id);
+                    }
+                    agent.output.println(format!("→ {id}"));
+                }
+                None => agent.output.println("Already at the end of navigation history."),
             }
             Ok(CommandResult::Continue)
         }
 
         _ => {
-            eprintln!(
-                "Unknown command: /{raw_cmd}. {}",
+            agent.output.eprintln(format!("Unknown command: /{}. {}", raw_cmd,
                 i18n::t(agent.language, "unknown_command_hint")
-            );
+            ));
             Ok(CommandResult::Continue)
         }
     }
@@ -826,19 +1315,19 @@ fn export_session_markdown(agent: &Agent, path: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn print_mcp_help() {
-    println!("MCP commands:");
-    println!("  /mcp list                     List connected servers and tools");
-    println!("  /mcp tools                    List MCP tools with descriptions");
-    println!("  /mcp connect <name> <cmd> ... Connect a stdio MCP server");
-    println!("  /mcp disconnect <name>        Disconnect a server");
-    println!();
-    println!("Config example (~/.pigs/config.toml):");
-    println!("  [[mcp_servers]]");
-    println!("  name = \"filesystem\"");
-    println!("  command = \"npx\"");
-    println!("  args = [\"-y\", \"@modelcontextprotocol/server-filesystem\", \".\"]");
-    println!("  enabled = true");
+fn print_mcp_help(out: &mut crate::output::OutputSink) {
+    out.println("MCP commands:");
+    out.println("  /mcp list                     List connected servers and tools");
+    out.println("  /mcp tools                    List MCP tools with descriptions");
+    out.println("  /mcp connect <name> <cmd> ... Connect a stdio MCP server");
+    out.println("  /mcp disconnect <name>        Disconnect a server");
+    out.println_empty();
+    out.println("Config example (~/.pigs/pig.toml):");
+    out.println("  [[mcp_servers]]");
+    out.println("  name = \"filesystem\"");
+    out.println("  command = \"npx\"");
+    out.println("  args = [\"-y\", \"@modelcontextprotocol/server-filesystem\", \".\"]");
+    out.println("  enabled = true");
 }
 
 async fn handle_mcp_command(agent: &mut Agent, arg: &str) -> anyhow::Result<()> {
@@ -854,19 +1343,19 @@ async fn handle_mcp_command(agent: &mut Agent, arg: &str) -> anyhow::Result<()> 
         "list" => {
             let servers = agent.list_mcp_servers().await;
             if servers.is_empty() {
-                println!("No MCP servers connected.");
-                println!("Use: /mcp connect <name> <command> [args...]");
-                println!("Or configure [[mcp_servers]] in ~/.pigs/config.toml");
+                agent.output.println("No MCP servers connected.");
+                agent.output.println("Use: /mcp connect <name> <command> [args...]");
+                agent.output.println("Or configure [[mcp_servers]] in ~/.pigs/pig.toml");
             } else {
-                println!("Connected MCP servers:");
+                agent.output.println("Connected MCP servers:");
                 for name in &servers {
-                    println!("  - {name}");
+                    agent.output.println(format!("  - {name}"));
                 }
                 let tools = agent.list_mcp_tools().await;
                 if !tools.is_empty() {
-                    println!("\nMCP tools ({}):", tools.len());
+                    agent.output.println(format!("\nMCP tools ({}):", tools.len()));
                     for t in tools {
-                        println!(
+                        agent.output.println(format!(
                             "  - mcp_{}_{}  ({})",
                             t.server_name.replace(
                                 |c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-',
@@ -877,7 +1366,7 @@ async fn handle_mcp_command(agent: &mut Agent, arg: &str) -> anyhow::Result<()> 
                                 "_"
                             ),
                             t.server_name
-                        );
+                        ));
                     }
                 }
             }
@@ -885,24 +1374,24 @@ async fn handle_mcp_command(agent: &mut Agent, arg: &str) -> anyhow::Result<()> 
         "tools" => {
             let tools = agent.list_mcp_tools().await;
             if tools.is_empty() {
-                println!("No MCP tools available. Connect a server first.");
+                agent.output.println("No MCP tools available. Connect a server first.");
             } else {
-                println!("MCP tools ({}):", tools.len());
+                agent.output.println(format!("MCP tools ({}):", tools.len()));
                 for t in &tools {
                     let desc = if t.description.is_empty() {
                         "(no description)"
                     } else {
                         t.description.as_str()
                     };
-                    println!("  [{server}] {name}", server = t.server_name, name = t.name);
-                    println!("    {desc}");
+                    agent.output.println(format!("  [{}] {}", t.server_name, t.name));
+                    agent.output.println(format!("    {desc}"));
                 }
             }
         }
         "connect" => {
             if parts.len() < 3 {
-                println!("Usage: /mcp connect <name> <command> [args...]");
-                println!("Example: /mcp connect filesystem npx -y @modelcontextprotocol/server-filesystem .");
+                agent.output.println("Usage: /mcp connect <name> <command> [args...]");
+                agent.output.println("Example: /mcp connect filesystem npx -y @modelcontextprotocol/server-filesystem .");
                 return Ok(());
             }
             let name = parts[1];
@@ -912,111 +1401,176 @@ async fn handle_mcp_command(agent: &mut Agent, arg: &str) -> anyhow::Result<()> 
                 .connect_mcp_server(name, command, args, Default::default())
                 .await
             {
-                Ok(count) => println!("Connected MCP server '{name}' with {count} tool(s)."),
-                Err(e) => eprintln!("Failed to connect MCP server '{name}': {e}"),
+                Ok(count) => agent.output.println(format!("Connected MCP server '{name}' with {count} tool(s).")),
+                Err(e) => agent.output.eprintln(format!("Failed to connect MCP server '{name}': {e}")),
             }
         }
         "disconnect" => {
             if parts.len() < 2 {
-                println!("Usage: /mcp disconnect <name>");
+                agent.output.println("Usage: /mcp disconnect <name>");
                 return Ok(());
             }
             let name = parts[1];
             match agent.disconnect_mcp_server(name).await {
                 Ok(()) => {
-                    println!("Disconnected MCP server '{name}'. (Tools remain until restart.)")
+                    agent.output.println(format!("Disconnected MCP server '{name}'. (Tools remain until restart.)"))
                 }
-                Err(e) => eprintln!("Failed to disconnect '{name}': {e}"),
+                Err(e) => agent.output.eprintln(format!("Failed to disconnect '{name}': {e}")),
             }
         }
         "help" => {
-            print_mcp_help();
+            print_mcp_help(&mut agent.output);
         }
         other => {
-            eprintln!("Unknown MCP subcommand: {other}");
-            print_mcp_help();
+            agent.output.eprintln(format!("Unknown MCP subcommand: {other}"));
+            print_mcp_help(&mut agent.output);
         }
     }
     Ok(())
 }
 
-fn print_help(lang: Language) {
+fn print_help(out: &mut crate::output::OutputSink, lang: Language) {
     if lang.is_zh() {
-        println!("Pigs Agent — 可用命令（英文 / 中文 / 拼音）：");
-        println!();
-        println!("  /help, /h, /? , /帮助, /bangzhu              显示帮助");
-        println!("  /lang, /language, /语言, /中文, /yuyan, /zhongwen");
-        println!("                                              查看或设置语言 (en|zh)");
-        println!("  /model, /模型, /moxing [add|添加|<id>]      查看/切换/引导添加模型");
-        println!("  /mode, /模式, /权限, /moshi, /quanxian      设置权限模式");
-        println!("  /tools, /工具, /gongju                      列出工具");
-        println!("  /todo, /todos, /待办, /任务, /daiban, /renwu 显示待办");
-        println!("  /status, /状态, /仪表盘, /zhuangtai, /yibiaopan  状态仪表盘");
-        println!("  /info, /信息, /xinxi                        当前会话信息");
-        println!("  /title, /标题, /biaoti                      设置会话标题");
-        println!("  /cost, /费用, /开销, /成本, /feiyong, /kaixiao, /chengben  费用");
-        println!("  /history, /历史, /lishi                     会话历史摘要");
-        println!("  /mcp                                        管理 MCP 服务器");
-        println!("      子命令: list/列表/liebiao, tools/工具/gongju,");
-        println!("              connect/连接/lianjie, disconnect/断开/duankai");
-        println!("  /skills, /技能, /jineng [reload]            技能目录（全文用 skill 工具）");
-        println!("  /rules, /规则, /guize [reload]              项目规则");
-        println!("  /memory, /记忆, /jiyi ...                   跨会话记忆");
-        println!("  /export, /导出, /daochu [path]              导出会话为 markdown");
-        println!("  /hooks, /钩子, /gouzi                       查看 hooks");
-        println!("  /doctor, /诊断, /体检, /zhenduan, /tijian   环境健康检查");
-        println!("  /models, /模型列表, /moxingliebiao          供应商/模型目录");
-        println!("  /init, /初始化, /chushihua                  创建默认配置");
-        println!("  /reload, /重载, /zhongzai, /chongzai        热重载配置");
-        println!("  /compact, /压缩, /精简, /yasuo, /jingjian   手动压缩上下文");
-        println!("  /clear, /清空, /清除, /qingkong, /qingchu   清空当前会话");
-        println!("  /save, /保存, /baocun                       保存当前会话");
-        println!("  /sessions, /会话, /huihua ...               管理会话");
-        println!("      子命令: list/列表, open/打开/dakai, rm/删除/shanchu,");
-        println!("              search/搜索/sousuo, current/当前/dangqian");
-        println!("  /undo, /撤销, /回退, /chexiao, /huitui [list] 撤销最近写操作");
-        println!("  /quit, /q, /exit, /退出, /tuichu, /likai    退出");
-        println!();
-        println!("中文与拼音别名在任何语言设置下都可用；默认语言为中文 (zh)。");
-        println!("输入其它文字将作为提示发送给 Agent。");
+        out.println("Pigs Agent — 可用命令（英文 / 中文 / 拼音）：");
+        out.println_empty();
+        out.println("  /help, /h, /? , /帮助, /bangzhu              显示帮助");
+        out.println("  /lang, /language, /语言, /中文, /yuyan, /zhongwen");
+        out.println("                                              查看或设置语言 (en|zh)");
+        out.println("  /model, /模型, /moxing [add|添加|<id>]      查看/切换/引导添加模型");
+        out.println("  /mode, /模式, /权限, /moshi, /quanxian      设置权限模式");
+        out.println("  /tools, /工具, /gongju                      列出工具");
+        out.println("  /todo, /todos, /待办, /任务, /daiban, /renwu 显示待办");
+        out.println("  /status, /状态, /仪表盘, /zhuangtai, /yibiaopan  状态仪表盘");
+        out.println("  /info, /信息, /xinxi                        当前会话信息");
+        out.println("  /title, /标题, /biaoti                      设置会话标题");
+        out.println("  /cost, /费用, /开销, /成本, /feiyong, /kaixiao, /chengben  费用");
+        out.println("  /history, /历史, /lishi                     会话历史摘要");
+        out.println("  /mcp                                        管理 MCP 服务器");
+        out.println("      子命令: list/列表/liebiao, tools/工具/gongju,");
+        out.println("              connect/连接/lianjie, disconnect/断开/duankai");
+        out.println("  /skills, /技能, /jineng [reload]            技能目录（全文用 skill 工具）");
+        out.println("  /rules, /规则, /guize [reload]              项目规则");
+        out.println("  /memory, /记忆, /jiyi ...                   跨会话记忆");
+        out.println("  /export, /导出, /daochu [path]              导出会话为 markdown");
+        out.println("  /hooks, /钩子, /gouzi                       查看 hooks");
+        out.println("  /doctor, /诊断, /体检, /zhenduan, /tijian   环境健康检查");
+        out.println("  /models, /模型列表, /moxingliebiao          供应商/模型目录");
+        out.println("  /init, /初始化, /chushihua                  创建默认配置");
+        out.println("  /reload, /重载, /zhongzai, /chongzai        热重载配置");
+        out.println("  /compact, /压缩, /精简, /yasuo, /jingjian   手动压缩上下文（LLM 摘要式）");
+        out.println("  /compact truncate, /压缩 截断               截断式压缩（不调 LLM）");
+        out.println("  /clear, /清空, /清除, /qingkong, /qingchu   清空当前会话");
+        out.println("  /save, /保存, /baocun                       保存当前会话");
+        out.println("  /sessions, /会话, /huihua ...               管理会话");
+        out.println("      子命令: list/列表, open/打开/dakai, rm/删除/shanchu,");
+        out.println("              search/搜索/sousuo, current/当前/dangqian");
+        out.println("  /undo, /撤销, /回退, /chexiao, /huitui [list] 撤销最近写操作");
+        out.println("  /quit, /q, /exit, /退出, /tuichu, /likai    退出");
+        out.println_empty();
+        out.println("中文与拼音别名在任何语言设置下都可用；默认语言为中文 (zh)。");
+        out.println("输入其它文字将作为提示发送给 Agent。");
     } else {
-        println!("Pigs Agent — Available Commands (English / 中文 / pinyin):");
-        println!();
-        println!("  /help, /h, /?, /帮助, /bangzhu              Show this help");
-        println!("  /lang, /language, /语言, /中文, /yuyan, /zhongwen");
-        println!("                                              Show or set language (en|zh)");
-        println!("  /model, /模型, /moxing [add|添加|<id>]      status / switch / guided add");
-        println!("  /mode, /模式, /权限, /moshi, /quanxian      Permission mode");
-        println!("  /tools, /工具, /gongju                      List tools");
-        println!("  /todo, /todos, /待办, /daiban               Todo list");
-        println!("  /status, /状态, /zhuangtai                  Dashboard");
-        println!("  /info, /信息, /xinxi                        Session info");
-        println!("  /title, /标题, /biaoti                      Set session title");
-        println!("  /cost, /费用, /feiyong                      Token usage / cost");
-        println!("  /history, /历史, /lishi                     History summary");
-        println!("  /mcp                                        MCP servers");
-        println!("      subs: list/列表/liebiao, tools/工具/gongju,");
-        println!("            connect/连接/lianjie, disconnect/断开/duankai");
-        println!("  /skills, /技能, /jineng [reload]            Skill catalog");
-        println!("  /rules, /规则, /guize [reload]              Project rules");
-        println!("  /memory, /记忆, /jiyi ...                   Memory notes");
-        println!("  /export, /导出, /daochu [path]              Export session");
-        println!("  /hooks, /钩子, /gouzi                       Tool hooks");
-        println!("  /doctor, /诊断, /zhenduan, /tijian          Health checks");
-        println!("  /models, /模型列表, /moxingliebiao          Model catalog");
-        println!("  /init, /初始化, /chushihua                  Create config");
-        println!("  /reload, /重载, /zhongzai, /chongzai        Reload config");
-        println!("  /compact, /压缩, /yasuo, /jingjian          Compact context");
-        println!("  /clear, /清空, /qingkong                    Clear session");
-        println!("  /save, /保存, /baocun                       Save session");
-        println!("  /sessions, /会话, /huihua ...               Manage sessions");
-        println!("      subs: list/列表, open/打开/dakai, rm/删除/shanchu,");
-        println!("            search/搜索/sousuo, current/当前/dangqian");
-        println!("  /undo, /撤销, /chexiao, /huitui [list]      Undo last write");
-        println!("  /quit, /q, /exit, /退出, /tuichu            Exit");
-        println!();
-        println!("Chinese / pinyin aliases work regardless of language setting.");
-        println!("Default language is Chinese (zh); use /lang en to switch.");
-        println!("Type any other text to send it to the agent as a prompt.");
+        out.println("Pigs Agent — Available Commands (English / 中文 / pinyin):");
+        out.println_empty();
+        out.println("  /help, /h, /?, /帮助, /bangzhu              Show this help");
+        out.println("  /lang, /language, /语言, /中文, /yuyan, /zhongwen");
+        out.println("                                              Show or set language (en|zh)");
+        out.println("  /model, /模型, /moxing [add|添加|<id>]      status / switch / guided add");
+        out.println("  /mode, /模式, /权限, /moshi, /quanxian      Permission mode");
+        out.println("  /tools, /工具, /gongju                      List tools");
+        out.println("  /todo, /todos, /待办, /daiban               Todo list");
+        out.println("  /status, /状态, /zhuangtai                  Dashboard");
+        out.println("  /info, /信息, /xinxi                        Session info");
+        out.println("  /title, /标题, /biaoti                      Set session title");
+        out.println("  /cost, /费用, /feiyong                      Token usage / cost");
+        out.println("  /history, /历史, /lishi                     History summary");
+        out.println("  /mcp                                        MCP servers");
+        out.println("      subs: list/列表/liebiao, tools/工具/gongju,");
+        out.println("            connect/连接/lianjie, disconnect/断开/duankai");
+        out.println("  /skills, /技能, /jineng [reload]            Skill catalog");
+        out.println("  /rules, /规则, /guize [reload]              Project rules");
+        out.println("  /memory, /记忆, /jiyi ...                   Memory notes");
+        out.println("  /export, /导出, /daochu [path]              Export session");
+        out.println("  /hooks, /钩子, /gouzi                       Tool hooks");
+        out.println("  /doctor, /诊断, /zhenduan, /tijian          Health checks");
+        out.println("  /models, /模型列表, /moxingliebiao          Model catalog");
+        out.println("  /init, /初始化, /chushihua                  Create config");
+        out.println("  /reload, /重载, /zhongzai, /chongzai        Reload config");
+        out.println("  /compact, /压缩, /yasuo, /jingjian          Compact context (LLM summary)");
+        out.println("  /compact truncate                            Truncation compaction (no LLM)");
+        out.println("  /clear, /清空, /qingkong                    Clear session");
+        out.println("  /save, /保存, /baocun                       Save session");
+        out.println("  /sessions, /会话, /huihua ...               Manage sessions");
+        out.println("      subs: list/列表, open/打开/dakai, rm/删除/shanchu,");
+        out.println("            search/搜索/sousuo, current/当前/dangqian");
+        out.println("  /undo, /撤销, /chexiao, /huitui [list]      Undo last write");
+        out.println("  /quit, /q, /exit, /退出, /tuichu            Exit");
+        out.println_empty();
+        out.println("Chinese / pinyin aliases work regardless of language setting.");
+        out.println("Default language is Chinese (zh); use /lang en to switch.");
+        out.println("Type any other text to send it to the agent as a prompt.");
     }
+}
+
+/// Copy text to the system clipboard.
+fn clipboard_copy(text: &str) -> anyhow::Result<()> {
+    // Try using the system clipboard via a shell command
+    #[cfg(target_os = "windows")]
+    {
+        use std::process::Command;
+        let output = Command::new("powershell")
+            .args(["-NoProfile", "-Command", &format!("Set-Clipboard -Value {}", shell_escape(text))])
+            .output()?;
+        if !output.status.success() {
+            anyhow::bail!("powershell Set-Clipboard failed");
+        }
+        Ok(())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use std::io::Write;
+        let mut child = std::process::Command::new("pbcopy")
+            .stdin(std::process::Stdio::piped())
+            .spawn()?;
+        if let Some(stdin) = &mut child.stdin {
+            stdin.write_all(text.as_bytes())?;
+        }
+        child.wait()?;
+        Ok(())
+    }
+    #[cfg(target_os = "linux")]
+    {
+        use std::io::Write;
+        // Try xclip first, then xsel
+        if let Ok(mut child) = std::process::Command::new("xclip")
+            .args(["-selection", "clipboard"])
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+        {
+            if let Some(stdin) = &mut child.stdin {
+                stdin.write_all(text.as_bytes())?;
+            }
+            child.wait()?;
+            return Ok(());
+        }
+        if let Ok(mut child) = std::process::Command::new("xsel")
+            .args(["--clipboard", "--input"])
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+        {
+            if let Some(stdin) = &mut child.stdin {
+                stdin.write_all(text.as_bytes())?;
+            }
+            child.wait()?;
+            return Ok(());
+        }
+        anyhow::bail!("No clipboard utility found (xclip/xsel)")
+    }
+}
+
+/// Escape a string for PowerShell single-quoted argument.
+#[cfg(target_os = "windows")]
+fn shell_escape(s: &str) -> String {
+    // PowerShell single-quote escaping: double the single quotes
+    format!("'{}'", s.replace('\'', "''"))
 }

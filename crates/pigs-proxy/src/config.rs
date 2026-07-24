@@ -5,7 +5,7 @@
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
@@ -13,69 +13,22 @@ pub struct Config {
     pub log: LogConfig,
     #[serde(default)]
     pub provider: Vec<Provider>,
+    /// Compaction settings (context-window auto-compaction at the routing layer).
+    #[serde(default)]
+    pub compaction: CompactionConfig,
 
-    // --- pigs 顶层字段（CLI / 相位运行时用）/ pigs top-level fields ---
+    // --- pigs 顶层字段（相位运行时用）/ pigs top-level fields ---
     /// UI / 回复语言：`zh`（默认）或 `en`。
-    /// UI / reply language: `zh` (default) or `en`.
+    /// UI / reply language: zh (default) or en.
+    ///
+    /// Used by the phased runtime (`serve()`) to select prompt language.
+    /// CLI-specific fields live in `pig.toml` (`AppConfig`).
     #[serde(default = "default_language")]
     pub language: String,
-
-    /// 权限模式（CLI REPL 用）。
-    /// Permission mode (for CLI REPL).
-    #[serde(default = "default_permission_mode")]
-    pub permission_mode: String,
-
-    /// Agent 循环最大轮次（CLI 用）。
-    /// Max agent loop iterations (for CLI).
-    #[serde(default = "default_max_turns")]
-    pub max_turns: u32,
-
-    /// LLM 最大输出 token 数。
-    /// Max output tokens for LLM.
-    #[serde(default = "default_max_tokens")]
-    pub max_tokens: u32,
-
-    /// LLM 温度参数。
-    /// LLM temperature.
-    #[serde(default = "default_temperature")]
-    pub temperature: f32,
-
-    /// 自定义系统提示词（可选）。
-    /// Custom system prompt (optional).
-    #[serde(default)]
-    pub system_prompt: Option<String>,
-
-    /// 压缩阈值（token 数）。
-    /// Compaction threshold (token count).
-    #[serde(default = "default_compact_threshold")]
-    pub compact_token_threshold: u64,
-
-    /// 压缩时保留的最近消息数。
-    /// Recent messages to keep during compaction.
-    #[serde(default = "default_compact_keep")]
-    pub compact_keep_recent: usize,
 }
 
 fn default_language() -> String {
     "zh".into()
-}
-fn default_permission_mode() -> String {
-    "workspace_write".into()
-}
-fn default_max_turns() -> u32 {
-    50
-}
-fn default_max_tokens() -> u32 {
-    4096
-}
-fn default_temperature() -> f32 {
-    0.2
-}
-fn default_compact_threshold() -> u64 {
-    100_000
-}
-fn default_compact_keep() -> usize {
-    10
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -143,6 +96,15 @@ pub struct ProviderCommon {
     // 缺失则按协议取默认最高档（OpenAI/Responses=xhigh，Anthropic=max）
     #[serde(default)]
     pub thinking_effort: Option<String>,
+    /// Default context window size in tokens for all models on this provider.
+    /// Used by the routing-layer auto-compaction. Overridden by `context_windows` per-model.
+    #[serde(default)]
+    pub context_window: Option<u64>,
+    /// Per-model context window sizes (in tokens).
+    /// Key = model name (as in `models`), Value = context window size.
+    /// Example: { "xopglm52" = 500000, "xopdeepseekv4pro" = 1000000 }
+    #[serde(default)]
+    pub context_windows: Option<HashMap<String, u64>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -172,6 +134,10 @@ pub struct EndpointRaw {
     pub path_mode: Option<PathMode>,
     #[serde(default)]
     pub thinking_effort: Option<String>,
+    #[serde(default)]
+    pub context_window: Option<u64>,
+    #[serde(default)]
+    pub context_windows: Option<HashMap<String, u64>>,
 }
 
 // 合并后的有效 endpoint
@@ -187,6 +153,8 @@ pub struct Endpoint {
     pub max_retries: u32,
     pub path_mode: PathMode,
     pub thinking_effort: Option<String>,
+    pub context_window: Option<u64>,
+    pub context_windows: HashMap<String, u64>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -324,6 +292,14 @@ impl Provider {
                 .thinking_effort
                 .clone()
                 .or_else(|| c.thinking_effort.clone()),
+            context_window: raw
+                .context_window
+                .or(c.context_window),
+            context_windows: raw
+                .context_windows
+                .clone()
+                .or_else(|| c.context_windows.clone())
+                .unwrap_or_default(),
         })
     }
 
@@ -377,5 +353,172 @@ impl Config {
         let content = std::fs::read_to_string(path)
             .with_context(|| format!("读取配置文件失败: {}", path.display()))?;
         toml::from_str(&content).with_context(|| "解析配置文件失败".to_string())
+    }
+
+    /// Load layered configuration:
+    /// 1. `~/.pigs/config.toml` (global)
+    /// 2. `{workspace}/.pigs/config.toml` (project overrides, if present)
+    /// 3. `{workspace}/.pigs/config.local.toml` (machine-local overrides; gitignored)
+    ///
+    /// If `PIG_CONFIG` env var is set, it overrides the global path.
+    /// If none of the files exist, returns defaults.
+    pub fn load_layered(workspace: &Path) -> Result<Self> {
+        // Global: ~/.pigs/config.toml (or PIG_CONFIG override)
+        let global_path = std::env::var("PIG_CONFIG")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+                home.join(".pigs").join("config.toml")
+            });
+
+        let mut config = if global_path.exists() {
+            Self::load(&global_path)?
+        } else {
+            // Fallback: try root-level config.toml for backward compat
+            let legacy = PathBuf::from("config.toml");
+            if legacy.exists() {
+                Self::load(&legacy)?
+            } else {
+                Config {
+                    server: ServerConfig {
+                        listen: "127.0.0.1:3927".to_string(),
+                        clean_empty_content: true,
+                    },
+                    log: LogConfig {
+                        level: default_level(),
+                        format: default_format(),
+                        to_stdout: true,
+                        to_file: String::new(),
+                        rotate_size_mb: default_rotate_size(),
+                        rotate_keep: default_rotate_keep(),
+                    },
+                    provider: Vec::new(),
+                    compaction: CompactionConfig::default(),
+                    language: default_language(),
+                }
+            }
+        };
+
+        // Project: {workspace}/.pigs/config.toml
+        let project_path = workspace.join(".pigs").join("config.toml");
+        if project_path.exists() && project_path != global_path {
+            let project = Self::load(&project_path)?;
+            config.merge(project);
+        }
+
+        // Local: {workspace}/.pigs/config.local.toml (gitignored)
+        let local_path = workspace.join(".pigs").join("config.local.toml");
+        if local_path.exists() {
+            let local = Self::load(&local_path)?;
+            config.merge(local);
+        }
+
+        Ok(config)
+    }
+
+    /// Merge another config into self (other takes precedence for non-empty/non-default values).
+    pub fn merge(&mut self, other: Config) {
+        // Server: override if listen is non-empty
+        if !other.server.listen.is_empty() {
+            self.server.listen = other.server.listen;
+        }
+        self.server.clean_empty_content = other.server.clean_empty_content;
+
+        // Log: override non-default fields
+        if other.log.level != default_level() {
+            self.log.level = other.log.level;
+        }
+        if other.log.format != default_format() {
+            self.log.format = other.log.format;
+        }
+        self.log.to_stdout = other.log.to_stdout;
+        if !other.log.to_file.is_empty() {
+            self.log.to_file = other.log.to_file;
+        }
+
+        // Compaction: override if other has non-default values
+        if other.compaction.coefficient != default_coefficient() {
+            self.compaction.coefficient = other.compaction.coefficient;
+        }
+        if other.compaction.keep_recent != default_keep_recent() {
+            self.compaction.keep_recent = other.compaction.keep_recent;
+        }
+        if other.compaction.max_rounds != default_max_rounds() {
+            self.compaction.max_rounds = other.compaction.max_rounds;
+        }
+        if other.compaction.summary_max_tokens != default_summary_max_tokens() {
+            self.compaction.summary_max_tokens = other.compaction.summary_max_tokens;
+        }
+        self.compaction.enabled = other.compaction.enabled;
+
+        // Providers: merge by name (extend, don't replace)
+        for provider in other.provider {
+            if !self.provider.iter().any(|p| p.name == provider.name) {
+                self.provider.push(provider);
+            }
+        }
+
+        // Language
+        if other.language != default_language() {
+            self.language = other.language;
+        }
+    }
+}
+
+/// Compaction configuration for the routing-layer auto-compaction.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CompactionConfig {
+    /// Whether auto-compaction is enabled.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Trigger threshold coefficient (e.g. 0.9 = compact when estimated tokens exceed 90% of context window).
+    #[serde(default = "default_coefficient")]
+    pub coefficient: f64,
+    /// Number of recent messages to keep verbatim during compaction.
+    #[serde(default = "default_keep_recent")]
+    pub keep_recent: usize,
+    /// Maximum compaction rounds before forcing a fallback truncation.
+    #[serde(default = "default_max_rounds")]
+    pub max_rounds: u32,
+    /// Max tokens for the summarization LLM call.
+    #[serde(default = "default_summary_max_tokens")]
+    pub summary_max_tokens: u32,
+}
+
+impl Default for CompactionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            coefficient: default_coefficient(),
+            keep_recent: default_keep_recent(),
+            max_rounds: default_max_rounds(),
+            summary_max_tokens: default_summary_max_tokens(),
+        }
+    }
+}
+
+fn default_coefficient() -> f64 {
+    0.9
+}
+fn default_keep_recent() -> usize {
+    4
+}
+fn default_max_rounds() -> u32 {
+    5
+}
+fn default_summary_max_tokens() -> u32 {
+    4096
+}
+
+/// Infer a default context window from the model name.
+/// claude* → 200_000, gpt-4* → 128_000, others → 128_000.
+pub fn default_context_window_for(model: &str) -> u64 {
+    let lower = model.to_ascii_lowercase();
+    if lower.starts_with("claude") {
+        200_000
+    } else if lower.starts_with("gpt-4") || lower.starts_with("o1") || lower.starts_with("o3") {
+        128_000
+    } else {
+        128_000
     }
 }

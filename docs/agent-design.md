@@ -454,7 +454,7 @@ pub struct Session {
 
 ### 10.1 配置文件
 
-路径：`~/.pigs/config.toml`
+路径：`~/.pigs/config-cli.toml`（全局）+ `{workspace}/.pigs/config-cli.toml`（项目覆盖）+ `{workspace}/.pigs/config-cli.local.toml`（本地）
 
 ```toml
 model = "claude-sonnet-4-20250514"
@@ -479,7 +479,7 @@ base_url = "https://api.anthropic.com"
 
 ### 10.2 配置优先级
 
-CLI 参数 > 环境变量 > 项目配置 `{cwd}/.pigs/config.toml` > 全局配置 `~/.pigs/config.toml` > 默认值
+CLI 参数 > 环境变量 > 本地配置 `{cwd}/.pigs/config-cli.local.toml` > 项目配置 `{cwd}/.pigs/config-cli.toml` > 全局配置 `~/.pigs/config-cli.toml` > 默认值
 
 压缩相关配置：
 

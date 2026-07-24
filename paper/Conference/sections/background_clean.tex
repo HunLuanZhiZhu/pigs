@@ -1,0 +1,47 @@
+\section{Background and Motivation}
+\label{sec:bg}
+
+\subsection{LLM API Protocols}
+
+Three API protocols dominate the LLM provider landscape:
+三种 API 协议主导了 LLM 提供商生态：
+
+\begin{itemize}[nosep]
+    \item \textbf{OpenAI Chat Completions} (\texttt{/chat/completions}): messages with roles (system, user, assistant, tool), tool calls, and streaming via Server-Sent Events (SSE) terminated by \texttt{[DONE]}.
+    \textbf{OpenAI Chat Completions}（\texttt{/chat/completions}）：带有角色（system、user、assistant、tool）的消息、工具调用，以及通过 Server-Sent Events（SSE）进行的流式传输，以 \texttt{[DONE]} 终止。
+    \item \textbf{Anthropic Messages} (\texttt{/v1/messages}): content blocks (text, tool\_use, tool\_result, thinking), system as a top-level field, and SSE terminated by \texttt{message\_stop}.
+    \textbf{Anthropic Messages}（\texttt{/v1/messages}）：内容块（text、tool\_use、tool\_result、thinking），system 作为顶层字段，SSE 以 \texttt{message\_stop} 终止。
+    \item \textbf{OpenAI Responses} (\texttt{/responses}): a unified input/output array with typed items (message, reasoning, function\_call, function\_call\_output), instructions as a top-level field, and SSE terminated by \texttt{response.completed}.
+    \textbf{OpenAI Responses}（\texttt{/responses}）：具有类型化条目（message、reasoning、function\_call、function\_call\_output）的统一输入/输出数组，instructions 作为顶层字段，SSE 以 \texttt{response.completed} 终止。
+\end{itemize}
+
+Each protocol has distinct message structure, tool-call representation, streaming format, and termination semantics. A middleware that supports all three must either (a) convert between protocols (lossy) or (b) preserve each protocol's native format (lossless). Pigs chooses the latter.
+每种协议具有不同的消息结构、工具调用表示、流式格式和终止语义。一个同时支持三种协议的中间件要么（a）在协议间进行转换（有损），要么（b）保留每种协议的原生格式（无损）。Pigs 选择了后者。
+
+\subsection{Multi-Stage LLM Orchestration}
+
+Several lines of work add structure to LLM interactions:
+若干研究方向为 LLM 交互增加了结构：
+
+\textbf{ReAct}~\citep{yao2022react} interleaves reasoning traces and actions in a single LLM output. The model decides when to think and when to act, with no external control flow. This is elegant but fragile: the model may skip planning, act prematurely, or fail to reflect on errors.
+\textbf{ReAct}~\citep{yao2022react} 在单一的 LLM 输出中交替进行推理轨迹和行动。模型自行决定何时思考、何时行动，没有外部控制流。这种方式优雅但脆弱：模型可能跳过规划、过早行动或未能反思错误。
+
+\textbf{Reflexion}~\citep{shinn2023reflexion} adds a reflection loop where the model receives verbal feedback and stores it in episodic memory for the next attempt. While effective, the reflection trigger is model-driven---there is no guarantee the model will reflect at the right time.
+\textbf{Reflexion}~\citep{shinn2023reflexion} 增加了反思循环，模型接收语言反馈并将其存入情景记忆中供下次尝试使用。虽然有效，但反思的触发是模型驱动的——无法保证模型会在正确的时机进行反思。
+
+\textbf{Self-Refine}~\citep{madaan2023selfrefine} uses a single LLM as generator, critic, and refiner. The control flow is implicit in the prompt structure, and the model may deviate from the expected generate-critic-refine sequence.
+\textbf{Self-Refine}~\citep{madaan2023selfrefine} 使用单个 LLM 同时充当生成器、批评器和精炼器。控制流隐含在提示结构中，模型可能偏离预期的"生成-批评-精炼"序列。
+
+\textbf{Plan-and-Solve}~\citep{wang2023plan} explicitly separates planning from execution in a two-phase prompt. However, both phases occur within a single LLM call, and there is no external verification of whether the plan was followed.
+\textbf{Plan-and-Solve}~\citep{wang2023plan} 在两阶段提示中明确将规划与执行分离。然而，两个阶段均发生在单次 LLM 调用中，且没有对计划是否被执行的外部验证。
+
+These approaches share a common pattern: they embed control flow \emph{inside} the prompt, relying on the model's instruction-following ability to maintain phase discipline. Pigs inverts this: control flow is \emph{external} to the model, enforced by a deterministic state machine, while the model contributes only semantic content and routing signals.
+这些方法共享一个模式：它们将控制流\emph{内嵌}于提示中，依赖模型的指令遵循能力来维持阶段纪律。Pigs 颠倒了这一做法：控制流\emph{外置于}模型之外，由确定性状态机执行，而模型仅贡献语义内容和路由信号。
+
+\subsection{LLM Middleware}
+
+The concept of LLM middleware---a transparent layer between client and provider---has been discussed in position papers~\citep{dzanic2024middleware} but remains under-explored in terms of implemented systems. Existing proxy-like systems (e.g., LiteLLM, OpenRouter) focus on model routing and cost optimization, not on orchestration logic. TokenMizer~\citep{liu2026tokenmizer} adds session state management as a proxy feature, but does not impose phase structure.
+LLM 中间件的概念——一个位于客户端与提供商之间的透明层——已在立场论文中被讨论~\citep{dzanic2024middleware}，但在实现系统层面仍探索不足。现有的类代理系统（如 LiteLLM、OpenRouter）专注于模型路由和成本优化，而非编排逻辑。TokenMizer~\citep{liu2026tokenmizer} 将会话状态管理作为代理功能添加，但不施加阶段结构。
+
+Pigs occupies a distinct niche: it is both a middleware (transparent, protocol-preserving, non-invasive) and an orchestrator (enforcing a phase structure with control markers). No prior system combines these two roles.
+Pigs 占据了一个独特的定位：它既是中间件（透明、协议保留、非侵入式），又是编排器（通过控制标记强制执行阶段结构）。此前没有系统将这两种角色结合在一起。

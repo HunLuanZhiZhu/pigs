@@ -1,0 +1,34 @@
+\section{Background and Motivation}
+\label{sec:bg}
+
+\subsection{LLM API Protocols}
+
+Three API protocols dominate the LLM provider landscape:
+
+\begin{itemize}[nosep]
+    \item \textbf{OpenAI Chat Completions} (\texttt{/chat/completions}): messages with roles (system, user, assistant, tool), tool calls, and streaming via Server-Sent Events (SSE) terminated by \texttt{[DONE]}.
+    \item \textbf{Anthropic Messages} (\texttt{/v1/messages}): content blocks (text, tool\_use, tool\_result, thinking), system as a top-level field, and SSE terminated by \texttt{message\_stop}.
+    \item \textbf{OpenAI Responses} (\texttt{/responses}): a unified input/output array with typed items (message, reasoning, function\_call, function\_call\_output), instructions as a top-level field, and SSE terminated by \texttt{response.completed}.
+\end{itemize}
+
+Each protocol has distinct message structure, tool-call representation, streaming format, and termination semantics. A middleware that supports all three must either (a) convert between protocols (lossy) or (b) preserve each protocol's native format (lossless). Pigs chooses the latter.
+
+\subsection{Multi-Stage LLM Orchestration}
+
+Several lines of work add structure to LLM interactions:
+
+\textbf{ReAct}~\citep{yao2022react} interleaves reasoning traces and actions in a single LLM output. The model decides when to think and when to act, with no external control flow. This is elegant but fragile: the model may skip planning, act prematurely, or fail to reflect on errors.
+
+\textbf{Reflexion}~\citep{shinn2023reflexion} adds a reflection loop where the model receives verbal feedback and stores it in episodic memory for the next attempt. While effective, the reflection trigger is model-driven---there is no guarantee the model will reflect at the right time.
+
+\textbf{Self-Refine}~\citep{madaan2023selfrefine} uses a single LLM as generator, critic, and refiner. The control flow is implicit in the prompt structure, and the model may deviate from the expected generate-critic-refine sequence.
+
+\textbf{Plan-and-Solve}~\citep{wang2023plan} explicitly separates planning from execution in a two-phase prompt. However, both phases occur within a single LLM call, and there is no external verification of whether the plan was followed.
+
+These approaches share a common pattern: they embed control flow \emph{inside} the prompt, relying on the model's instruction-following ability to maintain phase discipline. Pigs inverts this: control flow is \emph{external} to the model, enforced by a deterministic state machine, while the model contributes only semantic content and routing signals.
+
+\subsection{LLM Middleware}
+
+The concept of LLM middleware---a transparent layer between client and provider---has been discussed in position papers~\citep{dzanic2024middleware} but remains under-explored in terms of implemented systems. Existing proxy-like systems (e.g., LiteLLM, OpenRouter) focus on model routing and cost optimization, not on orchestration logic. TokenMizer~\citep{liu2026tokenmizer} adds session state management as a proxy feature, but does not impose phase structure.
+
+Pigs occupies a distinct niche: it is both a middleware (transparent, protocol-preserving, non-invasive) and an orchestrator (enforcing a phase structure with control markers). No prior system combines these two roles.

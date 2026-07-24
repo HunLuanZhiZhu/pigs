@@ -1,0 +1,361 @@
+\section{System Design}
+\label{sec:design}
+
+Pigs is structured as a three-layer system: a \emph{proxy} layer that routes HTTP requests, a \emph{phased runtime} layer that orchestrates the Pre$\rightarrow$Executor$\rightarrow$Post state machine, and a \emph{CLI} layer that provides an interactive agent interface. This section describes the core design of each layer.
+\begin{chinese}
+Pigs 被组织为一个三层系统：负责路由 HTTP 请求的\emph{代理}层、负责编排 Pre$\rightarrow$Executor$\rightarrow$Post 状态机的\emph{分阶段运行时}层，以及提供交互式智能体界面的 \emph{CLI} 层。本节描述各层的核心设计。
+\end{chinese}
+
+\subsection{Architecture Overview}
+\label{sec:overview}
+\begin{chinese}
+\subsection{架构概览}
+\end{chinese}
+
+The system operates as a single-process server listening on one port (default 3927). All three API protocols are served from the same port, distinguished by request path:
+\begin{chinese}
+系统作为单进程服务器运行，监听一个端口（默认 3927）。三种 API 协议均从同一端口提供服务，通过请求路径区分：
+\end{chinese}
+
+\begin{itemize}[nosep]
+    \item \texttt{/chat/completions} $\rightarrow$ OpenAI Chat
+    \item \texttt{/v1/messages} $\rightarrow$ Anthropic Messages
+    \item \texttt{/responses} $\rightarrow$ OpenAI Responses
+\end{itemize}
+
+Requests are routed by model identifier: models without the \texttt{-pig} suffix are passed through to the upstream provider (with retry, body cleaning, and thinking-effort injection); models with the \texttt{-pig} suffix enter the phased runtime. Each configured model is automatically exposed as two identifiers: \texttt{\{model\}} (passthrough) and \texttt{\{model\}-pig} (phased).
+\begin{chinese}
+请求通过模型标识符路由：不带 \texttt{-pig} 后缀的模型直接透传至上游提供商（附带重试、主体清洗和思考力度注入）；带 \texttt{-pig} 后缀的模型进入分阶段运行时。每个配置的模型自动暴露为两个标识符：\texttt{\{model\}}（透传）和 \texttt{\{model\}-pig}（分阶段）。
+\end{chinese}
+
+\Cref{fig:arch} illustrates the request flow. When a \texttt{-pig} request arrives, the proxy constructs a \texttt{HttpRequestEnvelope} and hands it to the \texttt{HttpPhasedRuntime}. Each phase subrequest is sent back to the proxy via HTTP loopback (with an internal token header), re-entering the passthrough path with the \texttt{-pig} suffix removed. This design ensures that phase subrequests transparently inherit all proxy-level features.
+\begin{chinese}
+\Cref{fig:arch} 展示了请求流。当 \texttt{-pig} 请求到达时，代理构建一个 \texttt{HttpRequestEnvelope} 并将其交给 \texttt{HttpPhasedRuntime}。每个阶段子请求通过 HTTP 回环（附带一个内部令牌头部）发送回代理，在去除 \texttt{-pig} 后缀后重新进入透传路径。这一设计确保阶段子请求透明地继承所有代理级特性。
+\end{chinese}
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[
+  node distance=0.8cm,
+  box/.style={draw, rounded corners, minimum width=3.5cm, minimum height=0.8cm, align=center, font=\small},
+  client/.style={box, fill=blue!10},
+  proxy/.style={box, fill=green!10},
+  runtime/.style={box, fill=orange!10},
+  provider/.style={box, fill=red!10},
+  arr/.style={-Stealth, thick},
+  loopback/.style={-Stealth, thick, dashed, draw=purple!70},
+]
+\node[client] (client) {Client (model: X-pig)};
+\node[proxy, below=of client] (proxy1) {pigs-proxy\\(route by -pig)};
+\node[runtime, below=of proxy1] (runtime) {HttpPhasedRuntime\\Pre $\to$ Executor $\to$ Post};
+\node[proxy, below=of runtime] (proxy2) {pigs-proxy\\(passthrough, model: X)};
+\node[provider, below=of proxy2] (provider) {Upstream Provider};
+
+\draw[arr] (client) -- (proxy1);
+\draw[arr] (proxy1) -- (runtime);
+\draw[loopback] (runtime) -- node[right, font=\scriptsize, text=purple!70] {HTTP loopback} (proxy2);
+\draw[arr] (proxy2) -- (provider);
+\end{tikzpicture}
+\caption{Request flow for a \texttt{-pig} model. Phase subrequests re-enter the proxy via HTTP loopback (dashed), inheriting passthrough features.}
+\label{fig:arch}
+\end{figure}
+\subsection{Phase State Machine}
+\label{sec:state}
+\begin{chinese}
+\subsection{阶段状态机}
+\end{chinese}
+
+The core of Pigs is a pure state machine with three phases and three transition signals. The state is encapsulated in \texttt{OrchestrationState}, which tracks the current phase, accumulated outputs, failure history, and iteration counters.
+\begin{chinese}
+Pigs 的核心是一个具有三个阶段和三个转移信号的纯状态机。状态封装在 \texttt{OrchestrationState} 中，用于跟踪当前阶段、累积输出、失败历史和迭代计数器。
+\end{chinese}
+
+\begin{algorithm}[t]
+\caption{Phase state machine transition}
+\label{alg:state}
+\begin{algorithmic}[1]
+\Function{advance}{output}
+  \State $phase \gets \text{current phase}$
+  \If{$phase = \text{Pre}$}
+    \If{$\text{detect}(output) = \texttt{PIGEND}$}
+      \State \Return Complete \Comment{Short-circuit: trivially simple task}
+    \ElsIf{$\text{detect}(output) = \texttt{PIGFAIL}$}
+      \State \Return replan(output) \Comment{Failure: return to Pre}
+    \Else
+      \State $\text{pre\_output} \gets \text{strip}(output)$
+      \State \Return Continue(Executor)
+    \EndIf
+  \ElsIf{$phase = \text{Executor}$}
+    \State $\text{executor\_outputs} \gets \text{strip}(output)$
+    \State \Return Continue(Post) \Comment{Always proceed to Post}
+  \Else \Comment{$phase = \text{Post}$}
+    \If{$\text{detect}(output) = \texttt{PIGEND}$}
+      \State \Return Complete
+    \ElsIf{$\text{detect}(output) = \texttt{PIGFAIL}$}
+      \State \Return replan(output)
+    \Else
+      \If{$\text{post\_iterations} \geq \text{max}$}
+        \State \Return Error(PostBudgetExceeded)
+      \EndIf
+      \State $\text{post\_iterations} \mathrel{+}= 1$
+      \State \Return Continue(Post) \Comment{Stay in Post}
+    \EndIf
+  \EndIf
+\EndFunction
+\end{algorithmic}
+\end{algorithm}
+
+The state machine has several key properties:
+\begin{chinese}
+该状态机具有若干关键特性：
+\end{chinese}
+
+\textbf{Markerless Post stays in Post.} When the Post phase produces output without a control marker, the state machine continues in Post (not back to Executor). This design choice prevents infinite Executor$\leftrightarrow$Post loops: the model is expected to make incremental progress within Post until it either completes or fails.
+\begin{chinese}
+\textbf{无标记的 Post 停留在 Post。} 当 Post 阶段产生不含控制标记的输出时，状态机继续停留在 Post 阶段（而非返回 Executor）。这一设计选择防止了 Executor$\leftrightarrow$Post 的无限循环：模型应在 Post 内部逐步推进，直至完成或失败。
+\end{chinese}
+
+\textbf{Budget exhaustion is an error, not success.} When the Post iteration budget is exhausted, the state machine returns an \texttt{OrchestrationError}, not a successful completion. This prevents the system from silently accepting incomplete work.
+\begin{chinese}
+\textbf{预算耗尽即为错误，而非成功。} 当 Post 迭代预算耗尽时，状态机返回 \texttt{OrchestrationError}，而非成功完成。这防止了系统静默接受不完整的工作。
+\end{chinese}
+
+\textbf{Failure preserves history.} When \texttt{PIGFAIL} triggers a replan, the failure output is preserved and presented to the next Pre phase as numbered failure records (``1st failure: \ldots'', ``2nd failure: \ldots''). This allows the model to learn from previous attempts.
+\begin{chinese}
+\textbf{失败保留历史。} 当 \texttt{PIGFAIL} 触发重新规划时，失败输出会被保留并以编号的失败记录形式呈现给下一个 Pre 阶段（"第1次失败：\ldots"、"第2次失败：\ldots"）。这使得模型能够从先前的尝试中学习。
+\end{chinese}
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[
+  node distance=1.8cm and 2.2cm,
+  state/.style={draw, circle, minimum size=1.4cm, align=center, font=\small},
+  terminal/.style={draw, rounded corners, minimum width=1.6cm, minimum height=0.7cm, align=center, font=\small, fill=gray!10},
+  arr/.style={-Stealth, thick},
+  fail/.style={-Stealth, thick, dashed, draw=red!70},
+  every label/.style={font=\scriptsize},
+]
+\node[state, fill=blue!10] (pre) {Pre};
+\node[state, fill=orange!10, right=of pre] (exec) {Exec.};
+\node[state, fill=green!10, right=of exec] (post) {Post};
+\node[terminal, right=of post, fill=green!20] (done) {Complete};
+\node[terminal, below=1.6cm of post, fill=red!10] (error) {Error};
+
+\draw[arr] (pre) -- node[above, font=\scriptsize] {no marker} (exec);
+\draw[arr] (exec) -- node[above, font=\scriptsize] {always} (post);
+\draw[arr] (post) -- node[above, font=\scriptsize] {\texttt{PIGEND}} (done);
+\draw[arr] (pre.north) .. controls +(0, 1.2) and +(0, 1.2) .. node[above, font=\scriptsize] {\texttt{PIGEND} (short-circuit)} (done.north);
+\draw[arr] (post.east) .. controls +(0.8, -0.5) and +(0.8, 0.5) .. node[right, font=\scriptsize] {no marker} (post.south east);
+\draw[fail] (post.south west) .. controls +(-1.5, -1.2) and +(1.5, -1.2) .. node[below, font=\scriptsize, text=red!70] {\texttt{PIGFAIL} (replan)} (pre.south);
+\draw[fail] (post) -- node[right, font=\scriptsize, text=red!70] {budget} (error);
+\end{tikzpicture}
+\caption{Phase state machine transitions. Solid arrows are forward transitions; dashed red arrows are failure and budget-exhaustion paths. The curved arrow from Post back to Pre represents PIGFAIL-triggered replanning. The self-loop on Post (right side) represents markerless continuation.}
+\label{fig:state}
+\end{figure}
+
+\Cref{fig:state} illustrates the complete state machine. The Pre phase can short-circuit to Complete (trivially simple tasks), and the Post phase has a self-loop for markerless continuation.
+\begin{chinese}
+\Cref{fig:state} 展示了完整的状态机。Pre 阶段可短路至 Complete（极其简单的任务），Post 阶段具有用于无标记继续的自环。
+\end{chinese}
+
+\subsection{Control Markers}
+\label{sec:markers}
+\begin{chinese}
+\subsection{控制标记}
+\end{chinese}
+
+Control markers are short text tokens that the model appends to its output to signal phase transitions:
+\begin{chinese}
+控制标记是模型附加到其输出中的简短文本标记，用于发出阶段转移信号：
+\end{chinese}
+
+\begin{itemize}[nosep]
+    \item \texttt{PIGEND}: signals successful completion. The turn ends, and the accumulated visible text is returned to the client.
+    \begin{chinese}
+    \texttt{PIGEND}：表示成功完成。本轮结束，累积的可见文本返回给客户端。
+    \end{chinese}
+    \item \texttt{PIGFAIL}: signals that the current approach has failed and the task should be replanned from Pre.
+    \begin{chinese}
+    \texttt{PIGFAIL}：表示当前方法已失败，任务应从 Pre 重新规划。
+    \end{chinese}
+\end{itemize}
+
+Marker detection follows two rules:
+\begin{chinese}
+标记检测遵循两条规则：
+\end{chinese}
+
+\textbf{Last non-empty line only.} Only the final non-empty line of the model's output is checked for a marker. Earlier occurrences (e.g., the marker appearing in a sentence like ``the system outputs PIGEND when done'') are ignored. This prevents false positives from prose mentions.
+\begin{chinese}
+\textbf{仅检测最后一个非空行。} 仅检查模型输出的最后一个非空行是否包含标记。早期出现的标记（例如标记出现在"系统在完成时输出 PIGEND"这样的句子中）会被忽略。这防止了散文中提及标记导致的误报。
+\end{chinese}
+
+\textbf{Reason required.} A marker is valid only if at least one non-marker line precedes it. A bare \texttt{PIGEND} with no preceding content is rejected, forcing the model to provide a reason before signaling completion.
+\begin{chinese}
+\textbf{要求附带理由。} 标记仅在前面至少有一个非标记行时才有效。单独的 \texttt{PIGEND} 且无前置内容将被拒绝，从而强制模型在发出完成信号前提供理由。
+\end{chinese}
+
+Markers are stripped from the visible output via \texttt{strip\_markers}, which removes exact control lines while preserving prose that happens to contain marker words.
+\begin{chinese}
+标记通过 \texttt{strip\_markers} 从可见输出中剥离，该函数移除精确的控制行，同时保留恰好包含标记词的散文。
+\end{chinese}
+
+\subsection{Protocol-Native Request Envelope}
+\label{sec:envelope}
+\begin{chinese}
+\subsection{协议原生请求封装}
+\end{chinese}
+
+The \texttt{HttpRequestEnvelope} is the central data structure that preserves the complete protocol-native request:
+\begin{chinese}
+\texttt{HttpRequestEnvelope} 是保留完整协议原生请求的核心数据结构：
+\end{chinese}
+
+\begin{lstlisting}
+pub struct HttpRequestEnvelope {
+    pub method: String,           // HTTP method
+    pub path_and_query: String,   // path + query string
+    pub headers: Vec<HeaderPair>, // raw header bytes
+    pub body: Value,              // complete JSON body
+    pub protocol: Protocol,       // Chat / Anthropic / Responses
+    pub client_model: String,     // e.g. "gpt-4-pig"
+    pub real_model: String,       // e.g. "gpt-4" (-pig stripped)
+    pub stream: bool,             // streaming requested?
+    // ... internal fields for current user location,
+    //     tool result IDs, tool result groups
+}
+\end{lstlisting}
+
+Each phase clones the envelope and applies \emph{point mutations}:
+\begin{chinese}
+每个阶段克隆该封装并施加\emph{定点修改}：
+\end{chinese}
+
+\begin{enumerate}[nosep]
+    \item \textbf{Model}: replaced with the real (non-\texttt{-pig}) model name.
+    \begin{chinese}
+    \textbf{模型}：替换为真实（非 \texttt{-pig}）模型名。
+    \end{chinese}
+    \item \textbf{Current user input}: appended with the phase-specific prompt suffix (Pre questions, Executor plan, Post review instructions).
+    \begin{chinese}
+    \textbf{当前用户输入}：附加阶段特定的提示后缀（Pre 问题、Executor 计划、Post 审查指令）。
+    \end{chinese}
+    \item \textbf{Phase transcript}: native assistant/tool messages from prior phases are appended to the message history.
+    \begin{chinese}
+    \textbf{阶段记录}：来自先前阶段的原生 assistant/tool 消息被附加到消息历史中。
+    \end{chinese}
+    \item \textbf{Stream}: set to \texttt{true} for streaming phase subrequests.
+    \begin{chinese}
+    \textbf{流式}：对于流式阶段子请求设为 \texttt{true}。
+    \end{chinese}
+\end{enumerate}
+
+All other fields---system/instructions, historical messages, tools/tool\_choice, reasoning parameters, cache controls, metadata, media blocks, and unknown provider extensions---remain untouched. This ensures that provider-specific features (e.g., Anthropic's \texttt{cache\_control}, OpenAI's \texttt{reasoning\_effort}) pass through without modification.
+\begin{chinese}
+所有其他字段——system/instructions、历史消息、tools/tool\_choice、推理参数、缓存控制、元数据、媒体块以及未知的提供商扩展——均保持不变。这确保了提供商特定特性（如 Anthropic 的 \texttt{cache\_control}、OpenAI 的 \texttt{reasoning\_effort}）原样透传，无需修改。
+\end{chinese}
+
+\subsection{HTTP Loopback Transport}
+\label{sec:loopback}
+\begin{chinese}
+\subsection{HTTP 回环传输}
+\end{chinese}
+
+Each phase subrequest is sent back to the local proxy via HTTP, not through an in-process function call. The \texttt{LoopbackPhaseTransport} implements the \texttt{PhaseTransport} trait:
+\begin{chinese}
+每个阶段子请求通过 HTTP 发送回本地代理，而非通过进程内函数调用。\texttt{LoopbackPhaseTransport} 实现了 \texttt{PhaseTransport} trait：
+\end{chinese}
+
+\begin{itemize}[nosep]
+    \item Converts wildcard listen addresses (\texttt{0.0.0.0}, \texttt{[::]}) to loopback (\texttt{127.0.0.1}, \texttt{::1}).
+    \begin{chinese}
+    将通配监听地址（\texttt{0.0.0.0}、\texttt{[::]}）转换为回环地址（\texttt{127.0.0.1}、\texttt{::1}）。
+    \end{chinese}
+    \item Disables environment HTTP proxy settings (\texttt{.no\_proxy()}) to prevent external proxy interception.
+    \begin{chinese}
+    禁用环境 HTTP 代理设置（\texttt{.no\_proxy()}），以防止外部代理拦截。
+    \end{chinese}
+    \item Adds a random internal token header (\texttt{x-pigs-phase-loopback}) that the proxy validates to identify legitimate phase subrequests.
+    \begin{chinese}
+    添加随机内部令牌头部（\texttt{x-pigs-phase-loopback}），由代理验证以识别合法的阶段子请求。
+    \end{chinese}
+    \item Strips hop-by-hop headers and the internal token before forwarding to the upstream provider.
+    \begin{chinese}
+    在转发至上游提供商前剥离逐跳头部和内部令牌。
+    \end{chinese}
+\end{itemize}
+
+This design has two benefits. First, phase subrequests transparently inherit all proxy-level features: channel selection, model mapping, body cleaning (e.g., removing empty content messages), thinking-effort injection, and retry logic. Second, the control flow is explicit and debuggable---each phase subrequest appears in proxy logs as a normal HTTP request, and the internal token distinguishes it from client requests.
+\begin{chinese}
+此设计有两个优势。第一，阶段子请求透明地继承所有代理级特性：通道选择、模型映射、主体清洗（如移除空内容消息）、思考力度注入和重试逻辑。第二，控制流是显式且可调试的——每个阶段子请求在代理日志中作为普通 HTTP 请求出现，内部令牌使其与客户端请求区分开来。
+\end{chinese}
+
+\subsection{Bounded In-Memory Continuation}
+\label{sec:continuation}
+\begin{chinese}
+\subsection{有界内存续传}
+\end{chinese}
+
+When the model returns tool calls during a phase, the runtime pauses and returns the tool calls to the client (or external agent). The complete phase state---including the orchestration state, phase transcript, visible text, and pending tool IDs---is stored in a \texttt{ContinuationStore}:
+\begin{chinese}
+当模型在某个阶段返回工具调用时，运行时暂停并将工具调用返回给客户端（或外部智能体）。完整的阶段状态——包括编排状态、阶段记录、可见文本和待处理工具 ID——存储在 \texttt{ContinuationStore} 中：
+\end{chinese}
+
+\begin{itemize}[nosep]
+    \item \textbf{TTL}: each continuation expires after a configurable duration (default 30 minutes).
+    \begin{chinese}
+    \textbf{TTL}：每个续传在可配置的时长后过期（默认 30 分钟）。
+    \end{chinese}
+    \item \textbf{Capacity}: at most $N$ continuations are retained (default 256); the oldest is evicted when capacity is reached.
+    \begin{chinese}
+    \textbf{容量}：最多保留 $N$ 个续传（默认 256）；达到容量时驱逐最旧的续传。
+    \end{chinese}
+    \item \textbf{Tombstones}: when a continuation is expired, evicted, or consumed, a tombstone is placed for each tool ID, enabling distinct error reporting (Expired vs.\ Evicted vs.\ Consumed vs.\ Unknown).
+    \begin{chinese}
+    \textbf{墓碑}：当续传过期、被驱逐或被消费时，为每个工具 ID 放置一个墓碑，实现差异化错误报告（Expired 与 Evicted 与 Consumed 与 Unknown）。
+    \end{chinese}
+    \item \textbf{No auth headers}: authentication headers are cleared before storing; the continuation uses the incoming request's headers on resume.
+    \begin{chinese}
+    \textbf{不存储认证头部}：认证头部在存储前被清除；续传在恢复时使用传入请求的头部。
+    \end{chinese}
+\end{itemize}
+
+When the next request arrives with tool results, the runtime matches them by tool-call ID, validates protocol and model consistency, and resumes the paused phase. Partial parallel results (multiple tool calls returning in separate requests) are accumulated until all pending IDs are present.
+\begin{chinese}
+当下一个请求携带工具结果到达时，运行时通过工具调用 ID 匹配它们，验证协议和模型一致性，并恢复暂停的阶段。部分并行结果（多个工具调用在单独请求中返回）会被累积，直到所有待处理 ID 均到齐。
+\end{chinese}
+
+\subsection{Continuous SSE Output}
+\label{sec:sse}
+\begin{chinese}
+\subsection{连续 SSE 输出}
+\end{chinese}
+
+For streaming requests, the runtime produces a continuous SSE stream that concatenates visible text from all phases. A \emph{marker line buffer} holds back the last non-empty line of each phase's output until the phase completes, then checks for control markers. If a marker is found, the held-back line is stripped; otherwise, it is forwarded. This prevents \texttt{PIGEND}/\texttt{PIGFAIL} from leaking into the client-visible stream, even when markers are split across network chunks.
+\begin{chinese}
+对于流式请求，运行时产生连续的 SSE 流，拼接所有阶段的可见文本。\emph{标记行缓冲区}暂缓每个阶段输出的最后一个非空行，直到该阶段完成，然后检查控制标记。若发现标记，被暂缓的行将被剥离；否则，将其转发。这防止了 \texttt{PIGEND}/\texttt{PIGFAIL} 泄漏到客户端可见的流中，即使标记跨越网络数据块的分界也是如此。
+\end{chinese}
+
+The outer SSE encoder generates protocol-native event sequences for all three protocols:
+\begin{chinese}
+外层 SSE 编码器为所有三种协议生成协议原生的事件序列：
+\end{chinese}
+\begin{itemize}[nosep]
+    \item \textbf{Chat}: \texttt{chat.completion.chunk} deltas with role/content/tool\_calls, terminated by \texttt{finish\_reason} + \texttt{[DONE]}.
+    \begin{chinese}
+    \textbf{Chat}：\texttt{chat.completion.chunk} 增量，附带 role/content/tool\_calls，以 \texttt{finish\_reason} + \texttt{[DONE]} 终止。
+    \end{chinese}
+    \item \textbf{Anthropic}: \texttt{message\_start} $\rightarrow$ \texttt{content\_block\_start/delta/stop} $\rightarrow$ \texttt{message\_delta} $\rightarrow$ \texttt{message\_stop}.
+    \begin{chinese}
+    \textbf{Anthropic}：\texttt{message\_start} $\rightarrow$ \texttt{content\_block\_start/delta/stop} $\rightarrow$ \texttt{message\_delta} $\rightarrow$ \texttt{message\_stop}。
+    \end{chinese}
+    \item \textbf{Responses}: \texttt{response.created} $\rightarrow$ \texttt{output\_item/content\_part/text\_delta/done} $\rightarrow$ \texttt{response.completed}, with monotonic sequence numbers.
+    \begin{chinese}
+    \textbf{Responses}：\texttt{response.created} $\rightarrow$ \texttt{output\_item/content\_part/text\_delta/done} $\rightarrow$ \texttt{response.completed}，带有单调递增的序列号。
+    \end{chinese}
+\end{itemize}
+
+Error streams emit protocol-native error events (Chat: \texttt{error} in data; Anthropic: \texttt{event: error}; Responses: \texttt{response.failed}) without any success terminal frame.
+\begin{chinese}
+错误流发出协议原生的错误事件（Chat：数据中的 \texttt{error}；Anthropic：\texttt{event: error}；Responses：\texttt{response.failed}），不含任何成功的终止帧。
+\end{chinese}

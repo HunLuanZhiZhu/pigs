@@ -6,6 +6,7 @@ pub mod language;
 pub mod memory;
 pub mod rules;
 pub mod skills;
+pub mod sub_agent_def;
 
 pub use agents_md::{
     build_system_prompt, build_system_prompt_from_dir, build_system_prompt_with_source,

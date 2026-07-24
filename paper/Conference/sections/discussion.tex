@@ -1,0 +1,36 @@
+\section{Discussion}
+\label{sec:discussion}
+
+\subsection{Why Text Markers Instead of Tool-Based Handoff?}
+
+A natural alternative to text control markers is to inject an orchestration-specific tool (e.g., \texttt{finish\_task}, \texttt{replan\_task}) into the model's tool set. We reject this approach for three reasons. First, it pollutes the tool namespace---the model must distinguish between user-defined tools (bash, read\_file) and orchestration tools, creating confusion. Second, tool calls consume a round-trip: the model emits a tool call, the system executes it (trivially), and the model receives the result. Text markers are zero-overhead. Third, tool-based handoff couples the orchestration logic to the tool-calling protocol, making it protocol-specific. Text markers work universally across all protocols and even with models that do not support tool calling.
+文本控制标记的一个自然替代方案是将编排特定的工具（如 \texttt{finish\_task}、\texttt{replan\_task}）注入模型的工具集。我们拒绝这一方案，原因有三。第一，它污染了工具命名空间——模型必须区分用户定义的工具（bash、read\_file）和编排工具，造成混淆。第二，工具调用消耗一次往返：模型发出工具调用，系统（简单地）执行它，模型接收结果。文本标记是零开销的。第三，基于工具的交接将编排逻辑与工具调用协议耦合，使其成为协议特定的。文本标记在所有协议中通用，甚至适用于不支持工具调用的模型。
+
+\subsection{Why Post Stays in Post (Not Back to Executor)?}
+
+When the Post phase produces output without a marker (indicating progress but not completion), the state machine continues in Post rather than returning to Executor. This design prevents infinite Executor$\leftrightarrow$Post loops: if the model oscillates between ``do'' and ``review'' without converging, the Post iteration budget will eventually exhaust and return an error. Returning to Executor would reset the loop without progress, creating a potential infinite cycle.
+当 Post 阶段产生不含标记的输出（表示有进展但未完成）时，状态机继续停留在 Post 阶段，而非返回 Executor。此设计防止了 Executor$\leftrightarrow$Post 的无限循环：如果模型在"执行"和"审查"之间振荡而无法收敛，Post 迭代预算最终将耗尽并返回错误。返回 Executor 将在无进展的情况下重置循环，造成潜在的无限循环。
+
+\subsection{Why Phase Instructions Only in User Payload?}
+
+Phase-specific instructions (Pre questions, Executor plan, Post review criteria) are appended to the current user message, not injected as system prompts. This preserves the client's original system prompt verbatim, which is important for two reasons. First, many providers cache system prompts for reduced latency and cost~\citep{anthropic_cache}; modifying the system prompt would invalidate the cache. Second, the system prompt often contains project-specific instructions (coding standards, safety rules) that should not be overridden by orchestration logic.
+阶段特定指令（Pre 问题、Executor 计划、Post 审查标准）被附加到当前用户消息中，而非作为系统提示注入。这逐字保留了客户端的原始系统提示，其重要性有两个原因。第一，许多提供商缓存系统提示以降低延迟和成本~\citep{anthropic_cache}；修改系统提示将使缓存失效。第二，系统提示通常包含项目特定指令（编码标准、安全规则），不应被编排逻辑覆盖。
+
+\subsection{Why HTTP Loopback Instead of In-Process Dispatch?}
+
+Phase subrequests could be dispatched in-process (bypassing HTTP), as was done in earlier versions of Pigs. We switched to HTTP loopback for two reasons. First, it ensures that phase subrequests transparently inherit all proxy-level features (channel selection, model mapping, body cleaning, thinking-effort injection, retry). With in-process dispatch, these features must be manually invoked, leading to code duplication and divergence. Second, HTTP loopback makes the control flow explicit and debuggable---each phase subrequest appears in proxy logs as a normal HTTP request, and the internal token distinguishes it from client requests.
+阶段子请求可以在进程内分发（绕过 HTTP），如 Pigs 的早期版本所做。我们切换到 HTTP 回环有两个原因。第一，它确保阶段子请求透明地继承所有代理级特性（通道选择、模型映射、主体清洗、思考力度注入、重试）。在进程内分发时，这些特性必须被手动调用，导致代码重复和分歧。第二，HTTP 回环使控制流显式且可调试——每个阶段子请求在代理日志中作为普通 HTTP 请求出现，内部令牌使其与客户端请求区分开来。
+
+\subsection{Limitations}
+
+\textbf{Marker robustness.} The control-marker approach depends on the model's ability to follow instructions about when to output \texttt{PIGEND}/\texttt{PIGFAIL}. In practice, models sometimes output markers in inappropriate contexts (e.g., quoting the marker in prose). The marker detection algorithm mitigates this by checking only the last non-empty line and requiring a preceding reason, but it is not foolproof. Empirical measurement of false positive and false negative rates is left for future evaluation.
+\textbf{标记鲁棒性。} 控制标记方法依赖于模型遵循关于何时输出 \texttt{PIGEND}/\texttt{PIGFAIL} 的指令的能力。在实践中，模型有时会在不恰当的上下文中输出标记（如在散文中引用标记）。标记检测算法通过仅检查最后一个非空行并要求前置理由来缓解此问题，但并非万无一失。
+
+\textbf{Single-model assumption.} The current design uses the same model for all three phases. Multi-model orchestration (e.g., a cheaper model for Pre, a stronger model for Executor) is architecturally possible but not yet implemented.
+\textbf{单模型假设。} 当前设计在所有三个阶段使用同一模型。多模型编排（如在 Pre 阶段使用较便宜的模型，在 Executor 阶段使用更强的模型）在架构上是可行的，但尚未实现。
+
+\textbf{No formal verification.} The state machine is tested with unit tests covering all transitions, but lacks formal verification (e.g., model checking) of properties like ``the system always terminates'' or ``no phase is skipped.''
+\textbf{无形式化验证。} 状态机通过覆盖所有转移的单元测试进行了测试，但缺乏形式化验证（如模型检测）来保证"系统总是终止"或"无阶段被跳过"等性质。
+
+\textbf{Protocol coverage.} While three major protocols are supported, the system does not cover all provider-specific extensions (e.g., Google Gemini's API).
+\textbf{协议覆盖。} 虽然支持三种主要协议，但系统未覆盖所有提供商特定扩展（如 Google Gemini 的 API）。

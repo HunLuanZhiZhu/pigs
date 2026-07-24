@@ -29,7 +29,7 @@ pub fn run_doctor(agent: &Agent) -> Vec<CheckItem> {
         },
     });
 
-    let project = agent.workspace_root.join(".pigs").join("config.toml");
+    let project = agent.workspace_root.join(".pigs").join("pig.toml");
     items.push(CheckItem {
         name: "Project config".into(),
         ok: true, // optional
@@ -127,10 +127,10 @@ pub fn run_doctor(agent: &Agent) -> Vec<CheckItem> {
         detail: agent.workspace_root.display().to_string(),
     });
 
-    // pigsignore
-    let ignore = agent.workspace_root.join(".pigsignore");
+    // pigignore
+    let ignore = agent.workspace_root.join(".pigignore");
     items.push(CheckItem {
-        name: ".pigsignore".into(),
+        name: ".pigignore".into(),
         ok: true,
         detail: if ignore.exists() {
             format!("found {}", ignore.display())
@@ -149,11 +149,11 @@ pub fn run_doctor(agent: &Agent) -> Vec<CheckItem> {
     items
 }
 
-pub fn print_doctor_report(items: &[CheckItem]) {
+pub fn print_doctor_report(out: &mut crate::output::OutputSink, items: &[CheckItem]) {
     let mut ok_n = 0usize;
     let mut warn_n = 0usize;
-    println!("Pigs doctor report:");
-    println!("{}", "-".repeat(60));
+    out.println("Pigs doctor report:");
+    out.println("-".repeat(60));
     for item in items {
         let mark = if item.ok { "OK " } else { "ERR" };
         if item.ok {
@@ -161,15 +161,18 @@ pub fn print_doctor_report(items: &[CheckItem]) {
         } else {
             warn_n += 1;
         }
-        println!("[{mark}] {:<28} {}", item.name, item.detail);
+        out.println(format!("[{}] {:<28} {}", mark, item.name, item.detail));
     }
-    println!("{}", "-".repeat(60));
-    println!("Summary: {ok_n} ok, {warn_n} need attention");
+    out.println("-".repeat(60));
+    out.println(format!("Summary: {ok_n} ok, {warn_n} need attention"));
 }
 
 #[allow(dead_code)]
 pub fn config_paths() -> (PathBuf, PathBuf) {
-    (AppConfig::config_path(), PathBuf::from(".pigs/config.toml"))
+    (
+        AppConfig::config_path(),
+        PathBuf::from(".pigs/pig.toml"),
+    )
 }
 
 #[cfg(test)]
@@ -225,7 +228,8 @@ mod tests {
         );
 
         // Report formatting must not panic.
-        print_doctor_report(&items);
+        let mut sink = crate::output::OutputSink::Stdout;
+        print_doctor_report(&mut sink, &items);
     }
 
     #[test]

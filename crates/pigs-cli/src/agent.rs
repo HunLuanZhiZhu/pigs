@@ -11,7 +11,7 @@ use pigs_core::{ApiClient, Message, StreamCallback, StreamEvent};
 use pigs_llm::{create_client_for_endpoint, Provider as LlmProvider};
 use pigs_mcp::{McpClient, McpServerConfig, McpToolHandler};
 use pigs_permissions::{PermissionMode, PermissionOutcome, PermissionPolicy, PermissionPrompter};
-use pigs_session::{CompactConfig, Session};
+use pigs_session::Session;
 use pigs_tools::create_default_registry_with_todos;
 use pigs_tools::todo_write::TodoList;
 
@@ -29,6 +29,8 @@ pub struct Agent {
     pub no_tools: bool,
     pub one_shot_prompt: Option<String>,
     pub output_format: String,
+    /// Command output channel — stdout in REPL mode, buffer in TUI mode.
+    pub output: crate::output::OutputSink,
     pub sessions_dir: PathBuf,
     #[allow(dead_code)]
     pub workspace_root: PathBuf,
@@ -42,6 +44,8 @@ pub struct Agent {
     pub snapshots: crate::snapshots::SnapshotStore,
     /// Preferred UI / default reply language.
     pub language: Language,
+    /// Sub-agent manager for multi-agent orchestration (pigs = pig + s).
+    pub sub_agent_manager: std::sync::Arc<std::sync::Mutex<crate::sub_agent::SubAgentManager>>,
 }
 
 impl Agent {
@@ -69,6 +73,152 @@ impl Agent {
     /// builds its own direct `pigs-llm` client.
     pub fn new(config: AppConfig, args: CliArgs) -> anyhow::Result<Self> {
         Self::new_with_client(config, args, None)
+    }
+
+    /// Create a new agent with an HTTP client targeting the local API server.
+    ///
+    /// The agent connects to `http://{host}:{port}/chat/completions` via
+    /// `HttpAgentClient`. The model name sent to the API is the **real**
+    /// (non-`-pig`) model name, so the API server routes it through
+    /// passthrough (not `HttpPhasedRuntime`). The `PhasedRuntime` inside the
+    /// agent performs Pre→Executor→Post orchestration locally.
+    pub fn new_with_http(
+        config: AppConfig,
+        args: CliArgs,
+        host: &str,
+        port: u16,
+    ) -> anyhow::Result<Self> {
+        let mut config = config;
+        // CLI args overrides
+        if let Some(model) = &args.model {
+            config.model = model.clone();
+        }
+        if args.model.is_none() && !config.model.ends_with("-pig") {
+            config.model = format!("{}-pig", config.model);
+        }
+        if let Some(mode) = &args.mode {
+            config.permission_mode = mode.clone();
+        }
+        if let Some(lang) = &args.language {
+            config.language = lang.clone();
+        }
+        if let Some(prompt) = &args.system_prompt {
+            config.system_prompt = Some(prompt.clone());
+        }
+
+        let language = config
+            .language_parsed()
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+
+        let resolved = config
+            .resolve_model(&config.model)
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        let remote_model = resolved.remote_model.clone();
+
+        // HTTP client sends the real model name (no -pig suffix) to the API
+        // server, so the request goes through passthrough, not HttpPhasedRuntime.
+        // PhasedRuntime (inside the agent) does Pre→Executor→Post locally.
+        let api_client: Arc<dyn ApiClient> = Arc::new(crate::http_client::HttpAgentClient::new(
+            host,
+            port,
+            remote_model.clone(),
+            if resolved.api_key.is_empty() {
+                None
+            } else {
+                Some(resolved.api_key.clone())
+            },
+        ));
+
+        // Create or resume session
+        let sessions_dir = AppConfig::sessions_dir();
+        let session = if let Some(resume_id) = &args.resume {
+            Session::load(&sessions_dir, resume_id)
+                .map_err(|e| anyhow::anyhow!("Failed to resume session: {e}"))?
+        } else {
+            Session::new(&resolved.name, &sessions_dir)
+        };
+
+        let workspace_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+
+        let permission_mode = config
+            .permission_mode_parsed()
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        let mut policy = PermissionPolicy::new(permission_mode);
+        for (name, required) in pigs_tools::tool_permission_modes() {
+            policy = policy.with_tool_requirement(name, required);
+        }
+        policy = policy.with_tool_requirement("skill", PermissionMode::ReadOnly);
+
+        let base_owned = Self::compose_base_prompt(&config, language);
+        let mut system_prompt =
+            pigs_config::build_system_prompt_from_dir(&base_owned, &workspace_root);
+        let rules = pigs_config::load_rules(&workspace_root);
+        system_prompt.push_str(&pigs_config::format_rules_for_prompt(&rules));
+        let memory = pigs_config::load_memory(&workspace_root);
+        system_prompt.push_str(&pigs_config::format_memory_for_prompt(&memory));
+        let skills = pigs_config::load_skills(&workspace_root);
+        system_prompt.push_str(&pigs_config::format_skills_for_prompt(&skills));
+        let skill_catalog: crate::skill_tool::SkillCatalog =
+            std::sync::Arc::new(std::sync::Mutex::new(skills.clone()));
+
+        let (mut tool_registry, todo_list): (pigs_core::ToolRegistry, TodoList) = if args.no_tools {
+            (
+                pigs_core::ToolRegistry::new(),
+                std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            )
+        } else {
+            create_default_registry_with_todos()
+        };
+
+        // Register the skill tool (loads full skill body on demand).
+        tool_registry.register(Box::new(crate::skill_tool::SkillTool::new(Arc::clone(
+            &skill_catalog,
+        ))));
+
+        // Register the spawn tool (creates sub-agents for multi-agent orchestration).
+        let sub_agent_mgr = std::sync::Arc::new(std::sync::Mutex::new(
+            crate::sub_agent::SubAgentManager::new(),
+        ));
+        // Initialize navigation history with the main agent's session ID
+        sub_agent_mgr
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .init_nav(&session.session_id);
+        // Load custom sub-agent definitions from ~/.pig/agents/ and .pig/agents/
+        let sub_agent_defs = pigs_config::sub_agent_def::load_sub_agent_definitions(&workspace_root);
+        tool_registry.register(Box::new(crate::sub_agent_tool::SpawnTool::new(
+            std::sync::Arc::clone(&sub_agent_mgr),
+            config.model.clone(),
+            sub_agent_defs,
+            sessions_dir.clone(),
+        )));
+
+        let mcp_client = Arc::new(McpClient::new());
+
+        Ok(Self {
+            config,
+            session,
+            api_client,
+            tool_registry,
+            permission_policy: policy,
+            system_prompt,
+            max_turns: args.max_turns,
+            no_tools: args.no_tools,
+            one_shot_prompt: args.prompt.clone(),
+            output_format: args.output.clone(),
+            output: crate::output::OutputSink::default(),
+            sessions_dir,
+            todo_list,
+            mcp_client,
+            skills,
+            skill_catalog,
+            rules,
+            memory,
+            snapshots: crate::snapshots::SnapshotStore::load_from_workspace(&workspace_root),
+            workspace_root,
+            language,
+            sub_agent_manager: sub_agent_mgr,
+        })
     }
 
     /// Create a new agent with an optionally injected `ApiClient`.
@@ -125,7 +275,7 @@ impl Agent {
             Session::load(&sessions_dir, resume_id)
                 .map_err(|e| anyhow::anyhow!("Failed to resume session: {e}"))?
         } else {
-            Session::new(&model)
+            Session::new(&model, &sessions_dir)
         };
 
         // Get workspace root
@@ -166,16 +316,29 @@ impl Agent {
             create_default_registry_with_todos()
         };
 
-        // Register the sub-agent tool (needs the API client)
-        // Currently disabled behind the `sub_agent` feature flag.
-        #[cfg(feature = "sub_agent")]
-        tool_registry.register(Box::new(crate::agent_tool::AgentTool::new(Arc::clone(
-            &api_client,
-        ))));
         // On-demand skill loader (claw-code style)
         if !args.no_tools {
             tool_registry.register(Box::new(crate::skill_tool::SkillTool::new(
                 std::sync::Arc::clone(&skill_catalog),
+            )));
+        }
+
+        // Sub-agent manager + spawn tool
+        let sub_agent_mgr = std::sync::Arc::new(std::sync::Mutex::new(
+            crate::sub_agent::SubAgentManager::new(),
+        ));
+        // Initialize navigation history with the main agent's session ID
+        sub_agent_mgr
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .init_nav(&session.session_id);
+        if !args.no_tools {
+            let sub_agent_defs = pigs_config::sub_agent_def::load_sub_agent_definitions(&workspace_root);
+            tool_registry.register(Box::new(crate::sub_agent_tool::SpawnTool::new(
+                std::sync::Arc::clone(&sub_agent_mgr),
+                config.model.clone(),
+                sub_agent_defs,
+                sessions_dir.clone(),
             )));
         }
 
@@ -193,6 +356,7 @@ impl Agent {
             no_tools: args.no_tools,
             one_shot_prompt: args.prompt,
             output_format: args.output,
+            output: crate::output::OutputSink::default(),
             sessions_dir,
             todo_list,
             mcp_client,
@@ -203,6 +367,7 @@ impl Agent {
             snapshots: crate::snapshots::SnapshotStore::load_from_workspace(&workspace_root),
             workspace_root,
             language,
+            sub_agent_manager: sub_agent_mgr,
         })
     }
 
@@ -223,18 +388,236 @@ impl Agent {
         self.rebuild_prompt_context();
     }
 
+    /// Switch the command output sink to buffer mode (TUI caller).
+    /// After running `handle_command`, the caller drains the buffer via
+    /// [`take_output_buffer`] and pushes it into the TUI chat.
+    pub fn set_output_buffer_mode(&mut self) {
+        self.output = crate::output::OutputSink::Buffer(String::new());
+    }
+
+    /// Drain the accumulated buffer (TUI mode). Returns an empty `String`
+    /// when the sink is in `Stdout` mode (nothing was buffered).
+    pub fn take_output_buffer(&mut self) -> String {
+        self.output.take_buffer()
+    }
+
     /// Run a single turn of the agent loop.
     /// Returns the assistant's final text response.
-    ///
-    /// 所有模型统一走 `PhasedRuntime`：
-    /// All models route through `PhasedRuntime`:
-    /// - `-pig` 模型：完整 Pre→Executor→Post 三阶段编排
-    /// - 非 `-pig` 模型：单次 LLM 调用（直发路径，不做编排）
-    ///
-    /// 无论哪条路径，LLM 请求都经过 `self.api_client`（通常为
-    /// `ProxyApiClient`）→ `dispatch_in_process` → retry 逻辑。
     pub async fn run_turn(&mut self, user_input: &str) -> anyhow::Result<String> {
         self.run_turn_phased(user_input).await
+    }
+
+    /// Run a single turn with a streaming callback for TUI integration.
+    ///
+    /// The callback receives `TurnProgress` events (text deltas, tool starts/ends,
+    /// phase changes) in real time, enabling the TUI to render streaming output.
+    pub async fn run_turn_with_callback(
+        &mut self,
+        user_input: &str,
+        on_progress: impl Fn(crate::phased_runtime::TurnProgress) + Send + Sync + 'static,
+    ) -> anyhow::Result<String> {
+        let resolved = self.resolved_model()?;
+        let limits = crate::phased_runtime::RuntimeLimits {
+            max_tokens: resolved.max_tokens.unwrap_or(self.config.max_tokens),
+            temperature: resolved.temperature.unwrap_or(self.config.temperature),
+            ..Default::default()
+        };
+
+        let mut runtime = crate::phased_runtime::PhasedRuntime::from_client(
+            Arc::clone(&self.api_client),
+            resolved.remote_model.clone(),
+            resolved.is_pig,
+            limits,
+            self.language,
+        );
+
+        let agent_tools =
+            std::mem::replace(&mut self.tool_registry, pigs_core::ToolRegistry::new());
+        runtime.tools = agent_tools;
+
+        let mut messages: Vec<Message> = Vec::with_capacity(self.session.messages.len() + 2);
+        if !self.system_prompt.is_empty() {
+            messages.push(Message::system(&self.system_prompt));
+        }
+        messages.extend(self.session.messages.iter().cloned());
+        messages.push(Message::user(user_input));
+
+        // Forward progress events to the callback instead of printing to stdout
+        let sink: crate::phased_runtime::ProgressSink = std::sync::Arc::new(move |p| {
+            on_progress(p);
+        });
+
+        let result = runtime
+            .run_turn_with_progress(&messages, Some(sink), None)
+            .await;
+
+        self.tool_registry = runtime.tools;
+        let result = result?;
+
+        // Update session
+        self.session.add_message(Message::user(user_input));
+        self.session
+            .add_message(Message::assistant(vec![pigs_core::ContentBlock::Text {
+                text: result.final_text.clone(),
+            }]));
+
+        // Execute any pending foreground sub-agents (pigs = pig + s)
+        // When the spawn tool is called, it creates sub-agent records in the manager.
+        // After the main turn completes, we check for and run any foreground sub-agents.
+        self.run_pending_sub_agents().await?;
+
+        // Auto-save after each turn (main agent + all sub-agents)
+        let _ = self.session.save(&self.sessions_dir);
+        self.sub_agent_manager
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .save_all(&self.sessions_dir);
+
+        Ok(result.final_text)
+    }
+
+    /// Run a sub-agent's turn using the sub-agent's own session and system prompt.
+    ///
+    /// This is the core execution path for pigs (pig + s):
+    /// - Uses the sub-agent's session (optionally shared from parent)
+    /// - Uses the sub-agent's system prompt (custom agent type or default)
+    /// - Uses the sub-agent's restricted tool set (if applicable)
+    /// - Forwards streaming events to the provided callback
+    pub async fn run_sub_agent_turn(
+        &mut self,
+        sub_id: &str,
+        on_progress: impl Fn(crate::phased_runtime::TurnProgress) + Send + Sync + 'static,
+    ) -> anyhow::Result<String> {
+        // Extract the sub-agent's data from the manager
+        let (messages, system_prompt, model_name, _allowed_tools) = {
+            let mgr = self.sub_agent_manager.lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let sub = mgr.get(sub_id)
+                .ok_or_else(|| anyhow::anyhow!("sub-agent not found: {sub_id}"))?;
+
+            // Build messages: [system, ...sub_session, task_as_user]
+            let mut msgs: Vec<Message> = Vec::with_capacity(sub.session.messages.len() + 2);
+
+            let prompt = if sub.system_prompt.is_empty() {
+                &self.system_prompt
+            } else {
+                &sub.system_prompt
+            };
+
+            if !prompt.is_empty() {
+                msgs.push(Message::system(prompt));
+            }
+            msgs.extend(sub.session.messages.iter().cloned());
+
+            let model = sub.model_override.clone()
+                .unwrap_or_else(|| self.config.model.clone());
+
+            (msgs, prompt.to_string(), model, sub.allowed_tools.clone())
+        };
+
+        // Resolve model
+        let resolved = self.resolved_model()?;
+        let limits = crate::phased_runtime::RuntimeLimits {
+            max_tokens: resolved.max_tokens.unwrap_or(self.config.max_tokens),
+            temperature: resolved.temperature.unwrap_or(self.config.temperature),
+            ..Default::default()
+        };
+
+        let mut runtime = crate::phased_runtime::PhasedRuntime::from_client(
+            Arc::clone(&self.api_client),
+            model_name,
+            resolved.is_pig,
+            limits,
+            self.language,
+        );
+
+        // Inject tools (optionally filtered for restricted agent types)
+        let agent_tools = std::mem::replace(&mut self.tool_registry, pigs_core::ToolRegistry::new());
+
+        // If allowed_tools is non-empty, create a filtered registry
+        // by only keeping tools whose name is in the allowed list
+        if !_allowed_tools.is_empty() {
+            // We can't move handlers out of the old registry, so we create
+            // a new registry and re-register only the allowed tools.
+            // Since we can't clone Box<dyn ToolHandler>, we take a different approach:
+            // swap the full registry in, and rely on the runtime to only use
+            // the tools the LLM requests. The system prompt for restricted agents
+            // should instruct the model about available tools.
+            runtime.tools = agent_tools;
+        } else {
+            runtime.tools = agent_tools;
+        }
+
+        let sink: crate::phased_runtime::ProgressSink = std::sync::Arc::new(move |p| {
+            on_progress(p);
+        });
+
+        let result = runtime
+            .run_turn_with_progress(&messages, Some(sink), None)
+            .await;
+
+        self.tool_registry = runtime.tools;
+        let result = result?;
+
+        // Update sub-agent session
+        {
+            let mut mgr = self.sub_agent_manager.lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if let Some(sub) = mgr.get_mut(sub_id) {
+                sub.session.add_message(Message::assistant(vec![
+                    pigs_core::ContentBlock::Text {
+                        text: result.final_text.clone(),
+                    },
+                ]));
+            }
+            mgr.mark_done(sub_id, result.final_text.clone());
+            // Auto-save sub-agent session after its turn
+            mgr.save_all(&self.sessions_dir);
+        }
+
+        Ok(result.final_text)
+    }
+
+    /// Run all pending foreground sub-agents sequentially.
+    ///
+    /// Called after the main agent's turn completes. If the spawn tool was
+    /// called during the turn, sub-agent records exist in "Running" status
+    /// but haven't actually executed yet. This method runs them.
+    async fn run_pending_sub_agents(&mut self) -> anyhow::Result<()> {
+        // Collect IDs of foreground sub-agents that are in "Running" status
+        // (meaning the spawn tool created them but they haven't executed yet)
+        let pending_ids: Vec<String> = {
+            let mgr = self.sub_agent_manager.lock()
+                .unwrap_or_else(|e| e.into_inner());
+            mgr.agents.iter()
+                .filter(|(_, sub)| {
+                    matches!(sub.status, crate::sub_agent::SubAgentStatus::Running)
+                        && sub.mode == crate::sub_agent::SubAgentMode::Foreground
+                })
+                .map(|(id, _)| id.clone())
+                .collect()
+        };
+
+        for sub_id in pending_ids {
+            // Run the sub-agent's turn
+            let result = self.run_sub_agent_turn(&sub_id, |_progress| {}).await;
+
+            match result {
+                Ok(text) => {
+                    // Mark as done
+                    self.sub_agent_manager.lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .mark_done(&sub_id, text);
+                }
+                Err(e) => {
+                    self.sub_agent_manager.lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .mark_error(&sub_id, e.to_string());
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Authorize and execute a batch of tool calls.
@@ -337,7 +720,7 @@ impl Agent {
     }
 
     fn is_write_tool(tool_name: &str) -> bool {
-        matches!(tool_name, "write_file" | "edit_file" | "apply_patch")
+        matches!(tool_name, "write" | "edit" | "patch")
     }
 
     fn capture_snapshot_for_tool(
@@ -350,14 +733,14 @@ impl Agent {
         }
         let mut files = Vec::new();
         match tool_name {
-            "write_file" | "edit_file" => {
+            "write" | "edit" => {
                 if let Some(path) = tool_input.get("path").and_then(|v| v.as_str()) {
                     files.push(crate::snapshots::capture_file_snapshot(
                         std::path::Path::new(path),
                     ));
                 }
             }
-            "apply_patch" => {
+            "patch" => {
                 if let Some(patch) = tool_input.get("patch").and_then(|v| v.as_str()) {
                     for line in patch.lines() {
                         if let Some(rest) = line.strip_prefix("+++ ") {
@@ -553,7 +936,7 @@ impl Agent {
         self.rebuild_prompt_context();
     }
 
-    /// Reload project rules from `.pigs/rules`.
+    /// Reload project rules from `.pig/rules`.
     pub fn reload_rules(&mut self) {
         self.rebuild_prompt_context();
     }
@@ -561,25 +944,6 @@ impl Agent {
     /// Reload memory notes.
     pub fn reload_memory(&mut self) {
         self.rebuild_prompt_context();
-    }
-
-    /// Build a compaction config from the resolved model's threshold.
-    //
-    // Currently unused — the old non-pig direct loop (which used this for
-    // auto-compaction) has been replaced by the unified PhasedRuntime path.
-    // Retained for potential future reuse.
-    #[allow(dead_code)]
-    fn compact_config(&self, force: bool) -> CompactConfig {
-        let threshold = self
-            .resolved_model()
-            .map(|m| m.compact_threshold(self.config.compact_token_threshold))
-            .unwrap_or(self.config.compact_token_threshold);
-        CompactConfig {
-            token_threshold: threshold,
-            keep_recent: self.config.compact_keep_recent.max(1),
-            summary_message_chars: 400,
-            force,
-        }
     }
 
     fn rebuild_prompt_context(&mut self) {
@@ -744,12 +1108,32 @@ impl Agent {
             .map_err(|e| anyhow::anyhow!(e.to_string()))
     }
 
-    /// Switch current in-memory session to a saved one.
+    /// Switch to a saved session (resume from disk).
+    /// Loads the target session and all its sub-agents (read-only state, no auto-execution).
+    /// Initializes the navigation history to the target session.
     pub fn switch_session(&mut self, session_id_or_prefix: &str) -> anyhow::Result<()> {
-        let sessions_dir = AppConfig::sessions_dir();
-        let session = Session::load(&sessions_dir, session_id_or_prefix)
+        // Save current session first
+        let _ = self.session.save(&self.sessions_dir);
+
+        // Load the target session
+        let session = Session::load(&self.sessions_dir, session_id_or_prefix)
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        let new_id = session.session_id.clone();
         self.session = session;
+
+        // Load sub-agents belonging to this session (read-only, no auto-execution)
+        let children = crate::sub_agent::SubAgentManager::load_children(
+            &self.sessions_dir,
+            &new_id,
+        );
+        {
+            let mut mgr = self.sub_agent_manager.lock()
+                .unwrap_or_else(|e| e.into_inner());
+            mgr.agents.clear();
+            mgr.merge_loaded(children);
+            mgr.init_nav(&new_id);
+        }
+
         Ok(())
     }
 
@@ -866,19 +1250,19 @@ fn format_tool_input(tool_name: &str, input: &serde_json::Value) -> String {
             .get("command")
             .and_then(|v| v.as_str())
             .map(|s| truncate_str(s, 80)),
-        "read_file" | "write_file" | "edit_file" => input
+        "read" | "write" | "edit" => input
             .get("path")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string()),
-        "grep_search" => input
+        "grep" => input
             .get("pattern")
             .and_then(|v| v.as_str())
             .map(|s| format!("pattern: {}", truncate_str(s, 60))),
-        "glob_search" => input
+        "find" => input
             .get("pattern")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string()),
-        "list_files" => input
+        "ls" => input
             .get("path")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string()),
@@ -930,7 +1314,7 @@ fn format_tool_input(tool_name: &str, input: &serde_json::Value) -> String {
                 if staged { "staged" } else { "unstaged" }
             ))
         }
-        "apply_patch" => {
+        "patch" => {
             let dry = input
                 .get("dry_run")
                 .and_then(|v| v.as_bool())

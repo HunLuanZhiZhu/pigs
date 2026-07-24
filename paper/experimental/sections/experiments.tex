@@ -1,0 +1,100 @@
+\section{Experiments}
+\label{sec:experiments}
+
+\subsection{Experiment 1: Ablation Study}
+\begin{chinese}
+\subsection*{实验 1：消融研究}
+\end{chinese}
+
+\textbf{Setup.} We evaluate four conditions (A: baseline, B: full orchestration, C: Pre-only, D: Executor+Post) on SWE-bench Lite (300 tasks) and GAIA (300 tasks). Each task is sent as a \texttt{-pig} model request (Condition B/C/D) or a passthrough request (Condition A) to the Pigs API.
+\begin{chinese}
+\textbf{设置。} 我们在 SWE-bench Lite（300 项任务）和 GAIA（300 项任务）上评估四个条件（A：基线，B：完整编排，C：仅 Pre，D：Executor+Post）。每个任务作为 \texttt{-pig} 模型请求（条件 B/C/D）或透传请求（条件 A）发送到 Pigs API。
+\end{chinese}
+
+\textbf{Procedure.} For each task:
+\begin{chinese}
+\textbf{流程。} 对每个任务：
+\end{chinese}
+\begin{enumerate}[nosep]
+    \item Send the task prompt to the Pigs API endpoint.
+    \begin{chinese}
+    将任务提示发送到 Pigs API 端点。
+    \end{chinese}
+    \item If tool calls are returned, execute them locally and send results back.
+    \begin{chinese}
+    如果返回工具调用，本地执行后将结果发回。
+    \end{chinese}
+    \item Repeat until the API returns a final response (no tool calls).
+    \begin{chinese}
+    重复直到 API 返回最终响应（无工具调用）。
+    \end{chinese}
+    \item Evaluate the final response against the benchmark's ground truth.
+    \begin{chinese}
+    根据基准测试的标准答案评估最终响应。
+    \end{chinese}
+\end{enumerate}
+
+\textbf{Hypothesis.} Full orchestration (B) outperforms baseline (A) on task completion rate, with the Pre phase contributing planning and the Post phase contributing verification.
+\begin{chinese}
+\textbf{假设。} 完整编排（B）在任务完成率上优于基线（A），Pre 阶段贡献规划能力，Post 阶段贡献验证能力。
+\end{chinese}
+
+\subsection{Experiment 2: Control Marker Effectiveness}
+\begin{chinese}
+\subsection*{实验 2：控制标记有效性}
+\end{chinese}
+
+\textbf{Setup.} We compare two configurations on GAIA: (A) with \texttt{PIGFAIL} enabled (failure triggers replan), (B) with \texttt{PIGFAIL} disabled (failure treated as completion).
+\begin{chinese}
+\textbf{设置。} 我们在 GAIA 上比较两种配置：（A）启用 \texttt{PIGFAIL}（失败触发重规划），（B）禁用 \texttt{PIGFAIL}（失败视为完成）。
+\end{chinese}
+
+\textbf{Procedure.} We count: (1) tasks where PIGFAIL was emitted, (2) tasks where replan led to successful completion, (3) tasks that failed despite replan.
+\begin{chinese}
+\textbf{流程。} 统计：（1）输出 PIGFAIL 的任务数，（2）重规划后成功完成的任务数，（3）尽管重规划仍失败的任务数。
+\end{chinese}
+
+\textbf{Hypothesis.} PIGFAIL-based replan improves outcomes on tasks where the initial approach was flawed.
+\begin{chinese}
+\textbf{假设。} PIGFAIL 重规划在初始方法有缺陷的任务上改善结果。
+\end{chinese}
+
+\subsection{Experiment 3: Three-Protocol Consistency}
+\begin{chinese}
+\subsection*{实验 3：三协议一致性}
+\end{chinese}
+
+\textbf{Setup.} We send the same set of 100 tasks through three API protocols: OpenAI Chat (\texttt{/chat/completions}), Anthropic Messages (\texttt{/v1/messages}), and OpenAI Responses (\texttt{/responses}).
+\begin{chinese}
+\textbf{设置。} 我们通过三种 API 协议发送相同的 100 项任务：OpenAI Chat（\texttt{/chat/completions}）、Anthropic Messages（\texttt{/v1/messages}）和 OpenAI Responses（\texttt{/responses}）。
+\end{chinese}
+
+\textbf{Procedure.} For each task and protocol, we record: (1) whether the task completed, (2) the visible text output, (3) any tool calls made. We measure consistency as the percentage of tasks where all three protocols agree on completion status.
+\begin{chinese}
+\textbf{流程。} 对每个任务和协议，记录：（1）任务是否完成，（2）可见文本输出，（3）工具调用。一致性定义为三种协议在完成状态上达成一致的任务百分比。
+\end{chinese}
+
+\textbf{Hypothesis.} The protocol-native request preservation ensures consistent behavior across all three protocols.
+\begin{chinese}
+\textbf{假设。} 协议原生请求保真确保三种协议间行为一致。
+\end{chinese}
+
+\subsection{Experiment 4: Cost-Benefit Analysis}
+\begin{chinese}
+\subsection*{实验 4：成本效益分析}
+\end{chinese}
+
+\textbf{Setup.} On SWE-bench Lite, we measure per-task: (1) total input tokens, (2) total output tokens, (3) number of API calls, (4) wall-clock latency, (5) task completion.
+\begin{chinese}
+\textbf{设置。} 在 SWE-bench Lite 上，测量每个任务的：（1）总输入 token，（2）总输出 token，（3）API 调用次数，（4）实际延迟，（5）任务完成。
+\end{chinese}
+
+\textbf{Procedure.} We compare Condition A (baseline) vs.\ Condition B (full orchestration) and compute the overhead ratio for each metric.
+\begin{chinese}
+\textbf{流程。} 对比条件 A（基线）和条件 B（完整编排），计算每个指标的开销比。
+\end{chinese}
+
+\textbf{Hypothesis.} The token overhead of orchestration (3 phases vs.\ 1) is justified by improved completion rate.
+\begin{chinese}
+\textbf{假设。} 编排的 token 开销（3 阶段 vs 1 阶段）通过提升的完成率得到补偿。
+\end{chinese}

@@ -23,12 +23,12 @@ impl Default for ApplyPatchTool {
 
 impl ToolHandler for ApplyPatchTool {
     fn name(&self) -> &str {
-        "apply_patch"
+        "patch"
     }
 
     fn spec(&self) -> ToolSpec {
         ToolSpec::new(
-            "apply_patch",
+            "patch",
             "Apply a unified diff patch to one or more files. Prefer this for multi-hunk \
              or multi-file edits. The patch should be a standard unified diff (---/+++/@@). \
              Supports creating new files when the source is /dev/null.",

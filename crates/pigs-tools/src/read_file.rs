@@ -23,12 +23,12 @@ impl Default for ReadFileTool {
 
 impl ToolHandler for ReadFileTool {
     fn name(&self) -> &str {
-        "read_file"
+        "read"
     }
 
     fn spec(&self) -> ToolSpec {
         ToolSpec::new(
-            "read_file",
+            "read",
             "Read the contents of a file. Returns the file content with line numbers. \
              Supports reading a range of lines by specifying offset and limit.",
             serde_json::json!({

@@ -1,0 +1,28 @@
+\section{Discussion}
+\label{sec:discussion}
+
+\subsection{Why Text Markers Instead of Tool-Based Handoff?}
+
+A natural alternative to text control markers is to inject an orchestration-specific tool (e.g., \texttt{finish\_task}, \texttt{replan\_task}) into the model's tool set. We reject this approach for three reasons. First, it pollutes the tool namespace---the model must distinguish between user-defined tools (bash, read\_file) and orchestration tools, creating confusion. Second, tool calls consume a round-trip: the model emits a tool call, the system executes it (trivially), and the model receives the result. Text markers are zero-overhead. Third, tool-based handoff couples the orchestration logic to the tool-calling protocol, making it protocol-specific. Text markers work universally across all protocols and even with models that do not support tool calling.
+
+\subsection{Why Post Stays in Post (Not Back to Executor)?}
+
+When the Post phase produces output without a marker (indicating progress but not completion), the state machine continues in Post rather than returning to Executor. This design prevents infinite Executor$\leftrightarrow$Post loops: if the model oscillates between ``do'' and ``review'' without converging, the Post iteration budget will eventually exhaust and return an error. Returning to Executor would reset the loop without progress, creating a potential infinite cycle.
+
+\subsection{Why Phase Instructions Only in User Payload?}
+
+Phase-specific instructions (Pre questions, Executor plan, Post review criteria) are appended to the current user message, not injected as system prompts. This preserves the client's original system prompt verbatim, which is important for two reasons. First, many providers cache system prompts for reduced latency and cost~\citep{anthropic_cache}; modifying the system prompt would invalidate the cache. Second, the system prompt often contains project-specific instructions (coding standards, safety rules) that should not be overridden by orchestration logic.
+
+\subsection{Why HTTP Loopback Instead of In-Process Dispatch?}
+
+Phase subrequests could be dispatched in-process (bypassing HTTP), as was done in earlier versions of Pigs. We switched to HTTP loopback for two reasons. First, it ensures that phase subrequests transparently inherit all proxy-level features (channel selection, model mapping, body cleaning, thinking-effort injection, retry). With in-process dispatch, these features must be manually invoked, leading to code duplication and divergence. Second, HTTP loopback makes the control flow explicit and debuggable---each phase subrequest appears in proxy logs as a normal HTTP request, and the internal token distinguishes it from client requests.
+
+\subsection{Limitations}
+
+\textbf{Marker robustness.} The control-marker approach depends on the model's ability to follow instructions about when to output \texttt{PIGEND}/\texttt{PIGFAIL}. In practice, models sometimes output markers in inappropriate contexts (e.g., quoting the marker in prose). The marker detection algorithm mitigates this by checking only the last non-empty line and requiring a preceding reason, but it is not foolproof.
+
+\textbf{Single-model assumption.} The current design uses the same model for all three phases. Multi-model orchestration (e.g., a cheaper model for Pre, a stronger model for Executor) is architecturally possible but not yet implemented.
+
+\textbf{No formal verification.} The state machine is tested with unit tests covering all transitions, but lacks formal verification (e.g., model checking) of properties like ``the system always terminates'' or ``no phase is skipped.''
+
+\textbf{Protocol coverage.} While three major protocols are supported, the system does not cover all provider-specific extensions (e.g., Google Gemini's API).

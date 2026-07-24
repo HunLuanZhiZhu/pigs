@@ -35,6 +35,18 @@ pub struct SessionMetadata {
     pub total_usage: TokenUsage,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// Parent session ID for forked sessions (None for root sessions).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
+    /// Child agent codes (for sub-agent tree navigation).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub children: Vec<String>,
+    /// Agent status: "active", "done", "error".
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub status: String,
+    /// Agent type: "main" or "sub".
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub agent_type: String,
 }
 
 /// A conversation session with persistence support.
@@ -51,6 +63,19 @@ pub struct Session {
     /// Auto-generated or user-provided session title.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// Parent session ID for forked sessions (None for root sessions).
+    /// Enables session tree branching like PI's fork/clone/tree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
+    /// Child agent codes (for sub-agent tree navigation).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub children: Vec<String>,
+    /// Agent status: "active", "done", "error".
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub status: String,
+    /// Agent type: "main" or "sub".
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub agent_type: String,
     #[serde(skip)]
     #[serde(default = "default_false")]
     pub dirty: bool,
@@ -61,11 +86,37 @@ fn default_false() -> bool {
 }
 
 impl Session {
-    /// Create a new session with the given model.
-    pub fn new(model: impl Into<String>) -> Self {
+    /// Generate a random 6-character agent code (lowercase alphanumeric).
+    /// Checks against existing session files to ensure uniqueness.
+    pub fn generate_agent_code(sessions_dir: &Path) -> String {
+        use rand::Rng;
+        const CHARSET: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
+
+        let existing: std::collections::HashSet<String> = Self::list(sessions_dir)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|m| m.session_id)
+            .collect();
+
+        let mut rng = rand::rng();
+        loop {
+            let code: String = (0..6)
+                .map(|_| {
+                    let idx = rng.random_range(0..CHARSET.len());
+                    CHARSET[idx] as char
+                })
+                .collect();
+            if !existing.contains(&code) {
+                return code;
+            }
+        }
+    }
+
+    /// Create a new session with the given model and a random agent code.
+    pub fn new(model: impl Into<String>, sessions_dir: &Path) -> Self {
         let now = Utc::now();
         Session {
-            session_id: uuid::Uuid::new_v4().to_string(),
+            session_id: Self::generate_agent_code(sessions_dir),
             messages: Vec::new(),
             model: model.into(),
             workspace_root: None,
@@ -73,8 +124,44 @@ impl Session {
             updated_at: now,
             total_usage: TokenUsage::default(),
             title: None,
+            parent_id: None,
+            children: Vec::new(),
+            status: String::new(),
+            agent_type: String::new(),
             dirty: false,
         }
+    }
+
+    /// Create a fork of this session with a new ID but copied messages.
+    /// The new session's `parent_id` points to this session, enabling
+    /// session tree branching navigation (like PI's fork feature).
+    pub fn fork_from(&self, model: &str, sessions_dir: &Path) -> Self {
+        let now = Utc::now();
+        Session {
+            session_id: Self::generate_agent_code(sessions_dir),
+            messages: self.messages.clone(),
+            model: model.to_string(),
+            workspace_root: self.workspace_root.clone(),
+            created_at: now,
+            updated_at: now,
+            total_usage: self.total_usage.clone(),
+            title: Some(format!("fork of {}", self.session_id)),
+            parent_id: Some(self.session_id.clone()),
+            children: Vec::new(),
+            status: String::new(),
+            agent_type: self.agent_type.clone(),
+            dirty: true,
+        }
+    }
+
+    /// Check if this session is a fork (has a parent).
+    pub fn is_fork(&self) -> bool {
+        self.parent_id.is_some()
+    }
+
+    /// Get the parent session ID (if this is a fork).
+    pub fn parent_id(&self) -> Option<&str> {
+        self.parent_id.as_deref()
     }
 
     /// Set the workspace root.
@@ -260,6 +347,10 @@ impl Session {
                     updated_at: session.updated_at,
                     total_usage: session.total_usage,
                     title: session.title,
+                    parent_id: session.parent_id,
+                    children: session.children,
+                    status: session.status,
+                    agent_type: session.agent_type,
                 });
             }
         }
@@ -332,20 +423,27 @@ mod tests {
 
     #[test]
     fn test_session_creation() {
-        let session = Session::new("gpt-4o");
+        let temp_dir = std::env::temp_dir().join("pigs_test_session_new");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        let session = Session::new("gpt-4o", &temp_dir);
         assert!(!session.session_id.is_empty());
+        assert_eq!(session.session_id.len(), 6);
         assert_eq!(session.model, "gpt-4o");
         assert_eq!(session.message_count(), 0);
         assert!(!session.dirty);
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
     #[test]
     fn test_add_message() {
-        let mut session = Session::new("gpt-4o");
+        let temp_dir = std::env::temp_dir().join("pigs_test_session_add");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        let mut session = Session::new("gpt-4o", &temp_dir);
         session.add_message(Message::user("Hello"));
         assert_eq!(session.message_count(), 1);
         assert!(session.dirty);
         assert_eq!(session.title.as_deref(), Some("Hello"));
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
     #[test]
@@ -360,7 +458,7 @@ mod tests {
         let temp_dir = std::env::temp_dir().join("pigs_test_sessions");
         let _ = std::fs::remove_dir_all(&temp_dir);
 
-        let mut session = Session::new("test-model");
+        let mut session = Session::new("test-model", &temp_dir);
         session.add_message(Message::user("Hello"));
         session.add_message(Message::assistant(vec![ContentBlock::text("Hi there!")]));
 
@@ -384,16 +482,23 @@ mod tests {
 
     #[test]
     fn test_estimated_tokens() {
-        let mut session = Session::new("test");
+        let temp_dir = std::env::temp_dir().join("pigs_test_session_tokens");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        let mut session = Session::new("test", &temp_dir);
         session.add_message(Message::user("Hello world")); // 11 chars ≈ 2 tokens
         let tokens = session.estimated_tokens();
         assert!((2..=3).contains(&tokens));
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
     #[test]
     fn test_short_id() {
-        let session = Session::new("test");
-        assert_eq!(session.short_id().len(), 8);
+        let temp_dir = std::env::temp_dir().join("pigs_test_session_short");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        let session = Session::new("test", &temp_dir);
+        // 6-char codes are shorter than 8, so short_id returns all 6
+        assert_eq!(session.short_id().len(), 6);
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
     #[test]
@@ -402,7 +507,7 @@ mod tests {
             std::env::temp_dir().join(format!("pigs_test_sessions_del_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&temp_dir);
 
-        let mut session = Session::new("test-model");
+        let mut session = Session::new("test-model", &temp_dir);
         session.add_message(Message::user("hello delete me"));
         session.save(&temp_dir).unwrap();
         let prefix = session.short_id().to_string();
@@ -413,6 +518,24 @@ mod tests {
         let path = Session::delete(&temp_dir, &prefix).unwrap();
         assert!(!path.exists());
         assert!(Session::load(&temp_dir, &prefix).is_err());
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_agent_code_uniqueness() {
+        let temp_dir = std::env::temp_dir().join("pigs_test_agent_code");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+
+        // Generate multiple codes and ensure they're unique
+        let mut codes = Vec::new();
+        for _ in 0..10 {
+            let code = Session::generate_agent_code(&temp_dir);
+            assert_eq!(code.len(), 6);
+            assert!(code.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()));
+            assert!(!codes.contains(&code));
+            codes.push(code);
+        }
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }

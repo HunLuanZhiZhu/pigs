@@ -23,12 +23,12 @@ impl Default for ListFilesTool {
 
 impl ToolHandler for ListFilesTool {
     fn name(&self) -> &str {
-        "list_files"
+        "ls"
     }
 
     fn spec(&self) -> ToolSpec {
         ToolSpec::new(
-            "list_files",
+            "ls",
             "List the contents of a directory. Returns file and directory names with type indicators. \
              Non-recursive by default.",
             serde_json::json!({
@@ -114,7 +114,7 @@ fn list_flat(
         let path = entry.path();
         let is_dir = path.is_dir();
 
-        // Skip .pigsignore-matched entries
+        // Skip .pigignore-matched entries
         if ignore_patterns.is_ignored(&path, dir) {
             continue;
         }
@@ -172,7 +172,7 @@ fn list_recursive(
             continue;
         }
 
-        // Skip .pigsignore-matched entries
+        // Skip .pigignore-matched entries
         if ignore_patterns.is_ignored(&path, base) {
             continue;
         }

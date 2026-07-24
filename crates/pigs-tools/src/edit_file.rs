@@ -23,12 +23,12 @@ impl Default for EditFileTool {
 
 impl ToolHandler for EditFileTool {
     fn name(&self) -> &str {
-        "edit_file"
+        "edit"
     }
 
     fn spec(&self) -> ToolSpec {
         ToolSpec::new(
-            "edit_file",
+            "edit",
             "Edit a file by replacing an exact string match with new content. \
              The old_string must appear exactly once in the file unless replace_all is true.",
             serde_json::json!({

@@ -1,0 +1,17 @@
+# 项目级 agent 配置覆盖（合并到 ~/.pigs/pig.toml 之上）
+
+# 注意：自动压缩在 API 层（pigs-proxy）实现，agent 层不需要配置压缩参数。
+# 手动压缩命令 /compact 使用硬编码默认值。
+
+# 示例：项目级 MCP 服务器（默认禁用）
+# [[mcp_servers]]
+# name = "filesystem"
+# command = "npx"
+# args = ["-y", "@modelcontextprotocol/server-filesystem", "."]
+# enabled = false
+
+# 示例：项目级钩子
+# [[hooks.pre_tool_use]]
+# matcher = "bash"
+# command = "echo [project-hook] $PIGS_TOOL_NAME"
+# enabled = false

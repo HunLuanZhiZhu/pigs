@@ -1,0 +1,68 @@
+\section{Results}
+\label{sec:results}
+
+\textbf{[All experimental results are pending. The tables below will be filled upon completion of the evaluation.]}
+
+\subsection{Experiment 1: Ablation Results}
+
+\begin{center}
+\begin{tabular}{llcccc}
+\toprule
+Benchmark & Condition & Completion & Avg.\ Turns & Tokens & Latency \\
+ & & Rate (\%) & & (k) & (s) \\
+\midrule
+\multirow{4}{*}{SWE-bench Lite} & A (Baseline) & --- & --- & --- & --- \\
+ & B (Full) & --- & --- & --- & --- \\
+ & C (Pre-only) & --- & --- & --- & --- \\
+ & D (Exec+Post) & --- & --- & --- & --- \\
+\midrule
+\multirow{4}{*}{GAIA} & A (Baseline) & --- & --- & --- & --- \\
+ & B (Full) & --- & --- & --- & --- \\
+ & C (Pre-only) & --- & --- & --- & --- \\
+ & D (Exec+Post) & --- & --- & --- & --- \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Experiment 2: Control Marker Results}
+
+\begin{center}
+\begin{tabular}{lccc}
+\toprule
+Configuration & PIGFAIL emitted & Replan succeeded & Overall completion \\
+ & (\%) & (\%) & (\%) \\
+\midrule
+A (With PIGFAIL) & --- & --- & --- \\
+B (Without PIGFAIL) & N/A & N/A & --- \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Experiment 3: Protocol Consistency}
+
+\begin{center}
+\begin{tabular}{lcccc}
+\toprule
+Protocol & Completion (\%) & Tool calls & Text agreement & Consistency \\
+\midrule
+OpenAI Chat & --- & --- & --- & --- \\
+Anthropic Messages & --- & --- & --- & --- \\
+OpenAI Responses & --- & --- & --- & --- \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Experiment 4: Cost-Benefit}
+
+\begin{center}
+\begin{tabular}{lcccc}
+\toprule
+Condition & Input tokens & Output tokens & API calls & Completion \\
+ & (k) & (k) & & (\%) \\
+\midrule
+A (Baseline) & --- & --- & --- & --- \\
+B (Full) & --- & --- & --- & --- \\
+Overhead & ---$\times$ & ---$\times$ & ---$\times$ & ---pp \\
+\bottomrule
+\end{tabular}
+\end{center}

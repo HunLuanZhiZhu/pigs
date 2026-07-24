@@ -1,0 +1,94 @@
+\section{Implementation}
+\label{sec:impl}
+
+Pigs is implemented as a Rust workspace with 14 crates, organized in five layers:
+Pigs 以 Rust workspace 形式实现，包含 14 个 crate，组织为五个层次：
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+Layer & Crates & Role \\
+\midrule
+0 & pigs-core & Core types: Message, ContentBlock, ApiClient trait \\
+1 & pigs-config, pigs-permissions, & Config, permissions, session, prompts \\
+  & pigs-session, pigs-prompts & \\
+2 & pigs-llm, pigs-tools, pigs-mcp & LLM clients, built-in tools, MCP client \\
+3 & pigs-api, pigs-proxy & Phased runtime, HTTP proxy + loopback \\
+4 & pigs-cli, pigs-tui, pigs & Agent logic, terminal UI, product binary \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Protocol Codec}
+
+The \texttt{ProtocolCodec} in \texttt{pigs-api} handles parsing, mutation, and response extraction for all three protocols. It validates the ``current user input'' (the last user message, not just the last non-system message) and identifies trailing tool-result groups for continuation matching.
+\texttt{pigs-api} 中的 \texttt{ProtocolCodec} 负责所有三种协议的解析、修改和响应提取。它验证"当前用户输入"（最后一条 user 消息，而非仅仅是最后一条非系统消息），并识别尾部的工具结果组以进行续传匹配。
+
+Each protocol has dedicated parsing logic:
+每种协议具有专用的解析逻辑：
+\begin{itemize}[nosep]
+    \item \textbf{Chat}: messages array with role-based content; tool calls as \texttt{tool\_calls} array; tool results as \texttt{role: "tool"} messages.
+    \textbf{Chat}：具有基于角色内容的 messages 数组；工具调用为 \texttt{tool\_calls} 数组；工具结果为 \texttt{role: "tool"} 消息。
+    \item \textbf{Anthropic}: messages with content block arrays; tool calls as \texttt{tool\_use} blocks; tool results as \texttt{tool\_result} blocks within user messages.
+    \textbf{Anthropic}：具有内容块数组的 messages；工具调用为 \texttt{tool\_use} 块；工具结果为 user 消息内的 \texttt{tool\_result} 块。
+    \item \textbf{Responses}: input array with typed items; tool calls as \texttt{function\_call} items; tool results as \texttt{function\_call\_output} items.
+    \textbf{Responses}：具有类型化条目的 input 数组；工具调用为 \texttt{function\_call} 条目；工具结果为 \texttt{function\_call\_output} 条目。
+\end{itemize}
+
+The codec clones the original body and modifies only the JSON path leading to the current user input, leaving all other fields structurally identical.
+编解码器克隆原始 body 并仅修改指向当前用户输入的 JSON 路径，保持所有其他字段在结构上完全一致。
+
+\subsection{HTTP Runtime}
+
+The \texttt{HttpPhasedRuntime} drives the phase loop. For each phase, it:
+\texttt{HttpPhasedRuntime} 驱动阶段循环。对于每个阶段，它：
+\begin{enumerate}[nosep]
+    \item Constructs a phase request via \texttt{phase\_request()} (Pre/Executor/Post prompt + transcript).
+    通过 \texttt{phase\_request()} 构建阶段请求（Pre/Executor/Post 提示 + 记录）。
+    \item Sends the request via \texttt{PhaseTransport::send\_streaming()} (streaming) or \texttt{send()} (non-streaming).
+    通过 \texttt{PhaseTransport::send\_streaming()}（流式）或 \texttt{send()}（非流式）发送请求。
+    \item Extracts the normalized model output (visible text, tool calls, usage, stop reason).
+    提取归一化的模型输出（可见文本、工具调用、使用量、停止原因）。
+    \item Checks for tool calls $\rightarrow$ pauses and stores continuation.
+    检查工具调用 $\rightarrow$ 暂停并存储续传。
+    \item Advances the state machine via \texttt{OrchestrationState::advance()}.
+    通过 \texttt{OrchestrationState::advance()} 推进状态机。
+\end{enumerate}
+
+The runtime is transport-agnostic: it depends only on the \texttt{PhaseTransport} trait, not on HTTP or axum. This allows the same runtime to be used with any transport implementation.
+运行时与传输无关：它仅依赖于 \texttt{PhaseTransport} trait，不依赖 HTTP 或 axum。这使得同一运行时可与任何传输实现配合使用。
+
+\subsection{Loopback Transport}
+
+The \texttt{LoopbackPhaseTransport} in \texttt{pigs-proxy} sends phase subrequests via HTTP to the local proxy. It parses both non-streaming JSON and SSE responses from the upstream provider, aggregating:
+\texttt{pigs-proxy} 中的 \texttt{LoopbackPhaseTransport} 通过 HTTP 将阶段子请求发送至本地代理。它解析来自上游提供商的非流式 JSON 和 SSE 响应，聚合：
+\begin{itemize}[nosep]
+    \item Chat: text deltas, tool call deltas (merged by index), finish reason, usage, provider extensions.
+    Chat：文本增量、工具调用增量（按索引合并）、完成原因、使用量、提供商扩展。
+    \item Anthropic: content blocks (text, thinking, signature, tool\_use with \texttt{input\_json\_delta} accumulation), stop reason, usage.
+    Anthropic：内容块（text、thinking、signature、tool\_use 及 \texttt{input\_json\_delta} 累积）、停止原因、使用量。
+    \item Responses: output items (message, reasoning, function\_call), status, incomplete details, usage.
+    Responses：输出条目（message、reasoning、function\_call）、状态、不完整详情、使用量。
+\end{itemize}
+
+Malformed streams (missing termination events, unknown content block indices, open blocks at stream end) are reported as typed errors, not silently accepted.
+格式错误的流（缺少终止事件、未知内容块索引、流结束时未关闭的块）被报告为类型化错误，而非被静默接受。
+
+\subsection{Body Cleaning}
+
+The proxy's \texttt{clean\_empty\_messages} function removes messages with empty content, but preserves assistant messages that contain \texttt{tool\_calls} (even if their content is empty). For messages with empty content and tool calls, the content is replaced with a single space to satisfy upstream providers that reject empty strings.
+代理的 \texttt{clean\_empty\_messages} 函数移除内容为空的消息，但保留包含 \texttt{tool\_calls} 的 assistant 消息（即使其内容为空）。对于内容为空且含工具调用的消息，内容被替换为单个空格，以满足上游提供商对空字符串的拒绝要求。
+
+\subsection{Agent Client and Terminal UI}
+
+Pigs ships with a general-purpose agent client (similar to PI~\citep{omo2026} or OpenCode), which connects to the local API server via HTTP. The key design point is that the client can use either model identifier: \texttt{\{model\}} (passthrough, no orchestration) or \texttt{\{model\}-pig} (phased orchestration). This allows the same agent to toggle orchestration on or off simply by changing the model name in the API request, with no other code changes.
+Pigs 附带一个通用 Agent 客户端（类似 PI~\citep{omo2026} 或 OpenCode），通过 HTTP 连接本地 API 服务器。关键设计在于：客户端可以使用任一模型标识符——\texttt{\{model\}}（透传，无编排）或 \texttt{\{model\}-pig}（相位编排）。这使得同一 Agent 仅通过更改 API 请求中的模型名即可开启或关闭编排，无需其他代码变更。
+
+The user interface is a full-screen terminal UI built with \textbf{ratatui} and \textbf{crossterm}, implemented in the \texttt{pigs-tui} crate. The layout follows PI's convention, with five vertically-stacked regions: (1) a header bar showing the version, model, and keybinding hints; (2) a scrollable chat history rendering user messages, assistant responses (with Markdown formatting via \texttt{pulldown-cmark}), tool call results, and bash output; (3) a status line with a working spinner; (4) a multi-line text editor (Emacs-style keybindings via \texttt{tui-textarea}); and (5) a footer status bar displaying the working directory, git branch, token statistics, and current model.
+用户界面为全屏终端 UI，使用 \textbf{ratatui} 和 \textbf{crossterm} 实现，位于 \texttt{pigs-tui} crate 中。布局遵循 PI 的约定，包含五个垂直堆叠区域：(1) 顶部栏显示版本、模型和快捷键提示；(2) 可滚动的聊天历史区，渲染用户消息、助手回复（通过 \texttt{pulldown-cmark} 进行 Markdown 格式化）、工具调用结果和 bash 输出；(3) 状态行显示工作旋转指示器；(4) 多行文本编辑器（通过 \texttt{tui-textarea} 实现 Emacs 风格快捷键）；(5) 底部状态栏显示工作目录、git 分支、token 统计和当前模型。
+
+Streaming output is handled through an event broker architecture: the agent's \texttt{run\_turn\_with\_callback} method forwards \texttt{TextDelta}, \texttt{ToolStart}, and \texttt{ToolEnd} events from the phased runtime's \texttt{ProgressSink} to the TUI via a \texttt{tokio::mpsc} channel. This enables real-time, token-by-token rendering of the model's response, live tool execution display, and phase-aware status updates. The TUI gracefully falls back to a line-based REPL (via \texttt{rustyline}) if terminal initialization fails.
+流式输出通过事件代理架构处理：Agent 的 \texttt{run\_turn\_with\_callback} 方法将相位运行时 \texttt{ProgressSink} 的 \texttt{TextDelta}、\texttt{ToolStart} 和 \texttt{ToolEnd} 事件通过 \texttt{tokio::mpsc} 通道转发到 TUI。这实现了模型响应的实时逐 token 渲染、工具执行的实时显示和相位感知状态更新。如果终端初始化失败，TUI 会优雅地回退到基于行的 REPL（通过 \texttt{rustyline}）。
+
+The built-in tool set is aligned with PI: \texttt{read}, \texttt{bash}, \texttt{edit}, and \texttt{write} are enabled by default, with optional \texttt{grep}, \texttt{find}, and \texttt{ls}. Configuration paths follow PI's convention: \texttt{\textasciitilde/.pig/} for global state (sessions, logs, skills, config) and \texttt{.pig/} for project-local overrides.
+内置工具集与 PI 对齐：\texttt{read}、\texttt{bash}、\texttt{edit} 和 \texttt{write} 默认启用，可选启用 \texttt{grep}、\texttt{find} 和 \texttt{ls}。配置路径遵循 PI 的约定：\texttt{\textasciitilde/.pig/} 用于全局状态（会话、日志、技能、配置），\texttt{.pig/} 用于项目级覆盖。
