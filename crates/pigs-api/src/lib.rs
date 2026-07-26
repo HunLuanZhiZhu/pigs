@@ -21,34 +21,40 @@
 //! HTTP 服务器已移至 `pigs-proxy` crate。
 //! HTTP server has been moved to the `pigs-proxy` crate.
 
-/// 三种 API 格式的请求解析与响应构造。
-/// Request parsing and response construction for three API formats.
+/// 三种 API 格式的请求解析与响应构造（CLI 本地运行时用）。
+/// Request parsing and response construction for three API formats (CLI local runtime).
 pub mod format;
 
-/// OpenAI 请求 → 相位运行时输入的转换层。
-/// Protocol-native request preservation, phase mutation, and output extraction.
+/// 协议原生请求保留、相位变更与响应抽取（HTTP 相位运行时用）。
+/// Protocol-native request preservation, phase mutation, and output extraction (HTTP phase runtime).
 pub mod protocol;
 
-/// OpenAI request → phased runtime conversion layer.
+/// OpenAI 请求 → 相位运行时输入的转换层（CLI 本地运行时用）。
+/// OpenAI request → phased runtime conversion layer (CLI local runtime).
 pub mod phased_api_convert;
 
-/// 相位化 Agent 运行时（Pre→Executor→Post + 标记路由）。
-/// Phased agent runtime (Pre→Executor→Post + marker routing).
+/// 相位化 Agent 运行时：Pre→Executor→Post + 标记路由（CLI 本地运行时用）。
+/// Phased agent runtime: Pre→Executor→Post + marker routing (CLI local runtime).
 pub mod phased_runtime;
 
-/// Protocol-native JSON and SSE response encoding.
+/// 协议原生 JSON 与 SSE 响应编码（HTTP 相位运行时用）。
+/// Protocol-native JSON and SSE response encoding (HTTP phase runtime).
 pub mod output;
 
-/// Protocol-native HTTP phase runtime.
+/// 协议原生 HTTP 相位运行时（Pre→Executor→Post + continuation）。
+/// Protocol-native HTTP phase runtime (Pre→Executor→Post + continuation).
 pub mod http_runtime;
 
+/// 有界内存的外部工具 continuation 存储。
 /// Bounded in-memory external-tool continuations.
 pub mod continuation;
 
+/// HTTP 相位运行时使用的传输抽象。
 /// Transport abstraction used by the HTTP phase runtime.
 pub mod transport;
 
-/// Pure Pre -> Executor -> Post state transitions.
+/// 纯 Pre → Executor → Post 状态机（无传输依赖）。
+/// Pure Pre -> Executor -> Post state transitions (transport-free).
 pub mod orchestration;
 
 /// Phase 枚举（Pre / Executor / Post）。

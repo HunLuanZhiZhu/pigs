@@ -1,31 +1,80 @@
+# =============================================================================
+# pigs-api crate 清单 / pigs-api crate manifest
+# -----------------------------------------------------------------------------
+# 本 crate 提供 pigs 的"相位化 Agent 运行时"模块库：
+#   Pre → Executor → Post 三相位状态机 + 三协议（OpenAI Chat / Anthropic
+#   Messages / OpenAI Responses）原生 JSON codec + 有界内存 continuation。
+# This crate provides pigs' "phased agent runtime" module library:
+#   Pre → Executor → Post state machine + three-protocol (OpenAI Chat /
+#   Anthropic Messages / OpenAI Responses) native JSON codec + bounded
+#   in-memory continuation.
+# =============================================================================
+
 [package]
+# crate 名称 / crate name
 name = "pigs-api"
+# 版本号继承 workspace 根 / version inherited from the workspace root
 version.workspace = true
+# Rust edition 继承 workspace 根 / Rust edition inherited from the workspace root
 edition.workspace = true
+# 许可证继承 workspace 根 / license inherited from the workspace root
 license.workspace = true
+# 是否发布到 crates.io 继承 workspace 根 / publish flag inherited from the workspace root
 publish.workspace = true
+# crate 描述：相位化 Agent 运行时模块（OpenAI 兼容请求/响应）
+# crate description: phased agent runtime modules (OpenAI-compatible request/response)
 description = "Phased agent runtime modules (OpenAI-compatible request/response)"
 
 [lib]
+# 库 crate 名称 / library crate name
 name = "pigs_api"
+# lib 入口文件 / lib entry file
 path = "src/lib.rs"
 
 [dependencies]
+# --- pigs workspace 内部依赖 / pigs workspace internal dependencies ---
+# 核心类型与 trait（Message / ContentBlock / ToolHandler / ApiClient / StreamEvent）
+# core types & traits (Message / ContentBlock / ToolHandler / ApiClient / StreamEvent)
 pigs-core = { workspace = true }
+# LLM 客户端（Anthropic + OpenAI Responses + OpenAI Chat + SSE）
+# LLM clients (Anthropic + OpenAI Responses + OpenAI Chat + SSE)
 pigs-llm = { workspace = true }
+# 配置管理（TOML + 项目记忆 + 语言 + ResolvedModel）
+# configuration management (TOML + project memory + language + ResolvedModel)
 pigs-config = { workspace = true }
+# 内置工具注册表（read/write/edit/bash/grep/...）
+# built-in tool registry (read/write/edit/bash/grep/...)
 pigs-tools = { workspace = true }
+# 相位提示词模板（Pre/Executor/Post × 中英文，include_str! 嵌入）
+# phase prompt templates (Pre/Executor/Post × zh/en, embedded via include_str!)
 pigs-prompts = { workspace = true }
+
+# --- 外部依赖 / external dependencies ---
+# 序列化框架 / serialization framework
 serde = { workspace = true }
+# JSON 值处理 / JSON value handling
 serde_json = { workspace = true }
+# 异步运行时 / async runtime
 tokio = { workspace = true }
+# 结构化日志 / structured logging
 tracing = { workspace = true }
+# 通用错误类型 / generic error type
 anyhow = { workspace = true }
+# 派生 Error 枚举 / derive Error enums
 thiserror = { workspace = true }
+# async trait 支持 / async trait support
 async-trait = { workspace = true }
+# 唯一 ID 生成（continuation id、响应 id）
+# unique ID generation (continuation id, response id)
 uuid = { workspace = true }
+# 时间戳（响应 created_at 字段）
+# timestamps (response created_at field)
 chrono = { workspace = true }
+# Stream 工具（SSE 流式处理）
+# stream utilities (SSE streaming)
 futures-util = { workspace = true }
 
 [lints]
+# Clippy/rustc lint 配置继承 workspace 根
+# Clippy/rustc lint configuration inherited from the workspace root
 workspace = true

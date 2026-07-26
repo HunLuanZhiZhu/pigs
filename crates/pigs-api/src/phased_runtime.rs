@@ -726,7 +726,9 @@ impl StreamCallback for CollectingCallback {
                 if let Some(sink) = &self.progress {
                     if !delta.is_empty() {
                         sink(TurnProgress::TextDelta {
+                            // 当前相位名 / current phase name.
                             phase: self.phase.clone(),
+                            // 文本增量 / text delta.
                             text: delta.clone(),
                         });
                     }
@@ -740,8 +742,11 @@ impl StreamCallback for CollectingCallback {
 /// Helper to construct a TurnEvent.
 fn ev(kind: &str, phase: Option<&str>, text: Option<String>) -> TurnEvent {
     TurnEvent {
+        // 事件类型 / event kind.
         kind: kind.into(),
+        // 相位名（可选）/ phase name (optional).
         phase: phase.map(|s| s.to_string()),
+        // 事件文本（可选）/ event text (optional).
         text,
     }
 }

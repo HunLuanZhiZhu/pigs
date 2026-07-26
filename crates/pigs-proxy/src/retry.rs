@@ -72,6 +72,15 @@ pub async fn dispatch(
                 }
 
                 // 非可重试：成功或不可重试错误，直接返回
+                // Non-retryable: success or non-retryable error, return directly.
+                // [DEBUG-CTX] 只在最终成功的那次记录，排除重试噪声。
+                // Only log the final successful attempt to exclude retry noise.
+                crate::upstream::log_upstream_request(
+                    &resp.url,
+                    protocol,
+                    body,
+                    headers,
+                );
                 let r = resp.into_axum().await;
                 return DispatchOutcome::Ok(r);
             }

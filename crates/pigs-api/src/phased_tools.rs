@@ -53,22 +53,27 @@ impl ToolHandler for InternalNotesTool {
 
     fn execute<'a>(
         &'a self,
+        // 工具调用的输入 JSON（action/id/content）/ tool-call input JSON (action/id/content)
         input: serde_json::Value,
     ) -> Pin<Box<dyn Future<Output = Result<ToolResult, ToolError>> + Send + 'a>> {
         Box::pin(async move {
             // 静态全局笔记存储（进程级，非请求级）
             // Static global notes storage (process-level, not per-request)
             static NOTES: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
+            // 解析 action，缺省 "list" / Parse action, default "list".
             let action = input
                 .get("action")
                 .and_then(|v| v.as_str())
                 .unwrap_or("list");
+            // 加锁；毒化则报错 / Acquire lock; poison → error.
             let mut guard = NOTES
                 .lock()
                 .map_err(|_| ToolError::ExecutionFailed("notes lock poisoned".into()))?;
+            // 懒初始化 HashMap / Lazily initialize the HashMap.
             if guard.is_none() {
                 *guard = Some(HashMap::new());
             }
+            // 取可变 map 引用 / Get a mutable map reference.
             let map = guard
                 .as_mut()
                 .ok_or_else(|| ToolError::ExecutionFailed("notes not initialized".into()))?;
@@ -76,17 +81,21 @@ impl ToolHandler for InternalNotesTool {
             match action {
                 // 写入笔记 / Write a note
                 "write" => {
+                    // id 缺省 "default" / id defaults to "default".
                     let id = input
                         .get("id")
                         .and_then(|v| v.as_str())
                         .unwrap_or("default")
                         .to_string();
+                    // content 缺省空串 / content defaults to empty.
                     let content = input
                         .get("content")
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string();
+                    // 记录字符长度（用于响应）/ Record char length (for the response).
                     let len = content.len();
+                    // 插入/覆盖 / Insert or overwrite.
                     map.insert(id.clone(), content);
                     Ok(ToolResult::success(format!(
                         "wrote note `{id}` ({len} chars)"
@@ -94,10 +103,12 @@ impl ToolHandler for InternalNotesTool {
                 }
                 // 读取笔记 / Read a note by id
                 "read" => {
+                    // id 缺省 "default" / id defaults to "default".
                     let id = input
                         .get("id")
                         .and_then(|v| v.as_str())
                         .unwrap_or("default");
+                    // 找到则返回内容，否则返回错误 / Return content if found, else error.
                     match map.get(id) {
                         Some(c) => Ok(ToolResult::success(c.clone())),
                         None => Ok(ToolResult::error(format!("no note `{id}`"))),
@@ -108,11 +119,13 @@ impl ToolHandler for InternalNotesTool {
                     if map.is_empty() {
                         Ok(ToolResult::success("(no internal notes)"))
                     } else {
+                        // 构造预览列表 / Build the preview list.
                         let mut lines: Vec<String> = map
                             .iter()
                             .map(|(k, v)| {
                                 // 每条笔记预览限制 120 字符 / Preview each note to 120 chars
                                 let preview = if v.chars().count() > 120 {
+                                    // 取前 117 字符加 "..." / Take first 117 chars + "...".
                                     let t: String = v.chars().take(117).collect();
                                     format!("{t}...")
                                 } else {
@@ -121,6 +134,7 @@ impl ToolHandler for InternalNotesTool {
                                 format!("- {k}: {preview}")
                             })
                             .collect();
+                        // 排序保证输出稳定 / Sort for stable output.
                         lines.sort();
                         Ok(ToolResult::success(lines.join("\n")))
                     }

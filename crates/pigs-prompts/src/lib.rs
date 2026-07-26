@@ -52,31 +52,36 @@ pub fn post_user_payload(lang: Language, _pre_output: &str, _executor_draft: &st
 
 // --- Helpers ---
 
-/// Format failure paths as a numbered list; empty → placeholder line.
+/// 单条失败记录的模板占位符 / Single failure entry template placeholder.
+const FAILURE_ENTRY_PLACEHOLDER: &str = "{failure}";
+
+/// Format failure paths as a numbered list; empty → empty string.
+///
+/// Uses `failure_paths_{zh|en}.txt` template with `{failures}` (concatenated entries)
+/// and `{failure}` (per-entry placeholder).
 fn format_failure_paths(lang: Language, paths: &[String]) -> String {
     if paths.is_empty() {
-        match lang {
-            Language::Zh => String::new(),
-            Language::En => String::new(),
-        }
-    } else {
-        match lang {
-            Language::Zh => {
-                let mut text = String::from("这个任务执行中曾失败过\n");
-                for (index, failure) in paths.iter().enumerate() {
-                    text.push_str(&format!("第 {} 次失败：\n{}\n", index + 1, failure));
-                }
-                text.trim_end().to_string()
-            }
-            Language::En => {
-                let mut text = String::from("This task previously failed during execution.\n");
-                for (index, failure) in paths.iter().enumerate() {
-                    text.push_str(&format!("Failure {}:\n{}\n", index + 1, failure));
-                }
-                text.trim_end().to_string()
-            }
-        }
+        return String::new();
     }
+    let template = match lang {
+        Language::Zh => include_str!("../prompts/failure_paths_zh.txt"),
+        Language::En => include_str!("../prompts/failure_paths_en.txt"),
+    };
+    let entry_template = match lang {
+        Language::Zh => "第 {n} 次失败：\n{failure}",
+        Language::En => "Failure {n}:\n{failure}",
+    };
+    let failures: String = paths
+        .iter()
+        .enumerate()
+        .map(|(index, failure)| {
+            entry_template
+                .replace("{n}", &(index + 1).to_string())
+                .replace(FAILURE_ENTRY_PLACEHOLDER, failure)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    template.replace("{failures}", failures.trim_end())
 }
 
 #[cfg(test)]

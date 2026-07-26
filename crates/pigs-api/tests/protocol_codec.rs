@@ -309,7 +309,7 @@ fn requests_still_reject_a_last_assistant_input_without_tool_results() {
 }
 
 #[test]
-fn post_drops_original_question_and_appends_native_transcript_then_review_prompt() {
+fn post_keeps_original_question_and_appends_native_transcript_then_review_prompt() {
     let body = json!({
         "model": "gpt-4.1-pig",
         "stream": true,
@@ -371,6 +371,7 @@ fn post_drops_original_question_and_appends_native_transcript_then_review_prompt
             {"role": "system", "content": "system", "cache": {"keep": true}},
             {"role": "user", "content": "old question"},
             {"role": "assistant", "content": "old answer", "unknown": "keep"},
+            {"role": "user", "content": [{"type": "text", "text": "ORIGINAL QUESTION"}, {"type": "image_url", "image_url": {"url": "x"}}]},
             transcript_values[0].clone(),
             transcript_values[1].clone(),
             transcript_values[2].clone(),
@@ -378,11 +379,11 @@ fn post_drops_original_question_and_appends_native_transcript_then_review_prompt
             {"role": "user", "content": "Review independently"}
         ])
     );
-    assert!(!post.body.to_string().contains("ORIGINAL QUESTION"));
+    assert!(post.body.to_string().contains("ORIGINAL QUESTION"));
 }
 
 #[test]
-fn responses_string_post_inserts_transcript_and_independent_user_prompt() {
+fn responses_string_post_keeps_original_input_and_appends_transcript_then_review_prompt() {
     let request = parse(
         Protocol::OpenAiResponses,
         json!({
@@ -422,6 +423,11 @@ fn responses_string_post_inserts_transcript_and_independent_user_prompt() {
     assert_eq!(
         post.body["input"],
         json!([
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "Do not repeat this question"}]
+            },
             transcript_values[0].clone(),
             transcript_values[1].clone(),
             {
@@ -431,7 +437,7 @@ fn responses_string_post_inserts_transcript_and_independent_user_prompt() {
             }
         ])
     );
-    assert!(!post
+    assert!(post
         .body
         .to_string()
         .contains("Do not repeat this question"));

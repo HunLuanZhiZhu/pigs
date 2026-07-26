@@ -140,6 +140,7 @@ impl UpstreamClient {
             status,
             is_stream,
             headers: upstream_headers,
+            url: url.clone(),
             resp: Some(resp),
             body_bytes: None,
             preloaded: None,
@@ -151,6 +152,9 @@ pub struct UpstreamResponse {
     pub status: StatusCode,
     pub is_stream: bool,
     pub headers: HeaderMap,
+    /// 上游 URL（用于日志记录）。
+    /// Upstream URL (for logging).
+    pub url: String,
     pub resp: Option<reqwest::Response>,
     // 非流式：完整 body
     pub body_bytes: Option<Bytes>,
@@ -308,4 +312,104 @@ impl UpstreamResponse {
 
         builder.body(Body::empty()).unwrap()
     }
+}
+
+/// [DEBUG-CTX] 把发往上游 LLM 的完整请求追加写入日志文件。
+/// Writes the complete upstream LLM request to a log file (append mode).
+///
+/// 日志路径 / Log path: `~/.pig/upstream-requests.log`（即 `%USERPROFILE%\.pig\upstream-requests.log`）
+/// 每条记录用分隔线隔开，包含时间戳、URL、协议、headers（脱敏 auth）、完整 body JSON。
+pub fn log_upstream_request(url: &str, protocol: Protocol, body: &Bytes, headers: &HeaderMap) {
+    use std::io::Write;
+
+    let home = match dirs::home_dir() {
+        Some(p) => p,
+        None => return,
+    };
+    let log_path = home.join(".pig").join("upstream-requests.log");
+
+    // 确保 ~/.pig/ 目录存在 / Ensure ~/.pig/ exists
+    if let Some(parent) = log_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
+    let timestamp = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ");
+
+    // 脱敏 headers：不记录 auth key 的值 / Redact auth key values
+    let header_lines: Vec<String> = headers
+        .iter()
+        .map(|(name, value)| {
+            let name_lower = name.as_str().to_lowercase();
+            let value_str = if name_lower == "authorization" || name_lower == "x-api-key" {
+                "<REDACTED>".to_string()
+            } else {
+                String::from_utf8_lossy(value.as_bytes()).to_string()
+            };
+            format!("  {name}: {value_str}")
+        })
+        .collect();
+
+    // 尝试格式化 JSON body / Try to pretty-print JSON body
+    let body_str = serde_json::from_slice::<serde_json::Value>(body)
+        .ok()
+        .map(|v| serde_json::to_string_pretty(&v).unwrap_or_else(|_| String::from_utf8_lossy(body).to_string()))
+        .unwrap_or_else(|| String::from_utf8_lossy(body).to_string());
+
+    // 统计消息数和估算字符数 / Count messages and estimate char count
+    let (msg_count, total_chars) = count_messages_and_chars(&body_str, protocol);
+
+    let entry = format!(
+        "═══════════════════════════════════════════════════════════\n\
+         [{timestamp}] {protocol:?} → {url}\n\
+         messages: {msg_count}, total_content_chars: {total_chars}, body_bytes: {body_len}\n\
+         ── headers ──\n{headers_block}\n\
+         ── body ──\n{body_str}\n",
+        protocol = protocol,
+        url = url,
+        msg_count = msg_count,
+        total_chars = total_chars,
+        body_len = body.len(),
+        headers_block = header_lines.join("\n"),
+        body_str = body_str,
+    );
+
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+    {
+        let _ = file.write_all(entry.as_bytes());
+        let _ = file.write_all(b"\n");
+    }
+}
+
+/// [DEBUG-CTX] 根据 body JSON 统计 messages/input 数组的条数和总文本字符数。
+fn count_messages_and_chars(body_str: &str, protocol: Protocol) -> (usize, usize) {
+    let Ok(val) = serde_json::from_str::<serde_json::Value>(body_str) else {
+        return (0, 0);
+    };
+    let collection = match protocol {
+        Protocol::OpenAI | Protocol::Responses => val.get("messages").or_else(|| val.get("input")),
+        Protocol::Anthropic => val.get("messages"),
+    };
+    let Some(arr) = collection.and_then(|v| v.as_array()) else {
+        return (0, 0);
+    };
+    let count = arr.len();
+    let total_chars: usize = arr
+        .iter()
+        .map(|item| {
+            // 递归统计所有字符串值 / Recursively count all string values
+            fn count_strings(v: &serde_json::Value) -> usize {
+                match v {
+                    serde_json::Value::String(s) => s.len(),
+                    serde_json::Value::Array(a) => a.iter().map(count_strings).sum(),
+                    serde_json::Value::Object(o) => o.values().map(count_strings).sum(),
+                    _ => 0,
+                }
+            }
+            count_strings(item)
+        })
+        .sum();
+    (count, total_chars)
 }

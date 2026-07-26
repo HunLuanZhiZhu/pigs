@@ -160,19 +160,25 @@ fn convert_messages(messages: &[ChatMessage]) -> Result<Vec<Message>, ConvertErr
 /// Extract text content from a `serde_json::Value`.
 fn content_to_text(content: Option<&serde_json::Value>) -> String {
     match content {
+        // 无 content → 空串 / No content → empty string.
         None => String::new(),
+        // 字符串 → 直接 clone / String → clone directly.
         Some(serde_json::Value::String(s)) => s.clone(),
+        // 数组 → 拼接所有 text part / Array → concatenate all text parts.
         Some(serde_json::Value::Array(parts)) => {
             let mut out = String::new();
             for p in parts {
+                // 优先取 {"text": "...} 形式 / Prefer {"text": "..."} form.
                 if let Some(t) = p.get("text").and_then(|v| v.as_str()) {
                     out.push_str(t);
+                // 退化：元素本身是字符串 / Fallback: element is itself a string.
                 } else if let Some(t) = p.as_str() {
                     out.push_str(t);
                 }
             }
             out
         }
+        // 其它类型 → 字符串化 / Other types → stringify.
         Some(other) => other.to_string(),
     }
 }

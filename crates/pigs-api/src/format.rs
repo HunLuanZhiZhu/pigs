@@ -513,7 +513,9 @@ fn split_last_user(
         .iter()
         .rposition(|m| m.role != pigs_core::MessageRole::System)
         .ok_or_else(|| ConvertError::Invalid("no user message found".into()))?;
+    // idx 之前的是 history / Everything before idx is history.
     let history = messages[..idx].to_vec();
+    // idx 位置的是最后一条消息 / The message at idx is the last one.
     let last = messages[idx].clone();
     Ok((history, last))
 }
@@ -522,8 +524,11 @@ fn split_last_user(
 /// Extract text from an Anthropic content value (string or array of blocks).
 fn anth_content_to_text(content: Option<&Value>) -> String {
     match content {
+        // 无 content → 空串 / No content → empty.
         None => String::new(),
+        // 字符串 → clone / String → clone.
         Some(Value::String(s)) => s.clone(),
+        // 数组 → 拼接所有 text 块 / Array → concatenate all text blocks.
         Some(Value::Array(parts)) => {
             let mut out = String::new();
             for p in parts {
@@ -533,6 +538,7 @@ fn anth_content_to_text(content: Option<&Value>) -> String {
             }
             out
         }
+        // 其它 → 字符串化 / Other → stringify.
         Some(other) => other.to_string(),
     }
 }
@@ -541,8 +547,10 @@ fn anth_content_to_text(content: Option<&Value>) -> String {
 /// Extract text from a Responses message item (concatenate input_text/output_text).
 fn resp_extract_message_text(item: &Value) -> String {
     let mut out = String::new();
+    // content 必须是数组 / content must be an array.
     if let Some(content) = item.get("content").and_then(|v| v.as_array()) {
         for part in content {
+            // 拼接每个 part 的 text 字段 / Concatenate each part's text field.
             if let Some(t) = part.get("text").and_then(|v| v.as_str()) {
                 out.push_str(t);
             }

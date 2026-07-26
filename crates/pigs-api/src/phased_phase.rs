@@ -21,8 +21,11 @@ impl Phase {
     /// Return the phase's string identifier (for logs, events, SSE).
     pub fn as_str(self) -> &'static str {
         match self {
+            // Pre 相位 → "pre" / Pre phase → "pre".
             Self::Pre => "pre",
+            // Executor 相位 → "executor" / Executor phase → "executor".
             Self::Executor => "executor",
+            // Post 相位 → "post" / Post phase → "post".
             Self::Post => "post",
         }
     }

@@ -23,17 +23,22 @@ pub enum Marker {
 /// Detects a control marker only when it is the final non-empty line.
 /// A completion marker is valid only when an earlier non-marker line gives a reason.
 pub fn detect_marker(text: &str) -> Option<Marker> {
+    // 取所有非空行 / Collect all non-empty lines.
     let lines: Vec<&str> = text
         .lines()
         .filter(|line| !line.trim().is_empty())
         .collect();
+    // 最后一条非空行 / The last non-empty line.
     let last = lines.last()?;
+    // 若除最后一行外全部都是控制标记或空行 → 无效（需要非标记的"原因"行）
+    // If all lines before the last are markers/empty → invalid (need a non-marker reason).
     if lines[..lines.len() - 1]
         .iter()
         .all(|line| control_marker(line).is_some() || line.trim().is_empty())
     {
         return None;
     }
+    // 检查最后一行是否是控制标记 / Check whether the last line is a control marker.
     control_marker(last)
 }
 
@@ -42,6 +47,7 @@ pub(crate) fn is_control_marker_line(line: &str) -> bool {
 }
 
 fn control_marker(line: &str) -> Option<Marker> {
+    // 清理行：去首尾空白、去反引号、去星号、去末尾标点 / Clean the line.
     let cleaned = line
         .trim()
         .trim_matches('`')
@@ -49,8 +55,11 @@ fn control_marker(line: &str) -> Option<Marker> {
         .trim_end_matches(['.', '!', '。', '！'])
         .trim();
     match cleaned {
+        // PIGEND → End / PIGEND → End.
         PIGEND => Some(Marker::End),
+        // PIGFAIL → Failed / PIGFAIL → Failed.
         PIGFAIL => Some(Marker::Failed),
+        // 其它 → 不是控制标记 / Other → not a control marker.
         _ => None,
     }
 }
@@ -59,9 +68,11 @@ fn control_marker(line: &str) -> Option<Marker> {
 /// Strip routing marker lines from user-visible final text.
 pub fn strip_markers(text: &str) -> String {
     text.lines()
+        // 保留非控制标记行 / Keep non-control-marker lines.
         .filter(|line| control_marker(line).is_none())
         .collect::<Vec<_>>()
         .join("\n")
+        // 去除首尾空白 / Trim leading/trailing whitespace.
         .trim()
         .to_string()
 }
