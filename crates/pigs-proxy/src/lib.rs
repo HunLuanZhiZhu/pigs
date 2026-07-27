@@ -19,7 +19,6 @@
 //! 3. `/v1/models` 返回 ×2 模型列表（每个模型 + 其 `-pig` 版本）
 //!    `/v1/models` returns ×2 model list (each model + its `-pig` variant)
 
-pub mod compaction;
 pub mod config;
 pub mod log;
 pub mod loopback;
@@ -278,16 +277,11 @@ pub async fn serve(config: config::Config) -> Result<()> {
         },
     );
     let client = Arc::new(upstream::UpstreamClient::new());
-    let loopback_base_url = format!("http://{}", addr);
     let state = server::AppState {
         config: Arc::new(config.clone()),
         client,
         runtime: Arc::new(runtime),
         internal_phase_token: Arc::from(internal_phase_token),
-        compaction_cache: Arc::new(std::sync::Mutex::new(
-            crate::compaction::CompactionCache::new(),
-        )),
-        loopback_base_url,
     };
     let app = server::build(state);
 

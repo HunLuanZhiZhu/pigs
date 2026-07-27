@@ -29,19 +29,8 @@ rotate_size_mb = 50
 rotate_keep = 7
 
 # ════════════════════════════════════════════════════════════
-# 三点五、上下文压缩配置 / Compaction configuration
+# 四、端点配置 / Endpoints configuration
 # ════════════════════════════════════════════════════════════
-# 当请求的估算 token 数超过模型上下文窗口 × 系数时，路由层自动压缩对话。
-# 压缩通过 loopback 调 LLM 生成摘要，替换旧消息。对 harness 层透明。
-# When estimated tokens exceed context_window × coefficient, the routing layer
-# auto-compacts the conversation via LLM summarization (through loopback).
-
-[compaction]
-enabled = true              # 是否启用自动压缩 / Enable auto-compaction
-coefficient = 0.9           # 触发阈值系数 / Trigger threshold (0.9 = 90% of context window)
-keep_recent = 4             # 压缩时保留最近 N 条消息 / Messages to keep verbatim
-max_rounds = 5              # 最大压缩轮次 / Max compaction rounds before fallback truncation
-summary_max_tokens = 4096   # 摘要请求的 max_tokens / Max tokens for summarization LLM call
 
 # ════════════════════════════════════════════════════════════
 # 四、供应商配置 / Provider configuration

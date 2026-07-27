@@ -637,6 +637,7 @@ mod tests {
             final_text: "hello world".into(),
             events: vec![],
             ended_with: "PIGEND".into(),
+            usage: None,
         };
         let resp = ApiFormat::OpenAIChat.build_response(&result, "pigs");
         assert_eq!(resp["object"], "chat.completion");
@@ -650,6 +651,7 @@ mod tests {
             final_text: "hi".into(),
             events: vec![],
             ended_with: "PIGEND".into(),
+            usage: None,
         };
         let resp = ApiFormat::Anthropic.build_response(&result, "claude-3");
         assert_eq!(resp["type"], "message");
@@ -663,6 +665,7 @@ mod tests {
             final_text: "yo".into(),
             events: vec![],
             ended_with: "PIGEND".into(),
+            usage: None,
         };
         let resp = ApiFormat::OpenAIResponses.build_response(&result, "gpt-4o");
         assert_eq!(resp["object"], "response");

@@ -738,11 +738,11 @@ pub async fn handle_command(agent: &mut Agent, line: &str) -> anyhow::Result<Com
         }
 
         "compact" => {
-            // 手动压缩命令。默认使用 LLM 摘要式压缩。
-            // /compact          — LLM 摘要式压缩（默认）
+            // 手动压缩命令。默认使用 LLM 摘要式压缩（与自动压缩共用 compact_session）。
+            // /compact          — LLM 摘要式压缩（默认，复用 pigs-session::compact_session）
             // /compact truncate — 截断式压缩（不调 LLM，每条旧消息截断到 400 字符）
             //
-            // 自动压缩在 API 层（pigs-proxy）实现，agent 层不需要自动压缩。
+            // 手动和自动压缩现在共用 pigs-session 的 compact_session / compact_session_truncate。
             let keep_recent: usize = 4;
             let msg_count = agent.session.messages.len();
 
@@ -751,9 +751,9 @@ pub async fn handle_command(agent: &mut Agent, line: &str) -> anyhow::Result<Com
                 return Ok(CommandResult::Continue);
             }
 
-            // /compact truncate — 截断式压缩（显式请求）
+            // /compact truncate — 截断式压缩（显式请求，不调 LLM）
             if arg.trim() == "truncate" || arg.trim() == "截断" {
-                use pigs_session::{compact_session, CompactConfig};
+                use pigs_session::{compact_session_truncate, CompactConfig};
                 let old_count = agent.session.messages.len();
                 let config = CompactConfig {
                     token_threshold: 0,
@@ -761,7 +761,7 @@ pub async fn handle_command(agent: &mut Agent, line: &str) -> anyhow::Result<Com
                     summary_message_chars: 400,
                     force: true,
                 };
-                let compacted = compact_session(&mut agent.session, &config);
+                let compacted = compact_session_truncate(&mut agent.session, &config);
                 if compacted {
                     let _ = agent.session.save(&agent.sessions_dir);
                     agent.output.println(format!(
@@ -776,128 +776,56 @@ pub async fn handle_command(agent: &mut Agent, line: &str) -> anyhow::Result<Com
                 return Ok(CommandResult::Continue);
             }
 
-            // 默认：LLM 摘要式压缩
-            use pigs_core::{ApiRequest, Message};
-
-            let messages = agent.session.messages.clone();
-            let split_point = messages.len() - keep_recent;
-            let old_messages = &messages[..split_point];
-
-            // Serialize old messages into text for the summarization prompt
-            let mut conversation_text = String::new();
-            for (i, msg) in old_messages.iter().enumerate() {
-                let role = match msg.role {
-                    pigs_core::MessageRole::System => "system",
-                    pigs_core::MessageRole::User => "user",
-                    pigs_core::MessageRole::Assistant => "assistant",
-                    pigs_core::MessageRole::Tool => "tool",
-                };
-                conversation_text.push_str(&format!("--- Message {i} [{role}] ---\\\\n"));
-                for block in &msg.content {
-                    match block {
-                        pigs_core::ContentBlock::Text { text } => {
-                            let truncated = if text.len() > 2000 {
-                                format!("{}...(truncated)", &text[..2000])
-                            } else {
-                                text.clone()
-                            };
-                            conversation_text.push_str(&truncated);
-                            conversation_text.push('\n');
-                        }
-                        pigs_core::ContentBlock::ToolUse { name, input, .. } => {
-                            conversation_text.push_str(&format!("[Tool Call: {name}]\\\\n"));
-                            let input_str = serde_json::to_string_pretty(input).unwrap_or_default();
-                            let truncated = if input_str.len() > 1000 {
-                                format!("{}...(truncated)", &input_str[..1000])
-                            } else {
-                                input_str
-                            };
-                            conversation_text.push_str(&truncated);
-                            conversation_text.push('\n');
-                        }
-                        pigs_core::ContentBlock::ToolResult { output, .. } => {
-                            conversation_text.push_str("[Tool Result]\n");
-                            let truncated = if output.len() > 1000 {
-                                format!("{}...(truncated)", &output[..1000])
-                            } else {
-                                output.clone()
-                            };
-                            conversation_text.push_str(&truncated);
-                            conversation_text.push('\n');
-                        }
-                    }
+            // 默认：LLM 摘要式压缩，复用 pigs-session::compact_session + AgentCompactor
+            use pigs_session::{compact_session, CompactConfig};
+            let resolved = match agent.resolved_model() {
+                Ok(r) => r,
+                Err(e) => {
+                    agent.output.eprintln(format!("Compaction failed: cannot resolve model: {e}"));
+                    return Ok(CommandResult::Continue);
                 }
-                conversation_text.push('\n');
-            }
+            };
+            let compactor = crate::compaction::AgentCompactor::new(
+                std::sync::Arc::clone(&agent.api_client),
+                resolved.remote_model.clone(),
+            );
+            let config = CompactConfig {
+                token_threshold: 0,
+                keep_recent,
+                summary_message_chars: 400,
+                force: true,
+            };
 
-            let summary_prompt = r#"You are a conversation summarizer. Summarize the following conversation context into a structured summary with these sections:
+            agent.output.println(format!(
+                "Compacting {} messages via LLM summarization...",
+                msg_count - keep_recent
+            ));
 
-## Objective
-What the user is trying to accomplish.
-
-## Important Details
-Key technical decisions, constraints, and context.
-
-## Work State
-- Completed: What has been done.
-- Active: What is being worked on.
-- Blocked: Any blockers.
-
-## Relevant Files
-Files that have been read, modified, or discussed.
-
-## Key Code & Commands
-Important code snippets, commands, or configurations.
-
-## Next Step
-What should happen next.
-
-Rules:
-- Preserve exact file paths, symbol names, and commands.
-- Be concise but complete.
-- Never mention the compaction process."#;
-
-            agent.output.println(format!("Compacting {split_point} messages via LLM summarization..."));
-
-            let request = ApiRequest::new(
-                &agent.config.model,
-                vec![Message::user(format!("Summarize the following conversation:\\\\n\\\\n{conversation_text}"))],
+            match compact_session(
+                &mut agent.session,
+                &config,
+                &compactor,
+                &resolved.remote_model,
             )
-            .with_system_prompt(summary_prompt)
-            .with_max_tokens(4096);
-
-            match agent.api_client.send_message(request).await {
-                Ok(response) => {
-                    let summary_text = response.text_content();
-                    if summary_text.trim().is_empty() {
-                        agent.output.eprintln("Compaction failed: LLM returned empty summary.");
-                        return Ok(CommandResult::Continue);
-                    }
-
-                    // Build the summary system message
-                    let full_summary = format!("--- Conversation Summary (compacted) ---\\\\n{summary_text}\\\\n--- End Summary ---");
-
-                    // Replace old messages with the summary + keep recent
-                    let recent: Vec<Message> = messages[split_point..].to_vec();
-                    agent.session.messages.clear();
-                    agent.session.add_message(Message::system(full_summary));
-                    for msg in recent {
-                        agent.session.messages.push(msg);
-                    }
-                    agent.session.dirty = true;
-
-                    // Auto-save after compaction
+            .await
+            {
+                Ok(true) => {
                     let _ = agent.session.save(&agent.sessions_dir);
-
                     agent.output.println(format!(
                         "Session compacted: {} messages → 1 summary + {} recent (est. tokens: {})",
-                        split_point,
+                        msg_count - keep_recent,
                         keep_recent,
                         agent.session.estimated_tokens()
                     ));
                 }
+                Ok(false) => {
+                    agent.output.println(format!(
+                        "No compaction needed (est. tokens: {})",
+                        agent.session.estimated_tokens()
+                    ));
+                }
                 Err(e) => {
-                    agent.output.eprintln(format!("Compaction failed: LLM request error: {e}"));
+                    agent.output.eprintln(format!("Compaction failed: {e}"));
                     agent.output.eprintln("Use '/compact truncate' for truncation-based compaction (no LLM call).");
                 }
             }

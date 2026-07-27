@@ -13,9 +13,6 @@ pub struct Config {
     pub log: LogConfig,
     #[serde(default)]
     pub provider: Vec<Provider>,
-    /// Compaction settings (context-window auto-compaction at the routing layer).
-    #[serde(default)]
-    pub compaction: CompactionConfig,
 
     // --- pigs 顶层字段（相位运行时用）/ pigs top-level fields ---
     /// UI / 回复语言：`zh`（默认）或 `en`。
@@ -97,7 +94,7 @@ pub struct ProviderCommon {
     #[serde(default)]
     pub thinking_effort: Option<String>,
     /// Default context window size in tokens for all models on this provider.
-    /// Used by the routing-layer auto-compaction. Overridden by `context_windows` per-model.
+    /// Overridden by `context_windows` per-model.
     #[serde(default)]
     pub context_window: Option<u64>,
     /// Per-model context window sizes (in tokens).
@@ -393,7 +390,6 @@ impl Config {
                         rotate_keep: default_rotate_keep(),
                     },
                     provider: Vec::new(),
-                    compaction: CompactionConfig::default(),
                     language: default_language(),
                 }
             }
@@ -436,21 +432,6 @@ impl Config {
             self.log.to_file = other.log.to_file;
         }
 
-        // Compaction: override if other has non-default values
-        if other.compaction.coefficient != default_coefficient() {
-            self.compaction.coefficient = other.compaction.coefficient;
-        }
-        if other.compaction.keep_recent != default_keep_recent() {
-            self.compaction.keep_recent = other.compaction.keep_recent;
-        }
-        if other.compaction.max_rounds != default_max_rounds() {
-            self.compaction.max_rounds = other.compaction.max_rounds;
-        }
-        if other.compaction.summary_max_tokens != default_summary_max_tokens() {
-            self.compaction.summary_max_tokens = other.compaction.summary_max_tokens;
-        }
-        self.compaction.enabled = other.compaction.enabled;
-
         // Providers: merge by name (extend, don't replace)
         for provider in other.provider {
             if !self.provider.iter().any(|p| p.name == provider.name) {
@@ -462,63 +443,5 @@ impl Config {
         if other.language != default_language() {
             self.language = other.language;
         }
-    }
-}
-
-/// Compaction configuration for the routing-layer auto-compaction.
-#[derive(Debug, Clone, Deserialize)]
-pub struct CompactionConfig {
-    /// Whether auto-compaction is enabled.
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    /// Trigger threshold coefficient (e.g. 0.9 = compact when estimated tokens exceed 90% of context window).
-    #[serde(default = "default_coefficient")]
-    pub coefficient: f64,
-    /// Number of recent messages to keep verbatim during compaction.
-    #[serde(default = "default_keep_recent")]
-    pub keep_recent: usize,
-    /// Maximum compaction rounds before forcing a fallback truncation.
-    #[serde(default = "default_max_rounds")]
-    pub max_rounds: u32,
-    /// Max tokens for the summarization LLM call.
-    #[serde(default = "default_summary_max_tokens")]
-    pub summary_max_tokens: u32,
-}
-
-impl Default for CompactionConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            coefficient: default_coefficient(),
-            keep_recent: default_keep_recent(),
-            max_rounds: default_max_rounds(),
-            summary_max_tokens: default_summary_max_tokens(),
-        }
-    }
-}
-
-fn default_coefficient() -> f64 {
-    0.9
-}
-fn default_keep_recent() -> usize {
-    4
-}
-fn default_max_rounds() -> u32 {
-    5
-}
-fn default_summary_max_tokens() -> u32 {
-    4096
-}
-
-/// Infer a default context window from the model name.
-/// claude* → 200_000, gpt-4* → 128_000, others → 128_000.
-pub fn default_context_window_for(model: &str) -> u64 {
-    let lower = model.to_ascii_lowercase();
-    if lower.starts_with("claude") {
-        200_000
-    } else if lower.starts_with("gpt-4") || lower.starts_with("o1") || lower.starts_with("o3") {
-        128_000
-    } else {
-        128_000
     }
 }

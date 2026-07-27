@@ -8,6 +8,7 @@ pub mod agent;
 pub mod cli;
 pub mod command_aliases;
 pub mod commands;
+pub mod compaction;
 pub mod doctor;
 pub mod hooks;
 pub mod http_client;

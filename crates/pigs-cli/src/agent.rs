@@ -416,6 +416,9 @@ impl Agent {
         user_input: &str,
         on_progress: impl Fn(crate::phased_runtime::TurnProgress) + Send + Sync + 'static,
     ) -> anyhow::Result<String> {
+        // 自动压缩检查（turn 开始前）/ Auto-compaction check before the turn starts.
+        self.maybe_auto_compact().await;
+
         let resolved = self.resolved_model()?;
         let limits = crate::phased_runtime::RuntimeLimits {
             max_tokens: resolved.max_tokens.unwrap_or(self.config.max_tokens),
@@ -460,6 +463,11 @@ impl Agent {
             .add_message(Message::assistant(vec![pigs_core::ContentBlock::Text {
                 text: result.final_text.clone(),
             }]));
+        // 把本轮跨相位累加的真实 usage 回流到 session。
+        // Reflow the turn's accumulated real usage into the session.
+        if let Some(u) = &result.usage {
+            self.session.add_usage(u);
+        }
 
         // Execute any pending foreground sub-agents (pigs = pig + s)
         // When the spawn tool is called, it creates sub-agent records in the manager.
@@ -569,6 +577,11 @@ impl Agent {
                         text: result.final_text.clone(),
                     },
                 ]));
+                // 把本轮跨相位累加的真实 usage 回流到子智能体的 session。
+                // Reflow the turn's accumulated real usage into the sub-agent's session.
+                if let Some(u) = &result.usage {
+                    sub.session.add_usage(u);
+                }
             }
             mgr.mark_done(sub_id, result.final_text.clone());
             // Auto-save sub-agent session after its turn
@@ -966,6 +979,75 @@ impl Agent {
         self.session.clear();
     }
 
+    /// 自动压缩检查：在 turn 开始前根据估算 token 数判断是否需要压缩。
+    ///
+    /// 阈值取 `resolved_model.compact_threshold(AUTO_COMPACT_TOKEN_CAP)`，
+    /// 即 `min(context_window * 0.75, AUTO_COMPACT_TOKEN_CAP)`，下限 1024。
+    /// 压缩走 LLM 摘要式（`compact_session` + `AgentCompactor`），
+    /// 失败时降级为截断式（`compact_session_truncate`），保证不阻塞主流程。
+    ///
+    /// Automatic compaction check before a turn starts.
+    async fn maybe_auto_compact(&mut self) {
+        // 自动压缩的 token 上限（与 context_window * 0.75 取较小值）。
+        // Cap for the auto-compact threshold (whichever is smaller vs. 0.75 * context_window).
+        const AUTO_COMPACT_TOKEN_CAP: u64 = 100_000;
+        const AUTO_COMPACT_KEEP_RECENT: usize = 4;
+
+        let resolved = match self.resolved_model() {
+            Ok(r) => r,
+            Err(_) => return, // 无法解析模型，跳过自动压缩
+        };
+        let threshold = resolved.compact_threshold(AUTO_COMPACT_TOKEN_CAP);
+        let config = pigs_session::CompactConfig {
+            token_threshold: threshold,
+            keep_recent: AUTO_COMPACT_KEEP_RECENT,
+            summary_message_chars: 400,
+            force: false,
+        };
+        if !pigs_session::needs_compaction(&self.session, &config) {
+            return;
+        }
+
+        // 先尝试 LLM 摘要式压缩 / Try LLM summarization first.
+        let compactor = crate::compaction::AgentCompactor::new(
+            std::sync::Arc::clone(&self.api_client),
+            resolved.remote_model.clone(),
+        );
+        match pigs_session::compact_session(
+            &mut self.session,
+            &config,
+            &compactor,
+            &resolved.remote_model,
+        )
+        .await
+        {
+            Ok(true) => {
+                info!(
+                    threshold,
+                    kept = AUTO_COMPACT_KEEP_RECENT,
+                    "auto compaction (llm summary) succeeded"
+                );
+                let _ = self.session.save(&self.sessions_dir);
+            }
+            Ok(false) => {
+                // 无需压缩（理论上 needs_compaction 已过滤）/ Nothing to compact.
+            }
+            Err(e) => {
+                warn!(error = %e, "auto compaction (llm summary) failed; falling back to truncation");
+                // 降级为截断式压缩 / Fall back to truncation-based compaction.
+                let trunc_config = pigs_session::CompactConfig {
+                    token_threshold: threshold,
+                    keep_recent: AUTO_COMPACT_KEEP_RECENT,
+                    summary_message_chars: 400,
+                    force: true, // 强制：LLM 已失败，但仍要压缩以释放上下文
+                };
+                if pigs_session::compact_session_truncate(&mut self.session, &trunc_config) {
+                    let _ = self.session.save(&self.sessions_dir);
+                }
+            }
+        }
+    }
+
     /// Run a turn through the phased runtime (Pre → Executor → Post).
     ///
     /// Run a single turn through the `PhasedRuntime`.
@@ -978,6 +1060,9 @@ impl Agent {
     /// The agent's local tool registry is injected into the PhasedRuntime so
     /// that bash, read_file, MCP tools, etc. are available during execution.
     async fn run_turn_phased(&mut self, user_input: &str) -> anyhow::Result<String> {
+        // 自动压缩检查（turn 开始前）/ Auto-compaction check before the turn starts.
+        self.maybe_auto_compact().await;
+
         let resolved = self.resolved_model()?;
         let limits = crate::phased_runtime::RuntimeLimits {
             max_tokens: resolved.max_tokens.unwrap_or(self.config.max_tokens),
@@ -1066,6 +1151,11 @@ impl Agent {
             .add_message(Message::assistant(vec![pigs_core::ContentBlock::Text {
                 text: result.final_text.clone(),
             }]));
+        // 把本轮跨相位累加的真实 usage 回流到 session（修复 total_usage 永远为 0 的问题）
+        // Reflow the turn's accumulated real usage into the session.
+        if let Some(u) = &result.usage {
+            self.session.add_usage(u);
+        }
 
         eprintln!(
             "[pigs] ended_with={} phases={}",

@@ -44,10 +44,6 @@ pub struct AppState {
     pub runtime: Arc<pigs_api::http_runtime::HttpPhasedRuntime>,
     /// Random token required on internal HTTP loopback requests.
     pub internal_phase_token: Arc<str>,
-    /// Compaction cache (prefix hash → summary).
-    pub compaction_cache: Arc<std::sync::Mutex<crate::compaction::CompactionCache>>,
-    /// Loopback base URL (e.g. "http://127.0.0.1:3927") for compaction LLM calls.
-    pub loopback_base_url: String,
 }
 
 /// 构建 axum 路由树。
@@ -361,44 +357,6 @@ async fn handle_passthrough(
         .clone()
         .unwrap_or_else(|| protocol.default_effort().to_string());
     inject_thinking(&mut parsed, protocol, &effort);
-
-    // --- Context-window compaction (routing-layer auto-compaction) ---
-    // If the estimated token count exceeds the model's context window × coefficient,
-    // automatically compact the conversation via LLM summarization (through loopback).
-    // This is transparent to the harness/Agent layer.
-    if state.config.compaction.enabled {
-        match crate::compaction::ensure_context_fits(
-            parsed.clone(),
-            &upstream_model,
-            &endpoint,
-            protocol,
-            &state.config.compaction,
-            &state.compaction_cache,
-            &crate::compaction::LoopbackConfig {
-                base_url: state.loopback_base_url.clone(),
-                token: state.internal_phase_token.to_string(),
-            },
-            client_model,
-            0,
-        )
-        .await
-        {
-            Ok(compacted) => {
-                if compacted != parsed {
-                    tracing::info!(
-                        model = %upstream_model,
-                        original_tokens = crate::compaction::estimate_tokens(&parsed),
-                        compacted_tokens = crate::compaction::estimate_tokens(&compacted),
-                        "compaction applied"
-                    );
-                    parsed = compacted;
-                }
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "compaction failed, proceeding with original body");
-            }
-        }
-    }
 
     let body_bytes = serde_json::to_vec(&parsed).unwrap_or_else(|_| body.to_vec());
     let body_bytes = Bytes::from(body_bytes);

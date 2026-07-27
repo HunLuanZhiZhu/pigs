@@ -11,8 +11,8 @@ use std::sync::Arc;
 
 use pigs_config::{ApiFormat, AppConfig, Language, ResolvedModel};
 use pigs_core::{
-    ApiClient, ApiRequest, ContentBlock, Message, StreamCallback, StreamEvent, ToolRegistry,
-    ToolResult,
+    ApiClient, ApiRequest, ContentBlock, Message, StreamCallback, StreamEvent, TokenUsage,
+    ToolRegistry, ToolResult,
 };
 use pigs_llm::{create_client_for_endpoint, Provider as LlmProvider};
 use tracing::{debug, info, warn};
@@ -114,6 +114,9 @@ pub struct TurnResult {
     /// 结束标记（如 "PIGEND", "PIGFAILED_BUDGET"）。
     /// End marker (e.g. "PIGEND", "PIGFAILED_BUDGET").
     pub ended_with: String,
+    /// 本轮跨相位累加的真实 token usage（来自上游 LLM 响应）。
+    /// Aggregated real token usage across phases (from upstream LLM responses).
+    pub usage: Option<TokenUsage>,
 }
 
 /// 相位化 Agent 运行时主结构体。
@@ -336,7 +339,7 @@ impl PhasedRuntime {
             // payload = 纯用户原问题（不追加相位提示词）
             // payload = plain user question (no phase instructions appended)
             let payload = user_question.clone();
-            let text = self
+            let (text, usage) = self
                 .run_phase(
                     Phase::Pre,
                     &base_history,
@@ -356,6 +359,7 @@ impl PhasedRuntime {
                 final_text,
                 events,
                 ended_with: "DIRECT".into(),
+                usage,
             });
         }
 
@@ -371,6 +375,8 @@ impl PhasedRuntime {
         let mut pre_replans: u32 = 0; // PRE 重规划计数
         let mut phase = Phase::Pre; // 当前相位
         let mut last_post_feedback = String::new(); // POST 给 Executor 的反馈
+        // 跨相位累加的真实 usage / Real usage accumulated across phases
+        let mut turn_usage: Option<TokenUsage> = None;
 
         loop {
             match phase {
@@ -391,7 +397,7 @@ impl PhasedRuntime {
                         user_question,
                         pre_user_payload(self.language, &failure_paths)
                     );
-                    let text = self
+                    let (text, phase_usage) = self
                         .run_phase(
                             Phase::Pre,
                             &base_history,
@@ -401,6 +407,7 @@ impl PhasedRuntime {
                             effective_model,
                         )
                         .await?;
+                    accumulate_usage(&mut turn_usage, phase_usage);
                     events.push(ev("phase_output", Some("pre"), Some(text.clone())));
                     emit(TurnProgress::PhaseOutput {
                         phase: "pre".into(),
@@ -420,6 +427,7 @@ impl PhasedRuntime {
                                 final_text,
                                 events,
                                 ended_with: "PIGEND".into(),
+                                usage: turn_usage,
                             });
                         }
                         // PIGFAILED → 记录失败路径，重规划
@@ -432,6 +440,7 @@ impl PhasedRuntime {
                                     final_text: strip_markers(&text),
                                     events,
                                     ended_with: "PIGFAILED_BUDGET".into(),
+                                    usage: turn_usage,
                                 });
                             }
                             // 预算内 → 重新进入 PRE
@@ -459,7 +468,7 @@ impl PhasedRuntime {
                         user_question,
                         executor_user_payload(self.language, &pre_output, &last_post_feedback,)
                     );
-                    let text = self
+                    let (text, phase_usage) = self
                         .run_phase(
                             Phase::Executor,
                             &base_history,
@@ -469,6 +478,7 @@ impl PhasedRuntime {
                             effective_model,
                         )
                         .await?;
+                    accumulate_usage(&mut turn_usage, phase_usage);
                     events.push(ev("phase_output", Some("executor"), Some(text.clone())));
                     emit(TurnProgress::PhaseOutput {
                         phase: "executor".into(),
@@ -496,7 +506,7 @@ impl PhasedRuntime {
                         user_question,
                         post_user_payload(self.language, &pre_output, &executor_draft,)
                     );
-                    let text = self
+                    let (text, phase_usage) = self
                         .run_phase(
                             Phase::Post,
                             &base_history,
@@ -506,6 +516,7 @@ impl PhasedRuntime {
                             effective_model,
                         )
                         .await?;
+                    accumulate_usage(&mut turn_usage, phase_usage);
                     events.push(ev("phase_output", Some("post"), Some(text.clone())));
                     emit(TurnProgress::PhaseOutput {
                         phase: "post".into(),
@@ -525,6 +536,7 @@ impl PhasedRuntime {
                                 final_text,
                                 events,
                                 ended_with: "PIGEND".into(),
+                                usage: turn_usage,
                             });
                         }
                         // PIGFAILED → 路径失败，清空产物，回到 PRE 重规划
@@ -542,6 +554,7 @@ impl PhasedRuntime {
                                         .unwrap_or_else(|| "failed".into()),
                                     events,
                                     ended_with: "PIGFAILED_BUDGET".into(),
+                                    usage: turn_usage,
                                 });
                             }
                             phase = Phase::Pre;
@@ -561,6 +574,7 @@ impl PhasedRuntime {
                                     },
                                     events,
                                     ended_with: "EXECUTOR_LOOP_BUDGET".into(),
+                                    usage: turn_usage,
                                 });
                             }
                             phase = Phase::Executor;
@@ -589,7 +603,7 @@ impl PhasedRuntime {
         system: &str,
         progress: Option<&ProgressSink>,
         model: &str,
-    ) -> anyhow::Result<String> {
+    ) -> anyhow::Result<(String, Option<TokenUsage>)> {
         // 构建消息：base_history + 本相位 user payload
         // Build messages: base_history + this phase's user payload
         let mut messages = base_history.to_vec();
@@ -600,6 +614,9 @@ impl PhasedRuntime {
         let phase_name = phase.as_str().to_string();
         // 所有相位都流式输出文本 / All phases stream text
         let stream_visible = true;
+        // 跨轮次累加的真实 usage（每次 LLM 调用可能返回 usage）
+        // Accumulated real usage across rounds (each LLM call may report usage)
+        let mut accumulated_usage: Option<TokenUsage> = None;
 
         loop {
             rounds += 1;
@@ -640,6 +657,15 @@ impl PhasedRuntime {
                     if !guard.is_empty() {
                         last_text = guard.clone();
                     }
+                }
+            }
+
+            // 累加本轮 LLM 调用返回的真实 usage（若有）
+            // Accumulate real usage reported by this LLM call (if any)
+            if let Some(u) = &response.usage {
+                match &mut accumulated_usage {
+                    Some(acc) => acc.add(u),
+                    None => accumulated_usage = Some(u.clone()),
                 }
             }
 
@@ -693,7 +719,7 @@ impl PhasedRuntime {
             }
         }
 
-        Ok(last_text)
+        Ok((last_text, accumulated_usage))
     }
 }
 
@@ -748,5 +774,16 @@ fn ev(kind: &str, phase: Option<&str>, text: Option<String>) -> TurnEvent {
         phase: phase.map(|s| s.to_string()),
         // 事件文本（可选）/ event text (optional).
         text,
+    }
+}
+
+/// 把单个相位的 usage 累加到本轮总 usage 上。
+/// Accumulate a single phase's usage into the turn-wide total.
+fn accumulate_usage(turn_usage: &mut Option<TokenUsage>, phase_usage: Option<TokenUsage>) {
+    if let Some(u) = phase_usage {
+        match turn_usage {
+            Some(acc) => acc.add(&u),
+            None => *turn_usage = Some(u),
+        }
     }
 }
