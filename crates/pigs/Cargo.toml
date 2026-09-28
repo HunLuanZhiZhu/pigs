@@ -1,0 +1,17 @@
+[package]
+name = "pigs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "可执行入口：CLI 参数、配置加载、启动 pigs-proxy"
+
+[[bin]]
+name = "pigs"
+path = "src/main.rs"
+
+[dependencies]
+pigs-proxy = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+tracing-subscriber = { workspace = true }

@@ -1,0 +1,27 @@
+[package]
+name = "pigs-proxy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "HTTP 入口与传输壳：三协议路由、-pig 分流、透传、SSE 回传"
+
+[dependencies]
+pigs-protocol = { workspace = true }
+pigs-orchestrator = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+axum = { workspace = true }
+bytes = { workspace = true }
+futures-util = { workspace = true }
+reqwest = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+toml = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+serde = { workspace = true }
+tracing-subscriber = { workspace = true }

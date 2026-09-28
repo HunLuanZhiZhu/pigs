@@ -1,0 +1,2 @@
+This task previously failed during execution.
+{failures}
