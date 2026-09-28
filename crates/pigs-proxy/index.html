@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>pigs-proxy —— 前台与传输壳</title>
+<style>
+  :root { --ink:#1a2332; --sub:#5a6b80; --line:#dde5ee; --blue:#2563eb; --blue-bg:#eff4ff;
+          --green:#059669; --green-bg:#ecfdf5; --red:#dc2626; --red-bg:#fef2f2; --card:#fff; --bg:#f6f8fb; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { font-family:"Microsoft YaHei","PingFang SC",sans-serif; color:var(--ink); background:var(--bg); line-height:1.75; padding:40px 16px; }
+  .wrap { max-width:920px; margin:0 auto; }
+  .crumb { font-size:13px; margin-bottom:14px; } .crumb a { color:var(--blue); text-decoration:none; }
+  h1 { font-size:28px; margin-bottom:4px; }
+  .tagline { color:var(--sub); margin-bottom:26px; }
+  h2 { font-size:20px; margin:30px 0 10px; padding-left:12px; border-left:4px solid var(--blue); }
+  h3 { font-size:16px; margin:16px 0 6px; }
+  p, li { font-size:15px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:20px 24px; margin:14px 0; }
+  .muted { color:var(--sub); }
+  table { border-collapse:collapse; width:100%; margin:12px 0; background:#fff; }
+  th, td { border:1px solid var(--line); padding:8px 12px; font-size:14px; text-align:left; vertical-align:top; }
+  th { background:var(--blue-bg); color:var(--blue); }
+  code { background:#eef1f6; border-radius:4px; padding:1px 6px; font-size:13px; font-family:Consolas,monospace; color:#c2410c; }
+  pre { background:#1e293b; color:#e2e8f0; border-radius:10px; padding:14px 18px; font-size:13px; overflow-x:auto; margin:10px 0; line-height:1.6; }
+  .flow { text-align:center; }
+  .box { display:inline-block; border:2px solid var(--ink); border-radius:10px; padding:7px 18px; margin:4px; background:#fff; font-weight:bold; font-size:14px; }
+  .box.hl { border-color:var(--blue); background:var(--blue-bg); color:var(--blue); }
+  .arrow { display:block; color:var(--sub); margin:2px 0; }
+  .tip { border-left:4px solid var(--green); background:var(--green-bg); padding:12px 16px; border-radius:0 8px 8px 0; margin:12px 0; }
+  .warn { border-left:4px solid var(--red); background:var(--red-bg); padding:12px 16px; border-radius:0 8px 8px 0; margin:12px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<p class="crumb"><a href="../../index.html">← 返回总览</a></p>
+<h1>pigs-proxy</h1>
+<p class="tagline">前台本台：一个端口接住所有请求，按 <code>-pig</code> 分流，剩下的全是"搬运"。</p>
+
+<h2>它是干嘛的？（ELI5）</h2>
+<div class="card">
+<p>前台坐在窗口，只做三件事：<strong>收件、看标签、送件</strong>。
+收件——任何客户端发来的 HTTP 请求都接住；看标签——model 名字带不带 <code>-pig</code>；
+送件——不带标签的原封不动送去上游，带标签的转手给秘书处（orchestrator）。
+前台<strong>不理解条子的内容、不决定条子的命运、从不重试</strong>——理解是字典（protocol）和秘书处（orchestrator）的事。</p>
+</div>
+
+<h2>路由表</h2>
+<div class="card">
+<table>
+  <tr><th>路径</th><th>协议</th><th>说明</th></tr>
+  <tr><td><code>POST /chat/completions</code></td><td>OpenAI Chat</td><td rowspan="3">三种协议共用一个监听端口，按裸路径自动区分</td></tr>
+  <tr><td><code>POST /v1/messages</code></td><td>Anthropic Messages</td></tr>
+  <tr><td><code>POST /responses</code></td><td>OpenAI Responses</td></tr>
+  <tr><td><code>GET /v1/models</code></td><td>—</td><td>模型列表：每个模型 + 其 <code>-pig</code> 变体（本地生成，不打上游）</td></tr>
+</table>
+</div>
+
+<h2>一次透传的完整流程（无 -pig）</h2>
+<div class="card flow">
+  <span class="box">客户端请求</span>
+  <span class="arrow">▼ 1. 收下 body、headers</span>
+  <span class="box hl">pigs-proxy</span>
+  <span class="arrow">▼ 2. 读出 model，查后缀 → 没有 -pig</span>
+  <span class="box">原样转发：base_url + 原路径</span>
+  <span class="arrow">▼ 3. 上游响应（JSON 或 SSE 流）原样回传</span>
+  <span class="box">客户端收到</span>
+</div>
+<p class="muted" style="text-align:center">"原样"的意思：方法、路径、查询串、body、端到端头（鉴权等）一个字节不改。proxy 对请求内容是"文盲"，这是刻意设计。</p>
+
+<h2>必须带上的修复：content-encoding（血泪教训）</h2>
+<div class="warn">
+<p><strong>legacy 版的真实事故</strong>：透传时把客户端的"我可以收压缩包裹"（<code>accept-encoding: gzip</code>）原样转给了上游，
+上游真的回了压缩包裹，但 legacy 在回传时<strong>把"此件已压缩"的标签（<code>content-encoding</code> 头）撕掉了</strong>。
+客户端拿到一团 gzip 字节，以为是明文，<code>JSON.parse</code> 直接炸出 <strong>"Failed to parse JSON"</strong>。</p>
+<p>mini-proxy 已修（标签跟着包裹走）。<strong>重建 pigs-proxy 时必须带上这条修复</strong>：响应头只跳过
+<code>content-length / connection / transfer-encoding</code> 三个逐跳头，<code>content-encoding</code> 必须随 body 转发。
+（legacy 出事位置：<code>legacy/crates/pigs-proxy/src/upstream.rs:272</code>）</p>
+</div>
+
+<h2>有 -pig 时：与秘书处的握手</h2>
+<div class="card">
+<ul>
+  <li>proxy 把解析好的请求交给 <code>pigs-orchestrator</code>，拿到"一串子请求 + 合成逻辑"；</li>
+  <li>子请求通过 <strong>loopback（本机回环）</strong>再进 proxy 自己的透传通道发往上游——为什么绕一圈？
+  因为透传通道里所有"搬运"细节（头处理、流式、错误返回）已经写好了，秘书处直接复用，不另造轮子；</li>
+  <li>回环请求带一个<strong>随机内部令牌</strong>，handler 验证后跳过 <code>-pig</code> 分流（否则无限递归），发往上游前删掉令牌（不泄露）；</li>
+  <li>编排的最终答复由 proxy 以协议正确的格式（JSON 或 SSE）回给客户端。</li>
+</ul>
+</div>
+
+<h2>配置加载</h2>
+<div class="card">
+<p>3 行 toml（<code>listen</code> / <code>base_url</code> / 可选 <code>key</code>）。首次运行没有配置文件 → 生成默认配置并直接启动（passthrough 无需填 key）。
+模板用 <code>include_str!("../config.toml")</code> 嵌入二进制（mini-proxy 同款做法），支持 <code>--example</code> 导出。</p>
+</div>
+
+<h2>刻意不做（与 legacy pigs-proxy 的差异清单）</h2>
+<div class="warn">
+<table>
+  <tr><th>删掉的功能</th><th>为什么</th></tr>
+  <tr><td><code>retry.rs</code> 整套同渠道重试</td><td>双层重试会把上游抖动放大成请求风暴（10000×N 次）；健壮性归下游 Agent 或 mini-proxy</td></tr>
+  <tr><td><code>model_map</code> / models 列表 / 多供应商选择 / 未注册兜底</td><td>分流只看 <code>-pig</code> 字符串规则，上游只有一个 <code>base_url</code></td></tr>
+  <tr><td>thinking_effort 注入</td><td>归 mini-proxy（或下游 Agent 自己带）</td></tr>
+  <tr><td>x-opencode-session 补头与 <code>is_opencode</code></td><td>归 mini-proxy；编排的会话头由 orchestrator 生成并透传</td></tr>
+  <tr><td><code>[provider.aux]</code> 未识别路径透传</td><td>暂不需要，要时再加</td></tr>
+</table>
+</div>
+
+<h2>从 legacy 收编什么</h2>
+<div class="tip">
+<p><code>server.rs</code>（路由骨架，669→瘦身）、<code>upstream.rs</code>（透传+SSE 预读，带 content-encoding 修复）、
+<code>log.rs</code>（双输出日志）、<code>loopback.rs</code>（回环+令牌，改放 orchestrator 还是留这里待定——按依赖方向定）。</p>
+</div>
+
+</div>
+</body>
+</html>

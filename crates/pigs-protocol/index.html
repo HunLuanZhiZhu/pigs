@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>pigs-protocol —— 三种协议的公共字典</title>
+<style>
+  :root { --ink:#1a2332; --sub:#5a6b80; --line:#dde5ee; --blue:#2563eb; --blue-bg:#eff4ff;
+          --green:#059669; --green-bg:#ecfdf5; --red:#dc2626; --red-bg:#fef2f2; --card:#fff; --bg:#f6f8fb; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { font-family:"Microsoft YaHei","PingFang SC",sans-serif; color:var(--ink); background:var(--bg); line-height:1.75; padding:40px 16px; }
+  .wrap { max-width:920px; margin:0 auto; }
+  .crumb { font-size:13px; margin-bottom:14px; } .crumb a { color:var(--blue); text-decoration:none; }
+  h1 { font-size:28px; margin-bottom:4px; }
+  .tagline { color:var(--sub); margin-bottom:26px; }
+  h2 { font-size:20px; margin:30px 0 10px; padding-left:12px; border-left:4px solid var(--blue); }
+  h3 { font-size:16px; margin:16px 0 6px; }
+  p, li { font-size:15px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:20px 24px; margin:14px 0; }
+  .muted { color:var(--sub); }
+  table { border-collapse:collapse; width:100%; margin:12px 0; background:#fff; }
+  th, td { border:1px solid var(--line); padding:8px 12px; font-size:14px; text-align:left; vertical-align:top; }
+  th { background:var(--blue-bg); color:var(--blue); }
+  code { background:#eef1f6; border-radius:4px; padding:1px 6px; font-size:13px; font-family:Consolas,monospace; color:#c2410c; }
+  pre { background:#1e293b; color:#e2e8f0; border-radius:10px; padding:14px 18px; font-size:13px; overflow-x:auto; margin:10px 0; line-height:1.6; }
+  .tip { border-left:4px solid var(--green); background:var(--green-bg); padding:12px 16px; border-radius:0 8px 8px 0; margin:12px 0; }
+  .warn { border-left:4px solid var(--red); background:var(--red-bg); padding:12px 16px; border-radius:0 8px 8px 0; margin:12px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<p class="crumb"><a href="../../index.html">← 返回总览</a></p>
+<h1>pigs-protocol</h1>
+<p class="tagline">三种协议的<strong>公共字典</strong>。全仓库最底层，谁都可以依赖它，它谁也不依赖。</p>
+
+<h2>为什么需要它？（ELI5）</h2>
+<div class="card">
+<p>模型世界里流行三种"电报格式"，说的其实是同一件事，但写法完全不同：</p>
+<table>
+  <tr><th style="width:220px">协议</th><th style="width:230px">谁在用（例子）</th><th>一句话特征</th></tr>
+  <tr><td>OpenAI Chat Completions</td><td>大多数工具，路径 <code>/chat/completions</code></td><td>消息里用 <code>"role": "assistant"</code>，回答叫 <code>choices</code></td></tr>
+  <tr><td>Anthropic Messages</td><td>Claude Code，路径 <code>/v1/messages</code></td><td>回答叫 <code>content_block_delta</code>，鉴权用 <code>x-api-key</code></td></tr>
+  <tr><td>OpenAI Responses</td><td>Codex 等，路径 <code>/responses</code></td><td>输入叫 <code>input</code>，事件叫 <code>response.output_text</code></td></tr>
+</table>
+<p>前台（proxy）收到条子要<strong>看懂</strong>才能判断 <code>-pig</code>；秘书处（orchestrator）要<strong>改写</strong>才能编排。
+如果两边各自写一套"怎么读这三种电报"，同一段解析逻辑就会抄两份、改一处漏一处——旧工程正是踩过这个坑。
+所以把"怎么读、怎么写这三种格式"抽成<strong>唯一的一本字典</strong>，大家都来查这一本。</p>
+</div>
+
+<h2>要实现的三块内容</h2>
+
+<h3>① 消息模型（结构体）</h3>
+<div class="card">
+<p>每种协议定义一套纯 serde 结构体：请求（messages / input / system / max_tokens / tools…）、
+响应（content、tool_calls、usage…）。<strong>不带任何行为，只有数据</strong>——就像字典只给词条不给例句。
+特别地，旧的 <code>pigs-core</code> 是围着 SDK 建的，这次彻底去掉 SDK 依赖，结构体直接对齐线上协议。</p>
+</div>
+
+<h3>② JSON 与 SSE 编解码</h3>
+<div class="card">
+<p><strong>JSON</strong>：请求体进、响应体出，一进一出。</p>
+<p><strong>SSE（流式）</strong>：模型的回答是一个字一个字蹦出来的，格式长这样：</p>
+<pre>event: content_block_delta
+data: {"type":"content_block_delta","delta":{"text":"你"}}
+
+data: {"type":"content_block_delta","delta":{"text":"好"}}</pre>
+<p>要实现一个<strong>增量解析器</strong>：喂给它不完整的字节块，它吐出"目前拼到了哪个事件、文本涨了几个字"。
+透传时用它<strong>读</strong>（预读判断是否错误事件），编排时用它<strong>拼</strong>（把多次往来的文本拼成成品）。两边共用这一个实现。</p>
+</div>
+
+<h3>③ 两条字符串规则（全仓库唯一的定义处）</h3>
+<div class="card">
+<ul>
+  <li><strong><code>-pig</code> 规则</strong>：model 名以 <code>-pig</code> 结尾 → 走编排；剥掉后缀得到的名字才是真正发给上游的名字。
+  例：<code>claude-opus-5-pig</code> → 编排，上游实际请求 <code>claude-opus-5</code>。全仓库只有这里认识这个后缀，别处只调用。</li>
+  <li><strong>路径规则</strong>：请求按裸路径区分协议（<code>/chat/completions</code>、<code>/v1/messages</code>、<code>/responses</code>）；
+  转发上游时 = <code>base_url</code> + 协议后缀（append 约定，三协议共用一个地址）。</li>
+</ul>
+</div>
+
+<h2>从 legacy 收编什么</h2>
+<div class="card">
+<table>
+  <tr><th>legacy 文件</th><th>拿什么</th></tr>
+  <tr><td><code>crates/pigs-api/src/protocol.rs</code></td><td>三协议的编解码骨架</td></tr>
+  <tr><td><code>crates/pigs-api/src/phased_api_convert.rs</code></td><td>协议之间/相位之间的转换逻辑</td></tr>
+  <tr><td><code>crates/pigs-core/src/message.rs</code></td><td>消息模型（去 SDK 化重写为纯 serde）</td></tr>
+  <tr><td><code>crates/pigs-proxy/src/protocol.rs</code></td><td>裸路径判定（45 行，几乎原样搬）</td></tr>
+</table>
+</div>
+
+<h2>红线</h2>
+<div class="warn">
+<ul>
+  <li>不做 HTTP：没有 axum、没有 reqwest——它只是字典，不打电话；</li>
+  <li>不做重试、鉴权决策、模型映射（这些概念在本仓库已整体移除）；</li>
+  <li>不认识 <code>-pig</code> 之外的任何模型名语义。</li>
+</ul>
+</div>
+
+<div class="tip"><strong>验收标准：</strong>给它一段真实抓包的请求/响应字节（三种协议各来一套、流式非流式都有），
+它能解析成结构体再原样序列化回去，字节级等价。做到这个，上层两个 crate 就能放心依赖它。</div>
+
+</div>
+</body>
+</html>

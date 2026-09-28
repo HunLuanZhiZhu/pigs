@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>pigs 新架构总览 —— 只做编排的前置代理</title>
+<style>
+  :root { --ink:#1a2332; --sub:#5a6b80; --line:#dde5ee; --blue:#2563eb; --blue-bg:#eff4ff;
+          --green:#059669; --green-bg:#ecfdf5; --amber:#b45309; --amber-bg:#fffbeb;
+          --red:#dc2626; --red-bg:#fef2f2; --card:#ffffff; --bg:#f6f8fb; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { font-family:"Microsoft YaHei","PingFang SC",sans-serif; color:var(--ink);
+         background:var(--bg); line-height:1.75; padding:40px 16px; }
+  .wrap { max-width:960px; margin:0 auto; }
+  h1 { font-size:30px; margin-bottom:6px; }
+  .tagline { color:var(--sub); font-size:16px; margin-bottom:28px; }
+  h2 { font-size:21px; margin:34px 0 12px; padding-left:12px; border-left:4px solid var(--blue); }
+  h3 { font-size:16px; margin:18px 0 8px; }
+  p, li { font-size:15px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:20px 24px; margin:14px 0; }
+  .muted { color:var(--sub); }
+  .flow { text-align:center; font-size:15px; }
+  .box { display:inline-block; border:2px solid var(--ink); border-radius:10px; padding:8px 20px; margin:6px; background:#fff; font-weight:bold; }
+  .box.hl { border-color:var(--blue); background:var(--blue-bg); color:var(--blue); }
+  .box.green { border-color:var(--green); background:var(--green-bg); color:var(--green); }
+  .arrow { display:block; color:var(--sub); font-size:18px; margin:2px 0; }
+  table { border-collapse:collapse; width:100%; margin:12px 0; background:#fff; }
+  th, td { border:1px solid var(--line); padding:9px 13px; font-size:14px; text-align:left; vertical-align:top; }
+  th { background:var(--blue-bg); color:var(--blue); }
+  code { background:#eef1f6; border-radius:4px; padding:1px 6px; font-size:13px;
+         font-family:Consolas,monospace; color:#c2410c; }
+  pre { background:#1e293b; color:#e2e8f0; border-radius:10px; padding:16px 20px;
+        font-size:13.5px; overflow-x:auto; margin:12px 0; line-height:1.6; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  .tip { border-left:4px solid var(--green); background:var(--green-bg); padding:12px 16px; border-radius:0 8px 8px 0; margin:12px 0; }
+  .warn { border-left:4px solid var(--red); background:var(--red-bg); padding:12px 16px; border-radius:0 8px 8px 0; margin:12px 0; }
+  .cratenav { display:flex; flex-wrap:wrap; gap:10px; margin:16px 0; }
+  .cratenav a { display:block; background:var(--blue); color:#fff; text-decoration:none; border-radius:8px;
+                padding:10px 18px; font-weight:bold; font-size:14px; }
+  .cratenav a small { display:block; font-weight:normal; opacity:.85; font-size:12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>pigs 新架构总览</h1>
+<p class="tagline">一句话：外部请求进来，看 model 名字带不带 <code>-pig</code>；不带就直接转发，带了就交给编排引擎加工。 pigs 以后<strong>只做这一件事</strong>。</p>
+
+<h2>先用一个比喻把全局说清</h2>
+<div class="card">
+<p>把 pigs 想象成一栋楼的<strong>前台传达室</strong>：</p>
+<ul>
+  <li>客人（客户端 Agent，比如 Claude Code）递进来一张条子（HTTP 请求），条子上写着要找的人名（model id）；</li>
+  <li>前台看一眼名字：名字后面<strong>没贴 <code>-pig</code> 标签</strong> → 条子原封不动送进里屋（上游 API），答复原路带回——前台一个字都不改；</li>
+  <li>名字后面<strong>贴了 <code>-pig</code> 标签</strong> → 交给楼里的<strong>秘书处（编排引擎）</strong>，秘书处会把这一件事拆成好几步跟模型往来（先准备、再执行、后加工），最后把成品交回前台送出去。</li>
+</ul>
+<p>传达室本身<strong>不打电话查号（不做模型映射）、不重拨（不做重试）、不认识具体哪家快递（上游是谁无所谓）</strong>。</p>
+</div>
+
+<h2>一次请求的完整旅程</h2>
+<div class="card flow">
+  <span class="box">客户端 Agent</span>
+  <span class="arrow">▼ 发 HTTP 请求（三种协议之一）</span>
+  <span class="box hl">pigs :3927（前台）</span>
+  <span class="arrow">▼ 看 model 名字</span>
+  <table style="width:100%">
+    <tr><th style="width:50%">没有 <code>-pig</code></th><th>有 <code>-pig</code></th></tr>
+    <tr>
+      <td>原样转发到上游，答复原样流回</td>
+      <td>交给编排引擎：拆成 Pre → Executor → Post 多次与模型的往来，最后合成一个答复</td>
+    </tr>
+  </table>
+  <span class="arrow">▼</span>
+  <span class="box">上游（mini-proxy 或任意直连 API）</span>
+</div>
+
+<h2>四个 crate，各管一段</h2>
+<div class="card">
+<table>
+  <tr><th style="width:180px">crate</th><th>干什么（一句话）</th><th>详细说明</th></tr>
+  <tr><td><code>pigs</code></td><td>电源开关：解析命令行、读配置、把服务跑起来</td><td><a href="crates/pigs/index.html">crates/pigs/index.html</a></td></tr>
+  <tr><td><code>pigs-proxy</code></td><td>前台本台：接 HTTP、分流、透传、流式回传</td><td><a href="crates/pigs-proxy/index.html">crates/pigs-proxy/index.html</a></td></tr>
+  <tr><td><code>pigs-orchestrator</code></td><td>秘书处：把一个 -pig 请求拆成多次模型往来再合成</td><td><a href="crates/pigs-orchestrator/index.html">crates/pigs-orchestrator/index.html</a></td></tr>
+  <tr><td><code>pigs-protocol</code></td><td>字典：三种协议长什么样、怎么读怎么写</td><td><a href="crates/pigs-protocol/index.html">crates/pigs-protocol/index.html</a></td></tr>
+</table>
+<p class="muted">依赖是一条直线，永不回头：<code>pigs → pigs-proxy → pigs-orchestrator → pigs-protocol</code>。最底层的永远不知道最上层存在。</p>
+</div>
+
+<h2>上游是谁？pigs 不关心</h2>
+<div class="card">
+<p>配置里只有一个 <code>base_url</code>。它填 <strong>mini-proxy（127.0.0.1:7946）</strong>就享受它带来的会话头、模型映射、自动重试；
+填<strong>任何直连的上游 API</strong>（如 <code>https://api.anthropic.com</code>）也可以——三协议按路径自动区分，同一个地址。
+切换上游 = 改一行配置，pigs 的代码一个字不变。</p>
+<div class="tip"><strong>分工纪律：</strong>重试、模型映射、思考强度注入、x-opencode-session 补头——这些全都不在 pigs 里。
+ pigs 没接到子请求就向上抛错，绝不自己重拨。串联 mini-proxy 时由它扛，直连时由下游 Agent 自己扛。</div>
+</div>
+
+<h2>配置只有三行</h2>
+<div class="card">
+<pre>listen   = "127.0.0.1:3927"          <span style="color:#64748b"># 我在哪监听</span>
+base_url = "http://127.0.0.1:7946"   <span style="color:#64748b"># 往哪转发（唯一必填）</span>
+#key = ""                            <span style="color:#64748b"># 留空 = 透传客户端的 key</span></pre>
+<p>为什么能这么少？因为 pigs <strong>不按模型名路由</strong>（只看 <code>-pig</code> 后缀，是代码规则不是配置），
+所以旧工程里 models 列表、model_map、多供应商、兜底路由那一整层配置彻底消失。
+提示词、相位定义也全是代码（<code>include_str!</code> 嵌入），换台机器要改的只有上面三行。</p>
+</div>
+
+<h2>这次"大手术"切掉了什么</h2>
+<div class="warn">
+<p>旧工程（已整体归档在 <code>legacy/</code>）里的这些器官<strong>不再保留</strong>：
+CLI 交互、TUI 界面、工具执行（bash/file/MCP）、会话管理、权限系统、多协议 SDK 直连（pigs-llm）、
+重试与模型映射。它们属于"coding agent 产品"，而 pigs 新定位只有编排。
+旧代码中值得回收的部分，在各 crate 的说明页里逐文件列了"从 legacy 收编"清单。</p>
+</div>
+
+<h2>crate 详情页</h2>
+<div class="cratenav">
+  <a href="crates/pigs/index.html">pigs<small>可执行入口 · 几十行</small></a>
+  <a href="crates/pigs-proxy/index.html">pigs-proxy<small>HTTP 入口与分流</small></a>
+  <a href="crates/pigs-orchestrator/index.html">pigs-orchestrator<small>编排引擎</small></a>
+  <a href="crates/pigs-protocol/index.html">pigs-protocol<small>协议公共层</small></a>
+</div>
+
+</div>
+</body>
+</html>

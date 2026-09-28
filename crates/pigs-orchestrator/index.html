@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>pigs-orchestrator —— 编排引擎</title>
+<style>
+  :root { --ink:#1a2332; --sub:#5a6b80; --line:#dde5ee; --blue:#2563eb; --blue-bg:#eff4ff;
+          --green:#059669; --green-bg:#ecfdf5; --amber:#b45309; --amber-bg:#fffbeb;
+          --red:#dc2626; --red-bg:#fef2f2; --card:#fff; --bg:#f6f8fb; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { font-family:"Microsoft YaHei","PingFang SC",sans-serif; color:var(--ink); background:var(--bg); line-height:1.75; padding:40px 16px; }
+  .wrap { max-width:920px; margin:0 auto; }
+  .crumb { font-size:13px; margin-bottom:14px; } .crumb a { color:var(--blue); text-decoration:none; }
+  h1 { font-size:28px; margin-bottom:4px; }
+  .tagline { color:var(--sub); margin-bottom:26px; }
+  h2 { font-size:20px; margin:30px 0 10px; padding-left:12px; border-left:4px solid var(--blue); }
+  h3 { font-size:16px; margin:16px 0 6px; }
+  p, li { font-size:15px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:20px 24px; margin:14px 0; }
+  .muted { color:var(--sub); }
+  table { border-collapse:collapse; width:100%; margin:12px 0; background:#fff; }
+  th, td { border:1px solid var(--line); padding:8px 12px; font-size:14px; text-align:left; vertical-align:top; }
+  th { background:var(--blue-bg); color:var(--blue); }
+  code { background:#eef1f6; border-radius:4px; padding:1px 6px; font-size:13px; font-family:Consolas,monospace; color:#c2410c; }
+  pre { background:#1e293b; color:#e2e8f0; border-radius:10px; padding:14px 18px; font-size:13px; overflow-x:auto; margin:10px 0; line-height:1.6; }
+  .phase { display:flex; gap:10px; margin:14px 0; }
+  .ph { flex:1; border:2px solid var(--blue); border-radius:10px; padding:12px 14px; background:var(--blue-bg); }
+  .ph b { color:var(--blue); }
+  .ph small { color:var(--sub); display:block; margin-top:4px; }
+  .tip { border-left:4px solid var(--green); background:var(--green-bg); padding:12px 16px; border-radius:0 8px 8px 0; margin:12px 0; }
+  .warn { border-left:4px solid var(--red); background:var(--red-bg); padding:12px 16px; border-radius:0 8px 8px 0; margin:12px 0; }
+  .note { border-left:4px solid var(--amber); background:var(--amber-bg); padding:12px 16px; border-radius:0 8px 8px 0; margin:12px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<p class="crumb"><a href="../../index.html">← 返回总览</a></p>
+<h1>pigs-orchestrator</h1>
+<p class="tagline">秘书处：把一个 <code>-pig</code> 请求拆成多次与模型的往来，最后合成一个答复。<strong>本项目的灵魂。</strong></p>
+
+<h2>它在干嘛？（ELI5）</h2>
+<div class="card">
+<p>普通请求是"一问一答"。带 <code>-pig</code> 的请求，客人要的不是一问一答，而是<strong>一道工序</strong>：
+先替我把材料理一遍，再正式干，干完再按格式收拾好。秘书处就是干这个的——
+它把<strong>一件事拆成三步</strong>，每一步都跟模型打个来回，最后把结果拼成一份答复交回前台。
+它自己<strong>不认识任何模型厂商</strong>：所有"跟模型打交道"都通过写好的子请求单子，交前台（proxy）去发。</p>
+</div>
+
+<h2>三相位管线</h2>
+<div class="card">
+<div class="phase">
+  <div class="ph"><b>① Pre（备料）</b><small>在正式问题之前，先让模型/规则做一次准备：理清输入、补上下文、生成执行提示</small></div>
+  <div class="ph"><b>② Executor（执行）</b><small>正式干活：带着 Pre 的产物，把剥掉 -pig 后的原始请求发给模型，拿到正式回答</small></div>
+  <div class="ph"><b>③ Post（收拾）</b><small>把执行结果按约定格式加工/校验/补注，合成最终答复</small></div>
+</div>
+<p>每个相位 = <strong>组装一个协议原生的子请求 + 处理它的响应</strong>。相位是固定骨架，<strong>提示词是模板</strong>（<code>include_str!</code> 嵌入，协议 × 语言各一份），相位里模型看到什么、输出怎么用，全部由代码 + 模板决定，<strong>不进配置文件</strong>。</p>
+<p class="muted">注：相位的数量与职责以 <code>legacy/crates/pigs-api</code> 的实现为起点，手术中按"只保留编排必需"再裁剪——上面是概念图，不是最终定型。</p>
+</div>
+
+<h2>一次编排的生命周期</h2>
+<div class="card flow">
+  <span class="box">客户端：model = "claude-opus-5<b style="color:#c2410c">-pig</b>"</span>
+  <span class="arrow">▼ 1. proxy 交进来（已剥后缀 → 真名 claude-opus-5）</span>
+  <span class="box hl">orchestrator 生成会话 ID（或继承客户端自带值）</span>
+  <span class="arrow">▼ 2. Pre：组装子请求①（提示词模板 + 原始消息）</span>
+  <span class="box">loopback → proxy 透传通道 → 上游</span>
+  <span class="arrow">▼ 3. 拿到响应①，喂给 Executor 的组装</span>
+  <span class="box">子请求② → 上游 → 响应②</span>
+  <span class="arrow">▼ 4. Post：按模板加工，合成最终答复</span>
+  <span class="box">交回 proxy → 客户端</span>
+</div>
+
+<h2>四个关键设计</h2>
+
+<h3>① 会话头贯穿（prompt cache 不断）</h3>
+<div class="card">
+<p>一次编排会向上游发 <strong>好几个请求</strong>。如果每个请求的会话标识不一致，上游的 prompt cache 亲和就断了（每个子请求都被当新会话）。
+所以：编排开始时生成<strong>一个稳定的 <code>x-opencode-session</code></strong>（或客户端已带就继承），塞进本次编排的<strong>每一个子请求</strong>。
+下游的 mini-proxy 看到客户端（这里就是 pigs）已经带了会话头，就原样透传不覆盖——两边的设计正好咬合。</p>
+</div>
+
+<h3>② loopback 回环（不另造 HTTP 轮子）</h3>
+<div class="card">
+<p>子请求不从 orchestrator 直接发往上游，而是<strong>回环到本机 proxy 的透传通道</strong>再出去。好处：头的处理、流式转发、
+错误返回这些"搬运"细节只写一份；坏处是要防递归——回环请求带<strong>随机内部令牌</strong>，handler 验证令牌后跳过 <code>-pig</code> 分流，
+发往上游前删掉令牌。监听非回环地址时要把回环目标换算成可连地址（legacy 已有实现，照搬）。</p>
+</div>
+
+<h3>③ 对失败的态度：不重试，如实上抛</h3>
+<div class="card">
+<p>任何子请求失败（连接不上、上游报错），编排<strong>立刻停止</strong>，把错误如实交回 proxy 返回客户端。
+<strong>绝不自动重拨</strong>——重试是传输层的事（mini-proxy 或下游 Agent），编排层重试不仅职责越界，
+还会在相位之间造成状态不一致（Pre 成功了、Executor 重试五次，成本和语义都乱）。</p>
+</div>
+
+<h3>④ 纯函数化：不认识 axum</h3>
+<div class="card">
+<p>orchestrator 的公开接口大致是"给一个协议请求，还你一个可迭代执行的编排计划"。
+它<strong>不依赖 HTTP 框架</strong>（没有 axum/tower），网络交互全部通过一个窄接口（发子请求、收响应）注入。
+这样整条编排管线可以拿固定输入做<strong>离线单元测试</strong>，不用起服务器。</p>
+</div>
+
+<h2>红线</h2>
+<div class="warn">
+<ul>
+  <li><strong>不做工具执行</strong>：没有 bash/file/MCP——编排只通过协议消息与模型交互（这是本次手术砍掉 agent 循环的核心）；</li>
+  <li><strong>不做重试</strong>（见③）；</li>
+  <li><strong>不知道上游是谁</strong>：mini-proxy 还是直连 API，与它无关；</li>
+  <li><strong>不认识 axum</strong>：HTTP 只通过窄接口注入；</li>
+  <li><strong>不读配置文件</strong>：提示词、相位定义都是代码与嵌入模板，部署参数不经过它。</li>
+</ul>
+</div>
+
+<h2>从 legacy 收编什么</h2>
+<div class="note">
+<table>
+  <tr><th>legacy 文件</th><th>拿什么</th></tr>
+  <tr><td><code>crates/pigs-api/src/orchestration.rs</code> / <code>phased_runtime.rs</code> / <code>phased_phase.rs</code></td><td>相位管线与运行时骨架（大手术：剥掉对 pigs-tools/session/mcp 的依赖）</td></tr>
+  <tr><td><code>crates/pigs-api/src/phased_prompts.rs</code></td><td>模板注入方式</td></tr>
+  <tr><td><code>crates/pigs-prompts/prompts/*.txt</code></td><td>Pre/Post 模板原文（中英双语），改由 <code>include_str!</code> 嵌入</td></tr>
+  <tr><td><code>crates/pigs-proxy/src/loopback.rs</code></td><td>回环传输与内部令牌机制</td></tr>
+</table>
+<p>同时<strong>砍掉</strong>：phased_tools（工具执行）、continuation/snapshots 等会话态、对 pigs-core/pigs-llm 的 SDK 式调用。</p>
+</div>
+
+<div class="tip"><strong>验收标准：</strong>给一个固定的 <code>-pig</code> 请求 + 一个"假装上游"的固定响应序列，
+编排输出的子请求序列（顺序、model 名、注入的提示词、会话头）与预期逐字节一致；上游中途报错时编排立刻上抛、不发后续相位。</div>
+
+</div>
+</body>
+</html>
