@@ -1,0 +1,19 @@
+# 本地测试配置 — 请勿提交（已 gitignore）
+# 讯飞 MaaS 编码 API（cn-huabei-1）
+# 协议端点和模型列表在 .pigs/config.toml 中定义，此处不重复
+
+model = "auto"
+max_tokens = 8192
+temperature = 0.2
+log_to_file = true
+log_level = "info"
+
+# 全局 API key — 通过 Authorization header 发送给 proxy，proxy 透传给上游。
+# 这是唯一需要存放 API key 的地方。config.toml 中不需要 key。
+api_key = ''  # 已删除（key 失效）
+
+# --- 模型目录 ---
+# name 必须匹配 config.toml 中 [[provider]] 的 models 列表。
+# 可选字段：api_key（默认用全局）、provider（同名歧义时指定）、api（指定协议格式）、temperature。
+[[models]]
+name = "auto"

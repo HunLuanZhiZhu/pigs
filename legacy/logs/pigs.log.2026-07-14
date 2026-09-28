@@ -1,0 +1,361 @@
+{"timestamp":"2026-07-14T09:32:07.693594Z","level":"INFO","fields":{"message":"配置加载完成"},"target":"pigs_proxy"}
+{"timestamp":"2026-07-14T09:32:07.693829Z","level":"INFO","fields":{"message":"已加载渠道","provider":"AstronCodingPlan","protocol":"openai","base_url":"https://maas-coding-api.cn-huabei-1.xf-yun.com/v2","models":"[\"xopglm52\", \"xopglm51\", \"xopdeepseekv4pro\", \"xopkimik26\", \"auto\", \"xopdeepseekv4flash\"]","max_retries":10000,"key_mode":"Passthrough"},"target":"pigs_proxy"}
+{"timestamp":"2026-07-14T09:32:07.693995Z","level":"INFO","fields":{"message":"已加载渠道","provider":"AstronCodingPlan","protocol":"anthropic","base_url":"https://maas-coding-api.cn-huabei-1.xf-yun.com/anthropic","models":"[\"xopglm52\", \"xopglm51\", \"xopdeepseekv4pro\", \"xopkimik26\", \"auto\", \"xopdeepseekv4flash\"]","max_retries":10000,"key_mode":"Passthrough"},"target":"pigs_proxy"}
+{"timestamp":"2026-07-14T09:32:07.694232Z","level":"INFO","fields":{"message":"已加载渠道","provider":"AstronCodingPlan","protocol":"responses","base_url":"https://maas-coding-api.cn-huabei-1.xf-yun.com/v1/responses","models":"[\"xopglm52\", \"xopglm51\", \"xopdeepseekv4pro\", \"xopkimik26\", \"auto\", \"xopdeepseekv4flash\"]","max_retries":10000,"key_mode":"Passthrough"},"target":"pigs_proxy"}
+{"timestamp":"2026-07-14T09:32:07.699692Z","level":"INFO","fields":{"message":"服务启动完成","listen":"127.0.0.1:3927"},"target":"pigs_proxy"}
+{"timestamp":"2026-07-14T09:32:47.415279Z","level":"INFO","fields":{"message":"收到请求","path":"chat/completions","protocol":"OpenAI","model":"xopkimik26-pig"},"target":"pigs_proxy::server"}
+{"timestamp":"2026-07-14T09:32:47.416063Z","level":"INFO","fields":{"message":"pigs phase runtime: starting turn","is_continuation":false,"protocol":"openai_chat","model":"xopkimik26-pig","real_model":"xopkimik26","stream":true},"target":"pigs_api::http_runtime"}
+{"timestamp":"2026-07-14T09:32:47.416176Z","level":"INFO","fields":{"message":"pigs phase: entering phase","loop_count":1,"phase":"pre","pre_replans":0,"post_iterations":0},"target":"pigs_api::http_runtime"}
+{"timestamp":"2026-07-14T09:32:47.418674Z","level":"INFO","fields":{"message":"收到请求","path":"chat/completions","protocol":"OpenAI","model":"xopkimik26"},"target":"pigs_proxy::server"}
+{"timestamp":"2026-07-14T09:32:47.418782Z","level":"INFO","fields":{"message":"思考强度已注入","original_effort":"未设置","new_effort":"xhigh"},"target":"pigs_proxy::server"}
+{"timestamp":"2026-07-14T09:32:47.419120Z","level":"INFO","fields":{"message":"开始第 1 次尝试，共 10001 次","attempt":1,"total":10001},"target":"pigs_proxy::retry","span":{"channel":"https://maas-coding-api.cn-huabei-1.xf-yun.com/v2","model":"xopkimik26","protocol":"OpenAI","request_id":"019f5ff8-c7ba-7270-b142-a1f01ef4e2f5","name":"request"},"spans":[{"channel":"https://maas-coding-api.cn-huabei-1.xf-yun.com/v2","model":"xopkimik26","protocol":"OpenAI","request_id":"019f5ff8-c7ba-7270-b142-a1f01ef4e2f5","name":"request"}]}
+{"timestamp":"2026-07-14T09:32:49.368062Z","level":"INFO","fields":{"message":"上游返回状态码","code":200,"upstream_status":200},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:33:23.086286Z","level":"INFO","fields":{"message":"pigs phase: upstream response received","phase":"pre","tool_call_count":0,"visible_len":2585,"stop_reason":"stop","raw_output_len":2585,"raw_output_last_line":"`PIGEND`"},"target":"pigs_api::http_runtime"}
+{"timestamp":"2026-07-14T09:33:23.086445Z","level":"INFO","fields":{"message":"pigs phase: checking control marker in raw output","phase":"pre","detected_marker":"Some(End)"},"target":"pigs_api::http_runtime"}
+{"timestamp":"2026-07-14T09:33:23.086526Z","level":"INFO","fields":{"message":"pigs phase: turn complete (Advance::Complete)","phase":"pre","loop_count":1},"target":"pigs_api::http_runtime"}
+{"timestamp":"2026-07-14T09:58:22.047813Z","level":"INFO","fields":{"message":"配置加载完成"},"target":"pigs_proxy"}
+{"timestamp":"2026-07-14T09:58:22.048091Z","level":"INFO","fields":{"message":"已加载渠道","provider":"AstronCodingPlan","protocol":"openai","base_url":"https://maas-coding-api.cn-huabei-1.xf-yun.com/v2","models":"[\"xopglm52\", \"xopglm51\", \"xopdeepseekv4pro\", \"xopkimik26\", \"auto\", \"xopdeepseekv4flash\"]","max_retries":10000,"key_mode":"Passthrough"},"target":"pigs_proxy"}
+{"timestamp":"2026-07-14T09:58:22.048363Z","level":"INFO","fields":{"message":"已加载渠道","provider":"AstronCodingPlan","protocol":"anthropic","base_url":"https://maas-coding-api.cn-huabei-1.xf-yun.com/anthropic","models":"[\"xopglm52\", \"xopglm51\", \"xopdeepseekv4pro\", \"xopkimik26\", \"auto\", \"xopdeepseekv4flash\"]","max_retries":10000,"key_mode":"Passthrough"},"target":"pigs_proxy"}
+{"timestamp":"2026-07-14T09:58:22.048525Z","level":"INFO","fields":{"message":"已加载渠道","provider":"AstronCodingPlan","protocol":"responses","base_url":"https://maas-coding-api.cn-huabei-1.xf-yun.com/v1/responses","models":"[\"xopglm52\", \"xopglm51\", \"xopdeepseekv4pro\", \"xopkimik26\", \"auto\", \"xopdeepseekv4flash\"]","max_retries":10000,"key_mode":"Passthrough"},"target":"pigs_proxy"}
+{"timestamp":"2026-07-14T09:58:22.055029Z","level":"INFO","fields":{"message":"服务启动完成","listen":"127.0.0.1:3927"},"target":"pigs_proxy"}
+{"timestamp":"2026-07-14T09:59:09.399400Z","level":"INFO","fields":{"message":"收到请求","path":"chat/completions","protocol":"OpenAI","model":"xopkimik26-pig"},"target":"pigs_proxy::server"}
+{"timestamp":"2026-07-14T09:59:09.400241Z","level":"INFO","fields":{"message":"pigs phase runtime: starting turn","is_continuation":false,"protocol":"openai_chat","model":"xopkimik26-pig","real_model":"xopkimik26","stream":true},"target":"pigs_api::http_runtime"}
+{"timestamp":"2026-07-14T09:59:09.400346Z","level":"INFO","fields":{"message":"pigs phase: entering phase","loop_count":1,"phase":"pre","pre_replans":0,"post_iterations":0},"target":"pigs_api::http_runtime"}
+{"timestamp":"2026-07-14T09:59:09.402880Z","level":"INFO","fields":{"message":"收到请求","path":"chat/completions","protocol":"OpenAI","model":"xopkimik26"},"target":"pigs_proxy::server"}
+{"timestamp":"2026-07-14T09:59:09.402996Z","level":"INFO","fields":{"message":"思考强度已注入","original_effort":"未设置","new_effort":"xhigh"},"target":"pigs_proxy::server"}
+{"timestamp":"2026-07-14T09:59:09.403336Z","level":"INFO","fields":{"message":"开始第 1 次尝试，共 10001 次","attempt":1,"total":10001},"target":"pigs_proxy::retry","span":{"channel":"https://maas-coding-api.cn-huabei-1.xf-yun.com/v2","model":"xopkimik26","protocol":"OpenAI","request_id":"019f6010-eb5b-7683-86e1-8e43d1661350","name":"request"},"spans":[{"channel":"https://maas-coding-api.cn-huabei-1.xf-yun.com/v2","model":"xopkimik26","protocol":"OpenAI","request_id":"019f6010-eb5b-7683-86e1-8e43d1661350","name":"request"}]}
+{"timestamp":"2026-07-14T09:59:12.711139Z","level":"INFO","fields":{"message":"上游返回状态码","code":200,"upstream_status":200},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:26.729054Z","level":"INFO","fields":{"message":"pigs phase: upstream response received","phase":"pre","tool_call_count":0,"visible_len":2057,"stop_reason":"stop","raw_output_len":2057,"raw_output_last_line":"- 不是简单问题。理由：虽然\"介绍目录\"听起来直接，但涉及**路径确认**（用户未明确）、**多文件探索**（需要遍历目录树并识别关键文件）、**信息归纳**（需根据文件结构和内容做技术栈推断与总结），1）-4）均需实质性准备，不满足\"均不需要或极其简单\"的条件。"},"target":"pigs_api::http_runtime"}
+{"timestamp":"2026-07-14T09:59:26.729206Z","level":"INFO","fields":{"message":"pigs phase: checking control marker in raw output","phase":"pre","detected_marker":"None"},"target":"pigs_api::http_runtime"}
+{"timestamp":"2026-07-14T09:59:26.729322Z","level":"INFO","fields":{"message":"pigs phase: transitioning to next phase","from":"pre","to":"executor"},"target":"pigs_api::http_runtime"}
+{"timestamp":"2026-07-14T09:59:26.729572Z","level":"INFO","fields":{"message":"pigs phase: entering phase","loop_count":2,"phase":"executor","pre_replans":0,"post_iterations":0},"target":"pigs_api::http_runtime"}
+{"timestamp":"2026-07-14T09:59:26.730757Z","level":"INFO","fields":{"message":"收到请求","path":"chat/completions","protocol":"OpenAI","model":"xopkimik26"},"target":"pigs_proxy::server"}
+{"timestamp":"2026-07-14T09:59:26.730855Z","level":"INFO","fields":{"message":"思考强度已注入","original_effort":"未设置","new_effort":"xhigh"},"target":"pigs_proxy::server"}
+{"timestamp":"2026-07-14T09:59:26.731055Z","level":"INFO","fields":{"message":"开始第 1 次尝试，共 10001 次","attempt":1,"total":10001},"target":"pigs_proxy::retry","span":{"channel":"https://maas-coding-api.cn-huabei-1.xf-yun.com/v2","model":"xopkimik26","protocol":"OpenAI","request_id":"019f6011-2f0a-7da2-9243-c5f34eae9173","name":"request"},"spans":[{"channel":"https://maas-coding-api.cn-huabei-1.xf-yun.com/v2","model":"xopkimik26","protocol":"OpenAI","request_id":"019f6011-2f0a-7da2-9243-c5f34eae9173","name":"request"}]}
+{"timestamp":"2026-07-14T09:59:27.680473Z","level":"INFO","fields":{"message":"上游返回状态码","code":200,"upstream_status":200},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:30.853480Z","level":"INFO","fields":{"message":"pigs phase: upstream response received","phase":"executor","tool_call_count":1,"visible_len":90,"stop_reason":"tool_calls","raw_output_len":90,"raw_output_last_line":"我来帮你介绍当前目录。首先查看一下 `D:\\AIWorkSpace` 的结构和内容。"},"target":"pigs_api::http_runtime"}
+{"timestamp":"2026-07-14T09:59:30.853622Z","level":"INFO","fields":{"message":"pigs phase: pausing for external tool execution","phase":"executor","tool_ids":"[\"functions.Bash:0\"]"},"target":"pigs_api::http_runtime"}
+{"timestamp":"2026-07-14T09:59:42.710891Z","level":"INFO","fields":{"message":"收到请求","path":"chat/completions","protocol":"OpenAI","model":"xopkimik26-pig"},"target":"pigs_proxy::server"}
+{"timestamp":"2026-07-14T09:59:42.711623Z","level":"INFO","fields":{"message":"pigs phase runtime: starting turn","is_continuation":true,"protocol":"openai_chat","model":"xopkimik26-pig","real_model":"xopkimik26","stream":true},"target":"pigs_api::http_runtime"}
+{"timestamp":"2026-07-14T09:59:42.712200Z","level":"INFO","fields":{"message":"pigs phase: entering phase","loop_count":1,"phase":"executor","pre_replans":0,"post_iterations":0},"target":"pigs_api::http_runtime"}
+{"timestamp":"2026-07-14T09:59:42.713667Z","level":"INFO","fields":{"message":"收到请求","path":"chat/completions","protocol":"OpenAI","model":"xopkimik26"},"target":"pigs_proxy::server"}
+{"timestamp":"2026-07-14T09:59:42.713775Z","level":"INFO","fields":{"message":"思考强度已注入","original_effort":"未设置","new_effort":"xhigh"},"target":"pigs_proxy::server"}
+{"timestamp":"2026-07-14T09:59:42.714061Z","level":"INFO","fields":{"message":"开始第 1 次尝试，共 10001 次","attempt":1,"total":10001},"target":"pigs_proxy::retry","span":{"channel":"https://maas-coding-api.cn-huabei-1.xf-yun.com/v2","model":"xopkimik26","protocol":"OpenAI","request_id":"019f6011-6d79-76a2-81b8-6747bb7373df","name":"request"},"spans":[{"channel":"https://maas-coding-api.cn-huabei-1.xf-yun.com/v2","model":"xopkimik26","protocol":"OpenAI","request_id":"019f6011-6d79-76a2-81b8-6747bb7373df","name":"request"}]}
+{"timestamp":"2026-07-14T09:59:42.945188Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:42.945521Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:42.945643Z","level":"INFO","fields":{"message":"开始第 2 次尝试，共 10001 次","attempt":2,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:43.025933Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:43.026126Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:43.026209Z","level":"INFO","fields":{"message":"开始第 3 次尝试，共 10001 次","attempt":3,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:43.174975Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:43.175148Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:43.175228Z","level":"INFO","fields":{"message":"开始第 4 次尝试，共 10001 次","attempt":4,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:43.359909Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:43.360061Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:43.360148Z","level":"INFO","fields":{"message":"开始第 5 次尝试，共 10001 次","attempt":5,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:43.627537Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:43.627689Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:43.627765Z","level":"INFO","fields":{"message":"开始第 6 次尝试，共 10001 次","attempt":6,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:43.727514Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:43.727692Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:43.727783Z","level":"INFO","fields":{"message":"开始第 7 次尝试，共 10001 次","attempt":7,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:43.969007Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:43.969199Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:43.969299Z","level":"INFO","fields":{"message":"开始第 8 次尝试，共 10001 次","attempt":8,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:44.062042Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:44.062213Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:44.062297Z","level":"INFO","fields":{"message":"开始第 9 次尝试，共 10001 次","attempt":9,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:44.167164Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:44.167464Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:44.167718Z","level":"INFO","fields":{"message":"开始第 10 次尝试，共 10001 次","attempt":10,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:44.377440Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:44.377697Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:44.377780Z","level":"INFO","fields":{"message":"开始第 11 次尝试，共 10001 次","attempt":11,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:44.630496Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:44.630681Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:44.630804Z","level":"INFO","fields":{"message":"开始第 12 次尝试，共 10001 次","attempt":12,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:45.009072Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:45.009227Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:45.009317Z","level":"INFO","fields":{"message":"开始第 13 次尝试，共 10001 次","attempt":13,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:45.222807Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:45.222981Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:45.223064Z","level":"INFO","fields":{"message":"开始第 14 次尝试，共 10001 次","attempt":14,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:45.455786Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:45.455959Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:45.456053Z","level":"INFO","fields":{"message":"开始第 15 次尝试，共 10001 次","attempt":15,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:45.737977Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:45.738103Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:45.738202Z","level":"INFO","fields":{"message":"开始第 16 次尝试，共 10001 次","attempt":16,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:45.897231Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:45.897410Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:45.897498Z","level":"INFO","fields":{"message":"开始第 17 次尝试，共 10001 次","attempt":17,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:46.152964Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:46.153104Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:46.153198Z","level":"INFO","fields":{"message":"开始第 18 次尝试，共 10001 次","attempt":18,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:46.644435Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:46.644585Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:46.644667Z","level":"INFO","fields":{"message":"开始第 19 次尝试，共 10001 次","attempt":19,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:46.973306Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:46.973422Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:46.973503Z","level":"INFO","fields":{"message":"开始第 20 次尝试，共 10001 次","attempt":20,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:47.457371Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:47.457624Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:47.457711Z","level":"INFO","fields":{"message":"开始第 21 次尝试，共 10001 次","attempt":21,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:47.799659Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:47.799776Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:47.799853Z","level":"INFO","fields":{"message":"开始第 22 次尝试，共 10001 次","attempt":22,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:48.035609Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:48.035749Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:48.035838Z","level":"INFO","fields":{"message":"开始第 23 次尝试，共 10001 次","attempt":23,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:48.184944Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:48.185173Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:48.185286Z","level":"INFO","fields":{"message":"开始第 24 次尝试，共 10001 次","attempt":24,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:48.543173Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:48.543298Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:48.543388Z","level":"INFO","fields":{"message":"开始第 25 次尝试，共 10001 次","attempt":25,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:48.683667Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:48.683777Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:48.683851Z","level":"INFO","fields":{"message":"开始第 26 次尝试，共 10001 次","attempt":26,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:48.882249Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:48.882358Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:48.882438Z","level":"INFO","fields":{"message":"开始第 27 次尝试，共 10001 次","attempt":27,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:49.219445Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:49.219614Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:49.219713Z","level":"INFO","fields":{"message":"开始第 28 次尝试，共 10001 次","attempt":28,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:49.593801Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:49.593992Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:49.594134Z","level":"INFO","fields":{"message":"开始第 29 次尝试，共 10001 次","attempt":29,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:50.110487Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:50.110606Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:50.110686Z","level":"INFO","fields":{"message":"开始第 30 次尝试，共 10001 次","attempt":30,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:50.292762Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:50.292921Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:50.293029Z","level":"INFO","fields":{"message":"开始第 31 次尝试，共 10001 次","attempt":31,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:50.533661Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:50.533792Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:50.533877Z","level":"INFO","fields":{"message":"开始第 32 次尝试，共 10001 次","attempt":32,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:50.936130Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:50.936249Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:50.936345Z","level":"INFO","fields":{"message":"开始第 33 次尝试，共 10001 次","attempt":33,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:51.099627Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:51.099757Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:51.099845Z","level":"INFO","fields":{"message":"开始第 34 次尝试，共 10001 次","attempt":34,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:51.318207Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:51.318353Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:51.318446Z","level":"INFO","fields":{"message":"开始第 35 次尝试，共 10001 次","attempt":35,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:51.716344Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:51.716478Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:51.716589Z","level":"INFO","fields":{"message":"开始第 36 次尝试，共 10001 次","attempt":36,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:51.916583Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:51.916777Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:51.916916Z","level":"INFO","fields":{"message":"开始第 37 次尝试，共 10001 次","attempt":37,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:52.057480Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:52.057598Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:52.057674Z","level":"INFO","fields":{"message":"开始第 38 次尝试，共 10001 次","attempt":38,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:52.395974Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:52.396098Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:52.396184Z","level":"INFO","fields":{"message":"开始第 39 次尝试，共 10001 次","attempt":39,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:52.506740Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:52.506857Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:52.506935Z","level":"INFO","fields":{"message":"开始第 40 次尝试，共 10001 次","attempt":40,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:52.726981Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:52.727112Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:52.727196Z","level":"INFO","fields":{"message":"开始第 41 次尝试，共 10001 次","attempt":41,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:53.136246Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:53.136395Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:53.136496Z","level":"INFO","fields":{"message":"开始第 42 次尝试，共 10001 次","attempt":42,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:53.244168Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:53.244399Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:53.244493Z","level":"INFO","fields":{"message":"开始第 43 次尝试，共 10001 次","attempt":43,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:53.458364Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:53.458602Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:53.458677Z","level":"INFO","fields":{"message":"开始第 44 次尝试，共 10001 次","attempt":44,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:53.917549Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:53.917684Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:53.917771Z","level":"INFO","fields":{"message":"开始第 45 次尝试，共 10001 次","attempt":45,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:54.033799Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:54.033915Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:54.033996Z","level":"INFO","fields":{"message":"开始第 46 次尝试，共 10001 次","attempt":46,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:54.226018Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:54.226273Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:54.226410Z","level":"INFO","fields":{"message":"开始第 47 次尝试，共 10001 次","attempt":47,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:54.676864Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:54.677100Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:54.677189Z","level":"INFO","fields":{"message":"开始第 48 次尝试，共 10001 次","attempt":48,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:54.885877Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:54.886006Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:54.886096Z","level":"INFO","fields":{"message":"开始第 49 次尝试，共 10001 次","attempt":49,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:55.273124Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:55.273258Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:55.273427Z","level":"INFO","fields":{"message":"开始第 50 次尝试，共 10001 次","attempt":50,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:55.489164Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:55.489288Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:55.489370Z","level":"INFO","fields":{"message":"开始第 51 次尝试，共 10001 次","attempt":51,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:55.986063Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:55.986193Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:55.986282Z","level":"INFO","fields":{"message":"开始第 52 次尝试，共 10001 次","attempt":52,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:56.089294Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:56.089426Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:56.089513Z","level":"INFO","fields":{"message":"开始第 53 次尝试，共 10001 次","attempt":53,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:56.360080Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:56.360198Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:56.360291Z","level":"INFO","fields":{"message":"开始第 54 次尝试，共 10001 次","attempt":54,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:56.826362Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:56.826495Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:56.826584Z","level":"INFO","fields":{"message":"开始第 55 次尝试，共 10001 次","attempt":55,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:56.906679Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:56.906810Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:56.906900Z","level":"INFO","fields":{"message":"开始第 56 次尝试，共 10001 次","attempt":56,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:57.018109Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:57.018252Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:57.018352Z","level":"INFO","fields":{"message":"开始第 57 次尝试，共 10001 次","attempt":57,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:57.456059Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:57.456195Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:57.456283Z","level":"INFO","fields":{"message":"开始第 58 次尝试，共 10001 次","attempt":58,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:57.726262Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:57.726423Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:57.726540Z","level":"INFO","fields":{"message":"开始第 59 次尝试，共 10001 次","attempt":59,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:57.827202Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:57.827331Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:57.827417Z","level":"INFO","fields":{"message":"开始第 60 次尝试，共 10001 次","attempt":60,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:58.069939Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:58.070072Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:58.070164Z","level":"INFO","fields":{"message":"开始第 61 次尝试，共 10001 次","attempt":61,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:58.307942Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:58.308070Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:58.308148Z","level":"INFO","fields":{"message":"开始第 62 次尝试，共 10001 次","attempt":62,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:58.444347Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:58.444476Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:58.444565Z","level":"INFO","fields":{"message":"开始第 63 次尝试，共 10001 次","attempt":63,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:58.766961Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:58.767103Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:58.767196Z","level":"INFO","fields":{"message":"开始第 64 次尝试，共 10001 次","attempt":64,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:58.956634Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:58.956791Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:58.956890Z","level":"INFO","fields":{"message":"开始第 65 次尝试，共 10001 次","attempt":65,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:59.050427Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:59.050560Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:59.050647Z","level":"INFO","fields":{"message":"开始第 66 次尝试，共 10001 次","attempt":66,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:59.533396Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:59.533530Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:59.533623Z","level":"INFO","fields":{"message":"开始第 67 次尝试，共 10001 次","attempt":67,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:59.631837Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:59.631983Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:59.632071Z","level":"INFO","fields":{"message":"开始第 68 次尝试，共 10001 次","attempt":68,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:59.774541Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:59.774693Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T09:59:59.774786Z","level":"INFO","fields":{"message":"开始第 69 次尝试，共 10001 次","attempt":69,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T10:00:00.178597Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T10:00:00.178720Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T10:00:00.178806Z","level":"INFO","fields":{"message":"开始第 70 次尝试，共 10001 次","attempt":70,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T10:00:00.276547Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T10:00:00.276685Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T10:00:00.276765Z","level":"INFO","fields":{"message":"开始第 71 次尝试，共 10001 次","attempt":71,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T10:00:00.362128Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T10:00:00.362303Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T10:00:00.362395Z","level":"INFO","fields":{"message":"开始第 72 次尝试，共 10001 次","attempt":72,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T10:00:00.813178Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T10:00:00.813318Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T10:00:00.813409Z","level":"INFO","fields":{"message":"开始第 73 次尝试，共 10001 次","attempt":73,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T10:00:01.067578Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T10:00:01.067712Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T10:00:01.067798Z","level":"INFO","fields":{"message":"开始第 74 次尝试，共 10001 次","attempt":74,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T10:00:01.366964Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T10:00:01.367098Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T10:00:01.367214Z","level":"INFO","fields":{"message":"开始第 75 次尝试，共 10001 次","attempt":75,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T10:00:01.446257Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T10:00:01.446386Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T10:00:01.446476Z","level":"INFO","fields":{"message":"开始第 76 次尝试，共 10001 次","attempt":76,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T10:00:01.635441Z","level":"INFO","fields":{"message":"上游返回状态码","code":429,"upstream_status":429},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T10:00:01.635570Z","level":"WARN","fields":{"message":"命中可重试业务错误码，将重试","biz_code":11210},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T10:00:01.635698Z","level":"INFO","fields":{"message":"开始第 77 次尝试，共 10001 次","attempt":77,"total":10001},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T10:00:04.179129Z","level":"INFO","fields":{"message":"上游返回状态码","code":200,"upstream_status":200},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T10:00:06.140545Z","level":"INFO","fields":{"message":"pigs phase: upstream response received","phase":"executor","tool_call_count":1,"visible_len":0,"stop_reason":"tool_calls","raw_output_len":90,"raw_output_last_line":"我来帮你介绍当前目录。首先查看一下 `D:\\AIWorkSpace` 的结构和内容。"},"target":"pigs_api::http_runtime"}
+{"timestamp":"2026-07-14T10:00:06.140668Z","level":"INFO","fields":{"message":"pigs phase: pausing for external tool execution","phase":"executor","tool_ids":"[\"functions.Bash:1\"]"},"target":"pigs_api::http_runtime"}
+{"timestamp":"2026-07-14T10:00:06.957752Z","level":"INFO","fields":{"message":"收到请求","path":"chat/completions","protocol":"OpenAI","model":"xopkimik26-pig"},"target":"pigs_proxy::server"}
+{"timestamp":"2026-07-14T10:00:06.958320Z","level":"INFO","fields":{"message":"pigs phase runtime: starting turn","is_continuation":true,"protocol":"openai_chat","model":"xopkimik26-pig","real_model":"xopkimik26","stream":true},"target":"pigs_api::http_runtime"}
+{"timestamp":"2026-07-14T10:00:06.958620Z","level":"INFO","fields":{"message":"pigs phase: entering phase","loop_count":1,"phase":"executor","pre_replans":0,"post_iterations":0},"target":"pigs_api::http_runtime"}
+{"timestamp":"2026-07-14T10:00:06.959523Z","level":"INFO","fields":{"message":"收到请求","path":"chat/completions","protocol":"OpenAI","model":"xopkimik26"},"target":"pigs_proxy::server"}
+{"timestamp":"2026-07-14T10:00:06.959607Z","level":"INFO","fields":{"message":"已清洗空白 content 消息项","field":"messages","removed":1},"target":"pigs_proxy::server"}
+{"timestamp":"2026-07-14T10:00:06.959675Z","level":"INFO","fields":{"message":"思考强度已注入","original_effort":"未设置","new_effort":"xhigh"},"target":"pigs_proxy::server"}
+{"timestamp":"2026-07-14T10:00:06.959866Z","level":"INFO","fields":{"message":"开始第 1 次尝试，共 10001 次","attempt":1,"total":10001},"target":"pigs_proxy::retry","span":{"channel":"https://maas-coding-api.cn-huabei-1.xf-yun.com/v2","model":"xopkimik26","protocol":"OpenAI","request_id":"019f6011-cc2f-7812-b404-a0980c155aaf","name":"request"},"spans":[{"channel":"https://maas-coding-api.cn-huabei-1.xf-yun.com/v2","model":"xopkimik26","protocol":"OpenAI","request_id":"019f6011-cc2f-7812-b404-a0980c155aaf","name":"request"}]}
+{"timestamp":"2026-07-14T10:00:07.655963Z","level":"INFO","fields":{"message":"上游返回状态码","code":400,"upstream_status":400},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T10:25:42.790807Z","level":"INFO","fields":{"message":"配置加载完成"},"target":"pigs_proxy"}
+{"timestamp":"2026-07-14T10:25:42.790999Z","level":"INFO","fields":{"message":"已加载渠道","provider":"AstronCodingPlan","protocol":"openai","base_url":"https://maas-coding-api.cn-huabei-1.xf-yun.com/v2","models":"[\"xopglm52\", \"xopglm51\", \"xopdeepseekv4pro\", \"xopkimik26\", \"auto\", \"xopdeepseekv4flash\"]","max_retries":10000,"key_mode":"Passthrough"},"target":"pigs_proxy"}
+{"timestamp":"2026-07-14T10:25:42.791104Z","level":"INFO","fields":{"message":"已加载渠道","provider":"AstronCodingPlan","protocol":"anthropic","base_url":"https://maas-coding-api.cn-huabei-1.xf-yun.com/anthropic","models":"[\"xopglm52\", \"xopglm51\", \"xopdeepseekv4pro\", \"xopkimik26\", \"auto\", \"xopdeepseekv4flash\"]","max_retries":10000,"key_mode":"Passthrough"},"target":"pigs_proxy"}
+{"timestamp":"2026-07-14T10:25:42.791224Z","level":"INFO","fields":{"message":"已加载渠道","provider":"AstronCodingPlan","protocol":"responses","base_url":"https://maas-coding-api.cn-huabei-1.xf-yun.com/v1/responses","models":"[\"xopglm52\", \"xopglm51\", \"xopdeepseekv4pro\", \"xopkimik26\", \"auto\", \"xopdeepseekv4flash\"]","max_retries":10000,"key_mode":"Passthrough"},"target":"pigs_proxy"}
+{"timestamp":"2026-07-14T10:25:42.796951Z","level":"INFO","fields":{"message":"服务启动完成","listen":"127.0.0.1:3927"},"target":"pigs_proxy"}
+{"timestamp":"2026-07-14T10:26:09.826953Z","level":"INFO","fields":{"message":"收到请求","path":"chat/completions","protocol":"OpenAI","model":"xopkimik26-pig"},"target":"pigs_proxy::server"}
+{"timestamp":"2026-07-14T10:26:09.827702Z","level":"INFO","fields":{"message":"pigs phase runtime: starting turn","is_continuation":false,"protocol":"openai_chat","model":"xopkimik26-pig","real_model":"xopkimik26","stream":true},"target":"pigs_api::http_runtime"}
+{"timestamp":"2026-07-14T10:26:09.827803Z","level":"INFO","fields":{"message":"pigs phase: entering phase","loop_count":1,"phase":"pre","pre_replans":0,"post_iterations":0},"target":"pigs_api::http_runtime"}
+{"timestamp":"2026-07-14T10:26:09.830215Z","level":"INFO","fields":{"message":"收到请求","path":"chat/completions","protocol":"OpenAI","model":"xopkimik26"},"target":"pigs_proxy::server"}
+{"timestamp":"2026-07-14T10:26:09.830324Z","level":"INFO","fields":{"message":"思考强度已注入","original_effort":"未设置","new_effort":"xhigh"},"target":"pigs_proxy::server"}
+{"timestamp":"2026-07-14T10:26:09.830625Z","level":"INFO","fields":{"message":"开始第 1 次尝试，共 10001 次","attempt":1,"total":10001},"target":"pigs_proxy::retry","span":{"channel":"https://maas-coding-api.cn-huabei-1.xf-yun.com/v2","model":"xopkimik26","protocol":"OpenAI","request_id":"019f6029-a526-7db1-96da-234d8dd762d0","name":"request"},"spans":[{"channel":"https://maas-coding-api.cn-huabei-1.xf-yun.com/v2","model":"xopkimik26","protocol":"OpenAI","request_id":"019f6029-a526-7db1-96da-234d8dd762d0","name":"request"}]}
+{"timestamp":"2026-07-14T10:26:11.194730Z","level":"INFO","fields":{"message":"上游返回状态码","code":200,"upstream_status":200},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T10:26:32.748063Z","level":"INFO","fields":{"message":"pigs phase: upstream response received","phase":"pre","tool_call_count":0,"visible_len":1781,"stop_reason":"stop","raw_output_len":1781,"raw_output_last_line":"---"},"target":"pigs_api::http_runtime"}
+{"timestamp":"2026-07-14T10:26:32.748194Z","level":"INFO","fields":{"message":"pigs phase: checking control marker in raw output","phase":"pre","detected_marker":"None"},"target":"pigs_api::http_runtime"}
+{"timestamp":"2026-07-14T10:26:32.748293Z","level":"INFO","fields":{"message":"pigs phase: transitioning to next phase","from":"pre","to":"executor"},"target":"pigs_api::http_runtime"}
+{"timestamp":"2026-07-14T10:26:32.748558Z","level":"INFO","fields":{"message":"pigs phase: entering phase","loop_count":2,"phase":"executor","pre_replans":0,"post_iterations":0},"target":"pigs_api::http_runtime"}
+{"timestamp":"2026-07-14T10:26:32.749833Z","level":"INFO","fields":{"message":"收到请求","path":"chat/completions","protocol":"OpenAI","model":"xopkimik26"},"target":"pigs_proxy::server"}
+{"timestamp":"2026-07-14T10:26:32.749950Z","level":"INFO","fields":{"message":"思考强度已注入","original_effort":"未设置","new_effort":"xhigh"},"target":"pigs_proxy::server"}
+{"timestamp":"2026-07-14T10:26:32.750209Z","level":"INFO","fields":{"message":"开始第 1 次尝试，共 10001 次","attempt":1,"total":10001},"target":"pigs_proxy::retry","span":{"channel":"https://maas-coding-api.cn-huabei-1.xf-yun.com/v2","model":"xopkimik26","protocol":"OpenAI","request_id":"019f6029-feae-7211-baba-c423da0b0e7e","name":"request"},"spans":[{"channel":"https://maas-coding-api.cn-huabei-1.xf-yun.com/v2","model":"xopkimik26","protocol":"OpenAI","request_id":"019f6029-feae-7211-baba-c423da0b0e7e","name":"request"}]}
+{"timestamp":"2026-07-14T10:26:34.137218Z","level":"INFO","fields":{"message":"上游返回状态码","code":200,"upstream_status":200},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T10:26:41.176388Z","level":"INFO","fields":{"message":"pigs phase: upstream response received","phase":"executor","tool_call_count":0,"visible_len":688,"stop_reason":"stop","raw_output_len":688,"raw_output_last_line":"请告诉我具体目录路径，我立即开始分析！"},"target":"pigs_api::http_runtime"}
+{"timestamp":"2026-07-14T10:26:41.176506Z","level":"INFO","fields":{"message":"pigs phase: checking control marker in raw output","phase":"executor","detected_marker":"None"},"target":"pigs_api::http_runtime"}
+{"timestamp":"2026-07-14T10:26:41.176591Z","level":"INFO","fields":{"message":"pigs phase: transitioning to next phase","from":"executor","to":"post"},"target":"pigs_api::http_runtime"}
+{"timestamp":"2026-07-14T10:26:41.176859Z","level":"INFO","fields":{"message":"pigs phase: entering phase","loop_count":3,"phase":"post","pre_replans":0,"post_iterations":0},"target":"pigs_api::http_runtime"}
+{"timestamp":"2026-07-14T10:26:41.178088Z","level":"INFO","fields":{"message":"收到请求","path":"chat/completions","protocol":"OpenAI","model":"xopkimik26"},"target":"pigs_proxy::server"}
+{"timestamp":"2026-07-14T10:26:41.178207Z","level":"INFO","fields":{"message":"思考强度已注入","original_effort":"未设置","new_effort":"xhigh"},"target":"pigs_proxy::server"}
+{"timestamp":"2026-07-14T10:26:41.178467Z","level":"INFO","fields":{"message":"开始第 1 次尝试，共 10001 次","attempt":1,"total":10001},"target":"pigs_proxy::retry","span":{"channel":"https://maas-coding-api.cn-huabei-1.xf-yun.com/v2","model":"xopkimik26","protocol":"OpenAI","request_id":"019f602a-1f9a-7ca0-935e-b9b57ef09650","name":"request"},"spans":[{"channel":"https://maas-coding-api.cn-huabei-1.xf-yun.com/v2","model":"xopkimik26","protocol":"OpenAI","request_id":"019f602a-1f9a-7ca0-935e-b9b57ef09650","name":"request"}]}
+{"timestamp":"2026-07-14T10:26:42.216567Z","level":"INFO","fields":{"message":"上游返回状态码","code":200,"upstream_status":200},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T10:26:56.476677Z","level":"INFO","fields":{"message":"pigs phase: upstream response received","phase":"post","tool_call_count":1,"visible_len":1066,"stop_reason":"tool_calls","raw_output_len":1066,"raw_output_last_line":"由于您尚未提供具体的目录路径，我将以当前工作目录 **`D:\\AIWorkSpace`** 作为默认目标进行介绍。如果您需要介绍其他目录，请随时告知。"},"target":"pigs_api::http_runtime"}
+{"timestamp":"2026-07-14T10:26:56.476793Z","level":"INFO","fields":{"message":"pigs phase: pausing for external tool execution","phase":"post","tool_ids":"[\"functions.Bash:0\"]"},"target":"pigs_api::http_runtime"}
+{"timestamp":"2026-07-14T10:27:16.220389Z","level":"INFO","fields":{"message":"收到请求","path":"chat/completions","protocol":"OpenAI","model":"xopkimik26-pig"},"target":"pigs_proxy::server"}
+{"timestamp":"2026-07-14T10:27:16.222706Z","level":"INFO","fields":{"message":"pigs phase runtime: starting turn","is_continuation":true,"protocol":"openai_chat","model":"xopkimik26-pig","real_model":"xopkimik26","stream":true},"target":"pigs_api::http_runtime"}
+{"timestamp":"2026-07-14T10:27:16.223958Z","level":"INFO","fields":{"message":"pigs phase: entering phase","loop_count":1,"phase":"post","pre_replans":0,"post_iterations":0},"target":"pigs_api::http_runtime"}
+{"timestamp":"2026-07-14T10:27:16.226781Z","level":"INFO","fields":{"message":"收到请求","path":"chat/completions","protocol":"OpenAI","model":"xopkimik26"},"target":"pigs_proxy::server"}
+{"timestamp":"2026-07-14T10:27:16.226929Z","level":"INFO","fields":{"message":"思考强度已注入","original_effort":"未设置","new_effort":"xhigh"},"target":"pigs_proxy::server"}
+{"timestamp":"2026-07-14T10:27:16.227287Z","level":"INFO","fields":{"message":"开始第 1 次尝试，共 10001 次","attempt":1,"total":10001},"target":"pigs_proxy::retry","span":{"channel":"https://maas-coding-api.cn-huabei-1.xf-yun.com/v2","model":"xopkimik26","protocol":"OpenAI","request_id":"019f602a-a883-7ee1-a0ec-cab5fe3c8f33","name":"request"},"spans":[{"channel":"https://maas-coding-api.cn-huabei-1.xf-yun.com/v2","model":"xopkimik26","protocol":"OpenAI","request_id":"019f602a-a883-7ee1-a0ec-cab5fe3c8f33","name":"request"}]}
+{"timestamp":"2026-07-14T10:27:17.272553Z","level":"INFO","fields":{"message":"上游返回状态码","code":200,"upstream_status":200},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T10:27:22.762532Z","level":"INFO","fields":{"message":"pigs phase: upstream response received","phase":"post","tool_call_count":4,"visible_len":0,"stop_reason":"tool_calls","raw_output_len":1066,"raw_output_last_line":"由于您尚未提供具体的目录路径，我将以当前工作目录 **`D:\\AIWorkSpace`** 作为默认目标进行介绍。如果您需要介绍其他目录，请随时告知。"},"target":"pigs_api::http_runtime"}
+{"timestamp":"2026-07-14T10:27:22.762687Z","level":"INFO","fields":{"message":"pigs phase: pausing for external tool execution","phase":"post","tool_ids":"[\"functions.Bash:1\", \"functions.Bash:2\", \"functions.Bash:3\", \"functions.Bash:4\"]"},"target":"pigs_api::http_runtime"}
+{"timestamp":"2026-07-14T10:27:57.187826Z","level":"INFO","fields":{"message":"收到请求","path":"chat/completions","protocol":"OpenAI","model":"xopkimik26-pig"},"target":"pigs_proxy::server"}
+{"timestamp":"2026-07-14T10:27:57.188910Z","level":"INFO","fields":{"message":"pigs phase runtime: starting turn","is_continuation":true,"protocol":"openai_chat","model":"xopkimik26-pig","real_model":"xopkimik26","stream":true},"target":"pigs_api::http_runtime"}
+{"timestamp":"2026-07-14T10:27:57.189900Z","level":"INFO","fields":{"message":"pigs phase: entering phase","loop_count":1,"phase":"post","pre_replans":0,"post_iterations":0},"target":"pigs_api::http_runtime"}
+{"timestamp":"2026-07-14T10:27:57.192556Z","level":"INFO","fields":{"message":"收到请求","path":"chat/completions","protocol":"OpenAI","model":"xopkimik26"},"target":"pigs_proxy::server"}
+{"timestamp":"2026-07-14T10:27:57.192678Z","level":"INFO","fields":{"message":"已将 assistant tool_calls 消息的空 content 替换为空格","patched":1},"target":"pigs_proxy::server"}
+{"timestamp":"2026-07-14T10:27:57.192761Z","level":"INFO","fields":{"message":"思考强度已注入","original_effort":"未设置","new_effort":"xhigh"},"target":"pigs_proxy::server"}
+{"timestamp":"2026-07-14T10:27:57.193088Z","level":"INFO","fields":{"message":"开始第 1 次尝试，共 10001 次","attempt":1,"total":10001},"target":"pigs_proxy::retry","span":{"channel":"https://maas-coding-api.cn-huabei-1.xf-yun.com/v2","model":"xopkimik26","protocol":"OpenAI","request_id":"019f602b-4888-7333-91eb-49445f1374b8","name":"request"},"spans":[{"channel":"https://maas-coding-api.cn-huabei-1.xf-yun.com/v2","model":"xopkimik26","protocol":"OpenAI","request_id":"019f602b-4888-7333-91eb-49445f1374b8","name":"request"}]}
+{"timestamp":"2026-07-14T10:27:58.387817Z","level":"INFO","fields":{"message":"上游返回状态码","code":200,"upstream_status":200},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T10:28:01.718738Z","level":"INFO","fields":{"message":"pigs phase: upstream response received","phase":"post","tool_call_count":3,"visible_len":0,"stop_reason":"tool_calls","raw_output_len":1066,"raw_output_last_line":"由于您尚未提供具体的目录路径，我将以当前工作目录 **`D:\\AIWorkSpace`** 作为默认目标进行介绍。如果您需要介绍其他目录，请随时告知。"},"target":"pigs_api::http_runtime"}
+{"timestamp":"2026-07-14T10:28:01.718874Z","level":"INFO","fields":{"message":"pigs phase: pausing for external tool execution","phase":"post","tool_ids":"[\"functions.Read:5\", \"functions.Read:6\", \"functions.Read:7\"]"},"target":"pigs_api::http_runtime"}
+{"timestamp":"2026-07-14T10:28:01.807915Z","level":"INFO","fields":{"message":"收到请求","path":"chat/completions","protocol":"OpenAI","model":"xopkimik26-pig"},"target":"pigs_proxy::server"}
+{"timestamp":"2026-07-14T10:28:01.808755Z","level":"INFO","fields":{"message":"pigs phase runtime: starting turn","is_continuation":true,"protocol":"openai_chat","model":"xopkimik26-pig","real_model":"xopkimik26","stream":true},"target":"pigs_api::http_runtime"}
+{"timestamp":"2026-07-14T10:28:01.809455Z","level":"INFO","fields":{"message":"pigs phase: entering phase","loop_count":1,"phase":"post","pre_replans":0,"post_iterations":0},"target":"pigs_api::http_runtime"}
+{"timestamp":"2026-07-14T10:28:01.811529Z","level":"INFO","fields":{"message":"收到请求","path":"chat/completions","protocol":"OpenAI","model":"xopkimik26"},"target":"pigs_proxy::server"}
+{"timestamp":"2026-07-14T10:28:01.811655Z","level":"INFO","fields":{"message":"已将 assistant tool_calls 消息的空 content 替换为空格","patched":2},"target":"pigs_proxy::server"}
+{"timestamp":"2026-07-14T10:28:01.811789Z","level":"INFO","fields":{"message":"思考强度已注入","original_effort":"未设置","new_effort":"xhigh"},"target":"pigs_proxy::server"}
+{"timestamp":"2026-07-14T10:28:01.812211Z","level":"INFO","fields":{"message":"开始第 1 次尝试，共 10001 次","attempt":1,"total":10001},"target":"pigs_proxy::retry","span":{"channel":"https://maas-coding-api.cn-huabei-1.xf-yun.com/v2","model":"xopkimik26","protocol":"OpenAI","request_id":"019f602b-5a94-7773-bae7-d3d2056244df","name":"request"},"spans":[{"channel":"https://maas-coding-api.cn-huabei-1.xf-yun.com/v2","model":"xopkimik26","protocol":"OpenAI","request_id":"019f602b-5a94-7773-bae7-d3d2056244df","name":"request"}]}
+{"timestamp":"2026-07-14T10:28:02.835587Z","level":"INFO","fields":{"message":"上游返回状态码","code":200,"upstream_status":200},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T10:28:12.251328Z","level":"INFO","fields":{"message":"pigs phase: upstream response received","phase":"post","tool_call_count":3,"visible_len":1,"stop_reason":"tool_calls","raw_output_len":1069,"raw_output_last_line":" "},"target":"pigs_api::http_runtime"}
+{"timestamp":"2026-07-14T10:28:12.251469Z","level":"INFO","fields":{"message":"pigs phase: pausing for external tool execution","phase":"post","tool_ids":"[\"functions.Read:8\", \"functions.Read:9\", \"functions.Bash:10\"]"},"target":"pigs_api::http_runtime"}
+{"timestamp":"2026-07-14T10:28:20.217877Z","level":"INFO","fields":{"message":"收到请求","path":"chat/completions","protocol":"OpenAI","model":"xopkimik26-pig"},"target":"pigs_proxy::server"}
+{"timestamp":"2026-07-14T10:28:20.218894Z","level":"INFO","fields":{"message":"pigs phase runtime: starting turn","is_continuation":true,"protocol":"openai_chat","model":"xopkimik26-pig","real_model":"xopkimik26","stream":true},"target":"pigs_api::http_runtime"}
+{"timestamp":"2026-07-14T10:28:20.219595Z","level":"INFO","fields":{"message":"pigs phase: entering phase","loop_count":1,"phase":"post","pre_replans":0,"post_iterations":0},"target":"pigs_api::http_runtime"}
+{"timestamp":"2026-07-14T10:28:20.221277Z","level":"INFO","fields":{"message":"收到请求","path":"chat/completions","protocol":"OpenAI","model":"xopkimik26"},"target":"pigs_proxy::server"}
+{"timestamp":"2026-07-14T10:28:20.221455Z","level":"INFO","fields":{"message":"已将 assistant tool_calls 消息的空 content 替换为空格","patched":2},"target":"pigs_proxy::server"}
+{"timestamp":"2026-07-14T10:28:20.221539Z","level":"INFO","fields":{"message":"思考强度已注入","original_effort":"未设置","new_effort":"xhigh"},"target":"pigs_proxy::server"}
+{"timestamp":"2026-07-14T10:28:20.221897Z","level":"INFO","fields":{"message":"开始第 1 次尝试，共 10001 次","attempt":1,"total":10001},"target":"pigs_proxy::retry","span":{"channel":"https://maas-coding-api.cn-huabei-1.xf-yun.com/v2","model":"xopkimik26","protocol":"OpenAI","request_id":"019f602b-a27d-74b3-bf63-272fd676bf37","name":"request"},"spans":[{"channel":"https://maas-coding-api.cn-huabei-1.xf-yun.com/v2","model":"xopkimik26","protocol":"OpenAI","request_id":"019f602b-a27d-74b3-bf63-272fd676bf37","name":"request"}]}
+{"timestamp":"2026-07-14T10:28:21.891055Z","level":"INFO","fields":{"message":"上游返回状态码","code":200,"upstream_status":200},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T10:29:21.770553Z","level":"INFO","fields":{"message":"pigs phase: upstream response received","phase":"post","tool_call_count":0,"visible_len":6771,"stop_reason":"stop","raw_output_len":7842,"raw_output_last_line":"**技术栈统计**：以 **Rust** 为主（系统级/游戏级开发），辅以 **Python**（算法实验/数据科学），涵盖 WebAssembly、深度学习、信号处理等多个技术领域。"},"target":"pigs_api::http_runtime"}
+{"timestamp":"2026-07-14T10:29:21.770747Z","level":"INFO","fields":{"message":"pigs phase: checking control marker in raw output","phase":"post","detected_marker":"None"},"target":"pigs_api::http_runtime"}
+{"timestamp":"2026-07-14T10:29:21.770859Z","level":"INFO","fields":{"message":"pigs phase: transitioning to next phase","from":"post","to":"post"},"target":"pigs_api::http_runtime"}
+{"timestamp":"2026-07-14T10:29:21.771065Z","level":"INFO","fields":{"message":"pigs phase: entering phase","loop_count":2,"phase":"post","pre_replans":0,"post_iterations":1},"target":"pigs_api::http_runtime"}
+{"timestamp":"2026-07-14T10:29:21.772630Z","level":"INFO","fields":{"message":"收到请求","path":"chat/completions","protocol":"OpenAI","model":"xopkimik26"},"target":"pigs_proxy::server"}
+{"timestamp":"2026-07-14T10:29:21.772736Z","level":"INFO","fields":{"message":"已将 assistant tool_calls 消息的空 content 替换为空格","patched":2},"target":"pigs_proxy::server"}
+{"timestamp":"2026-07-14T10:29:21.772888Z","level":"INFO","fields":{"message":"思考强度已注入","original_effort":"未设置","new_effort":"xhigh"},"target":"pigs_proxy::server"}
+{"timestamp":"2026-07-14T10:29:21.773337Z","level":"INFO","fields":{"message":"开始第 1 次尝试，共 10001 次","attempt":1,"total":10001},"target":"pigs_proxy::retry","span":{"channel":"https://maas-coding-api.cn-huabei-1.xf-yun.com/v2","model":"xopkimik26","protocol":"OpenAI","request_id":"019f602c-92ed-73a3-91d0-0f8c2ce70aaf","name":"request"},"spans":[{"channel":"https://maas-coding-api.cn-huabei-1.xf-yun.com/v2","model":"xopkimik26","protocol":"OpenAI","request_id":"019f602c-92ed-73a3-91d0-0f8c2ce70aaf","name":"request"}]}
+{"timestamp":"2026-07-14T10:29:23.447976Z","level":"INFO","fields":{"message":"上游返回状态码","code":200,"upstream_status":200},"target":"pigs_proxy::retry"}
+{"timestamp":"2026-07-14T10:29:55.100921Z","level":"INFO","fields":{"message":"pigs phase: upstream response received","phase":"post","tool_call_count":0,"visible_len":1324,"stop_reason":"stop","raw_output_len":1324,"raw_output_last_line":"PIGEND"},"target":"pigs_api::http_runtime"}
+{"timestamp":"2026-07-14T10:29:55.101032Z","level":"INFO","fields":{"message":"pigs phase: checking control marker in raw output","phase":"post","detected_marker":"Some(End)"},"target":"pigs_api::http_runtime"}
+{"timestamp":"2026-07-14T10:29:55.101122Z","level":"INFO","fields":{"message":"pigs phase: turn complete (Advance::Complete)","phase":"post","loop_count":2},"target":"pigs_api::http_runtime"}
