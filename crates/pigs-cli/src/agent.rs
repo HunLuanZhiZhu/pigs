@@ -497,7 +497,7 @@ impl Agent {
         on_progress: impl Fn(crate::phased_runtime::TurnProgress) + Send + Sync + 'static,
     ) -> anyhow::Result<String> {
         // Extract the sub-agent's data from the manager
-        let (messages, system_prompt, model_name, _allowed_tools) = {
+        let (messages, _system_prompt, model_name, _allowed_tools) = {
             let mgr = self.sub_agent_manager.lock()
                 .unwrap_or_else(|e| e.into_inner());
             let sub = mgr.get(sub_id)

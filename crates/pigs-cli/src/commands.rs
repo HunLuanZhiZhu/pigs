@@ -355,7 +355,7 @@ pub async fn handle_command(agent: &mut Agent, line: &str) -> anyhow::Result<Com
                 .total_usage
                 .estimate_cost_for_model(agent.api_client.model())
             {
-                agent.output.println("Est cost:   ${cost:.4}");
+                agent.output.println(format!("Est cost:   ${cost:.4}"));
             }
             agent.output.println(format!(
                 "Tools:      {}",
@@ -429,7 +429,7 @@ pub async fn handle_command(agent: &mut Agent, line: &str) -> anyhow::Result<Com
             agent.output.println(format!("  Total tokens:  {}", usage.total_tokens()));
             match usage.estimate_cost_for_model(model) {
                 Some(cost) => {
-                    agent.output.println("  Est. cost:     ${cost:.4} USD (approximate list pricing)");
+                    agent.output.println(format!("  Est. cost:     ${cost:.4} USD (approximate list pricing)"));
                 }
                 None => {
                     agent.output.println("  Est. cost:     (unknown model pricing)");

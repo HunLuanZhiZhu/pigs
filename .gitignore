@@ -3,3 +3,4 @@
 *.log
 request_body.json
 /references/
+.pigs/pig.local.toml

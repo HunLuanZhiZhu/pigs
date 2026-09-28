@@ -416,7 +416,7 @@ pub fn run_model_add_wizard(agent: &mut Agent) -> anyhow::Result<()> {
 
     // Step 6: remote model id
     let remote_default = local_name.clone();
-    let remote_model = match prompt_line(
+    let _remote_model = match prompt_line(
         if zh {
             "6/7 远端模型 id（发给 API 的 model 字段）"
         } else {

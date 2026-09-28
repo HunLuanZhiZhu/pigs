@@ -4,10 +4,10 @@
 //! similar to PI's model selector and session picker.
 
 use ratatui::buffer::Buffer;
-use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Widget};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Widget};
 
 /// Which overlay is currently active (if any).
 #[derive(Debug, Clone, PartialEq)]

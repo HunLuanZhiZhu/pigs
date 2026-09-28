@@ -6,7 +6,7 @@
 //! Detection is done by checking terminal capabilities via environment
 //! variables and the TERM_PROGRAM variable.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// Supported terminal image protocols.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

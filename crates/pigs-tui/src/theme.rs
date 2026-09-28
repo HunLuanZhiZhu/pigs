@@ -3,7 +3,7 @@
 //! Provides a set of predefined color themes that control the appearance
 //! of all TUI components. Themes can be switched at runtime.
 
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::Color;
 
 /// A complete color theme for the TUI.
 #[derive(Debug, Clone)]
