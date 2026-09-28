@@ -1679,19 +1679,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pigs-mini-agent"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "reqwest",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 1.0.69",
- "tokio",
-]
-
-[[package]]
 name = "pigs-permissions"
 version = "0.1.0"
 dependencies = [
