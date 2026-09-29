@@ -24,7 +24,7 @@ impl FakeTransport {
         }
     }
 
-    /// 同时携带三种协议的文本形状，任何协议都能提取；带 usage 便于验证累加。
+    /// 同时携带三种协议的文本形状，任何协议都能提取；带 usage 便于验证整对象选择。
     fn text(status: u16, text: &str) -> SubResponse {
         Self::json(
             status,
@@ -282,10 +282,10 @@ async fn happy_path_three_pigs_with_pigend() {
     assert_eq!(result.ended_with, EndedWith::PigEnd);
     assert_eq!(result.text, "分析：需要X和Y\n\n执行结果……\n\n验收通过");
     assert_eq!(result.path, vec![Pig::Pre, Pig::Executor, Pig::Post]);
-    // usage 跨相位累加、stop_reason 取上游的值（不再造假）
+    // usage 取 input 最大的那只子请求的原对象、stop_reason 取上游的值
     assert_eq!(
         result.usage.unwrap(),
-        json!({"input_tokens": 3, "output_tokens": 6})
+        json!({"input_tokens": 1, "output_tokens": 2})
     );
     assert_eq!(result.stop_reason.as_deref(), Some("stop"));
 

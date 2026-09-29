@@ -6,7 +6,7 @@
 use crate::lang::Lang;
 use pigs_protocol::Part;
 use crate::Pig;
-use serde_json::{json, Map, Value};
+use serde_json::Value;
 use std::time::{Duration, Instant};
 
 /// 一轮编排的现场（跨暂停保留）。
@@ -36,7 +36,7 @@ pub struct TurnState {
     pub lang: Lang,
     /// 会话标识（所有子请求共用）。
     pub session: String,
-    /// 跨相位累加的上游 usage（原样对象，数字相加）。
+    /// 上游 usage 原对象：整轮里 input_tokens 最大的那只子请求的原值（零合成）。
     pub usage: Option<Value>,
     /// 最后一个相位给的停止原因（原样回传）。
     pub stop_reason: Option<String>,
@@ -62,7 +62,7 @@ impl TurnState {
         }
     }
 
-    /// 记一轮模型输出：文本进 visible、原始文本进 phase_raw、usage 累加、停止原因更新。
+    /// 记一轮模型输出：文本进 visible、原始文本进 phase_raw、usage 取 input 最大者整对象、停止原因更新。
     pub fn record_round(&mut self, raw_text: &str, output: &crate::proto::ModelOutput) {
         self.phase_raw.push(raw_text.to_string());
         let visible = crate::markers::strip_markers(raw_text);
@@ -92,10 +92,16 @@ impl TurnState {
             }
         }
         if let Some(usage) = &output.usage {
-            self.usage = Some(match self.usage.take() {
-                Some(acc) => add_usage(&acc, usage),
-                None => usage.clone(),
-            });
+            // 整对象选择：input_tokens 最大的那只子请求原样胜出（缺失按 0，平局保持现有）
+            // ——不做任何跨相位相加，回传的每个数都是上游真实产生过的。
+            let input = |u: &Value| u.get("input_tokens").and_then(Value::as_u64).unwrap_or(0);
+            let larger = match &self.usage {
+                None => true,
+                Some(current) => input(usage) > input(current),
+            };
+            if larger {
+                self.usage = Some(usage.clone());
+            }
         }
         // 以**最后一轮**的值为准：工具暂停那一轮的 tool_calls 不该残留到最终答复
         self.stop_reason = output.stop_reason.clone();
@@ -128,29 +134,6 @@ impl TurnState {
             usage: self.usage,
             stop_reason: self.stop_reason,
         }
-    }
-}
-
-/// 数值字段递归相加（usage 累加语义；与 legacy 一致）。
-pub fn add_usage(target: &Value, source: &Value) -> Value {
-    match (target, source) {
-        (Value::Object(base), Value::Object(extra)) => {
-            let mut merged: Map<String, Value> = base.clone();
-            for (key, value) in extra {
-                let next = match merged.get(key) {
-                    Some(existing) => add_usage(existing, value),
-                    None => value.clone(),
-                };
-                merged.insert(key.clone(), next);
-            }
-            Value::Object(merged)
-        }
-        (Value::Number(a), Value::Number(b)) => match (a.as_i64(), b.as_i64()) {
-            (Some(a), Some(b)) => json!(a + b),
-            _ => json!(a.as_f64().unwrap_or(0.0) + b.as_f64().unwrap_or(0.0)),
-        },
-        // 其它类型（字符串/布尔/数组/空对象）以 source 为准
-        (_, other) => other.clone(),
     }
 }
 
@@ -235,20 +218,60 @@ impl ContinuationStore {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
+    use serde_json::json;
 
     fn state() -> TurnState {
         TurnState::new(Lang::Zh, "sess".into())
     }
 
+    /// 构造一个只带 usage 的模型输出（其余字段空）。
+    fn output_with_usage(usage: Value) -> crate::proto::ModelOutput {
+        crate::proto::ModelOutput {
+            text: String::new(),
+            tool_calls: Vec::new(),
+            parts: Vec::new(),
+            stop_reason: Some("end_turn".into()),
+            usage: Some(usage),
+        }
+    }
+
     #[test]
-    fn usage_accumulates_numerically_and_recursively() {
-        let a = json!({"input_tokens": 10, "output_tokens": 2, "cache": {"read": 5}});
-        let b = json!({"input_tokens": 3, "output_tokens": 4, "cache": {"read": 1, "write": 7}});
-        let sum = add_usage(&a, &b);
-        assert_eq!(sum["input_tokens"], 13);
-        assert_eq!(sum["output_tokens"], 6);
-        assert_eq!(sum["cache"]["read"], 6);
-        assert_eq!(sum["cache"]["write"], 7);
+    fn usage_keeps_the_largest_input_object_verbatim() {
+        // input 最大的那只子请求整对象胜出；字段一个不改，也不做任何相加。
+        let mut state = state();
+        state.record_round(
+            "第一轮",
+            &output_with_usage(json!({"input_tokens": 10, "output_tokens": 2, "cache": {"read": 5}})),
+        );
+        state.record_round(
+            "第二轮",
+            &output_with_usage(json!({"input_tokens": 3, "output_tokens": 4, "cache": {"read": 1, "write": 7}})),
+        );
+        let usage = state.usage.expect("应有 usage");
+        assert_eq!(usage["input_tokens"], 10);
+        assert_eq!(usage["output_tokens"], 2);
+        assert_eq!(usage["cache"]["read"], 5);
+        assert!(
+            usage["cache"].get("write").is_none(),
+            "整对象透传，不许混入其它子请求的字段"
+        );
+    }
+
+    #[test]
+    fn usage_max_survives_when_the_last_phase_is_smaller() {
+        // 边界：最后一轮 input 更小（重规划/恢复后常见），最大者仍是更早那只的原值。
+        let mut state = state();
+        state.record_round(
+            "第一轮",
+            &output_with_usage(json!({"input_tokens": 9, "output_tokens": 1})),
+        );
+        state.record_round(
+            "最后一轮",
+            &output_with_usage(json!({"input_tokens": 4, "output_tokens": 8})),
+        );
+        let usage = state.usage.expect("应有 usage");
+        assert_eq!(usage["input_tokens"], 9);
+        assert_eq!(usage["output_tokens"], 1);
     }
 
     #[test]
