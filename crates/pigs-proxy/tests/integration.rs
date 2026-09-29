@@ -199,6 +199,7 @@ async fn pig_flow_full_orchestration_via_loopback() {
     let resp = client
         .post(format!("{pigs_url}/chat/completions"))
         .header("authorization", "Bearer client-key")
+        .header("accept-encoding", "gzip, deflate, br")
         .json(&openai_body("gpt-x-pig", false))
         .send()
         .await
@@ -213,7 +214,12 @@ async fn pig_flow_full_orchestration_via_loopback() {
     // 上游收到 3 次子请求，均为真名、非流式、无工具，且带一致会话头
     let reqs = fu.requests.lock().unwrap();
     assert_eq!(reqs.len(), 3);
-    for (i, (_path, body, _hdrs)) in reqs.iter().enumerate() {
+    for (i, (_path, body, hdrs)) in reqs.iter().enumerate() {
+        // 子请求绝不能带 accept-encoding：上游回压缩体后编排层无法解析 JSON
+        assert!(
+            hdrs.get("h:accept-encoding").is_none(),
+            "子请求不允许携带 accept-encoding（第 {i} 只 pig）"
+        );
         assert_eq!(body["model"], "gpt-x");
         assert_eq!(body["stream"], false);
         assert!(body.get("tools").is_none());

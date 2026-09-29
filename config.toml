@@ -1,6 +1,6 @@
 # pigs 配置 —— 只有部署位置需要配置（提示词、-pig 规则、相位全部在代码里）
 listen = "127.0.0.1:3927"
 # 上游地址：mini-proxy（如 http://127.0.0.1:7946）或任意直连上游 API
-base_url = "http://127.0.0.1:7946"
+base_url = "https://opencode.ai/zen/go/v1"
 # 留空 = 透传客户端的 key；填了则覆盖
 key = ""

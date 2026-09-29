@@ -1,6 +1,8 @@
 //! pigs —— 可执行入口。电源开关：解析参数 → 读配置 → 起服务。
 //! 红线：这里不出现任何业务逻辑。
 
+mod logging;
+
 use anyhow::{bail, Result};
 
 const CONFIG_PATH: &str = "config.toml";
@@ -53,13 +55,9 @@ async fn main() -> Result<()> {
         bail!("base_url 未配置：请编辑 {CONFIG_PATH} 或使用 --base-url");
     }
 
-    // 日志：固定写文件 + 控制台，RUST_LOG 可调级别
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
-        )
-        .init();
+    // 日志：控制台 + logs/pigs.log.<日期>，RUST_LOG 可调级别
+    let _log_guard = logging::init()?;
+    tracing::info!(listen = %config.listen, base_url = %config.base_url, "pigs 启动");
 
     pigs_proxy::serve(config).await
 }

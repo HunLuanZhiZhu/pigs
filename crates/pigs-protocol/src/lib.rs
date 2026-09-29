@@ -22,6 +22,12 @@ pub use surgery::{
 pub enum Error {
     #[error("请求 body 不是合法 JSON: {0}")]
     InvalidJson(#[source] serde_json::Error),
+    #[error("上游响应不是合法 JSON（content-type={content_type}）: {reason}；body 前 300 字符: {snippet}")]
+    InvalidJsonWithBody {
+        reason: String,
+        content_type: String,
+        snippet: String,
+    },
     #[error("无法在 body 中定位最后一条 user 消息（协议 {0:?}）")]
     NoUserMessage(Protocol),
     #[error("无法从响应中提取文本（协议 {0:?}）")]

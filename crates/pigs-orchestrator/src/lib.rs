@@ -275,7 +275,15 @@ impl Ctx {
         proto::strip_tools(&mut body);
         proto::replace_last_user_text(&mut body, self.input.protocol, payload)?;
 
-        let mut headers = self.input.base_headers.clone();
+        // 子请求不带 accept-encoding：强制上游回明文 JSON。
+        // 否则客户端的 gzip 头会一路透传到上游，压缩体回到编排层无法解析。
+        let mut headers: Vec<(String, String)> = self
+            .input
+            .base_headers
+            .iter()
+            .filter(|(k, _)| !k.eq_ignore_ascii_case("accept-encoding"))
+            .cloned()
+            .collect();
         let has = |headers: &[(String, String)], key: &str| {
             headers.iter().any(|(k, _)| k.eq_ignore_ascii_case(key))
         };
@@ -315,8 +323,18 @@ fn extract_text(protocol: proto::Protocol, pig: Pig, resp: &SubResponse) -> Resu
     let text = if proto::is_sse_content_type(resp.content_type.as_deref()) {
         proto::extract_sse_text(protocol, &String::from_utf8_lossy(&resp.body))
     } else {
-        let v: Value = serde_json::from_slice(&resp.body).map_err(proto::Error::InvalidJson)?;
-        proto::extract_response_text(protocol, &v)
+        match serde_json::from_slice::<Value>(&resp.body) {
+            Ok(v) => proto::extract_response_text(protocol, &v),
+            Err(e) => {
+                // 上游回了 2xx 但 body 不是 JSON：把现场带进错误，便于诊断
+                let snippet: String = String::from_utf8_lossy(&resp.body).chars().take(300).collect();
+                return Err(Error::Protocol(proto::Error::InvalidJsonWithBody {
+                    reason: e.to_string(),
+                    content_type: resp.content_type.clone().unwrap_or_default(),
+                    snippet,
+                }));
+            }
+        }
     };
     text.ok_or(Error::NoText(protocol, pig.as_str()))
 }
