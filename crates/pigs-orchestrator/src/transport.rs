@@ -1,6 +1,10 @@
 //! 子请求传输接口：编排器对"怎么发 HTTP"完全无感知，只依赖此 trait。
 
 use bytes::Bytes;
+use std::sync::Arc;
+
+/// 流式响应中接收原始文本增量的回调（**含控制标记**，过滤由编排层负责）。
+pub type TextSink = Arc<dyn Fn(&str) + Send + Sync>;
 
 /// 一个协议原生的子请求（发往上游 = 经 loopback 走 proxy 透传通道）。
 #[derive(Debug, Clone)]
@@ -13,8 +17,8 @@ pub struct SubRequest {
     pub body: Bytes,
 }
 
-/// 子请求的响应（编排强制 `stream:false`，正常情况下 body 是 JSON；
-/// 若上游无视并回 SSE，也按 SSE 文本提取兜底）。
+/// 子请求的响应。流式与非流式都返回**完整 body**（增量已另行回调）：
+/// 编排需要在全文上判定控制标记，所以累积的原文始终要拿得到。
 #[derive(Debug, Clone)]
 pub struct SubResponse {
     pub status: u16,
@@ -37,5 +41,16 @@ pub type TransportResult = std::result::Result<SubResponse, TransportError>;
 /// 传输抽象：生产实现 = proxy 的 loopback；测试实现 = 脚本化的假上游。
 #[async_trait::async_trait]
 pub trait Transport: Send + Sync {
+    /// 非流式发送（客户端没要流式时走这里）。
     async fn send(&self, req: SubRequest) -> TransportResult;
+
+    /// 流式发送：上游 SSE 增量到达时即时回调 `sink`，同时返回累积的完整响应。
+    ///
+    /// 两者都由实现负责——回调用于"边收边转发"，返回值用于在全文上判定 PIGEND/PIGFAIL。
+    async fn send_streaming(
+        &self,
+        req: SubRequest,
+        protocol: pigs_protocol::Protocol,
+        sink: TextSink,
+    ) -> TransportResult;
 }

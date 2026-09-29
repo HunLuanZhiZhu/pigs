@@ -6,3 +6,4 @@ request_body.json
 .pigs/pig.local.toml
 /pigs-mini-agent/
 config.example.toml
+/target-alt/

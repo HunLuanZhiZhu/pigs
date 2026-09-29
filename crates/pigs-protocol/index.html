@@ -64,8 +64,11 @@
 data: {"type":"content_block_delta","delta":{"text":"你"}}
 
 data: {"type":"content_block_delta","delta":{"text":"好"}}</pre>
-<p>要实现一个<strong>增量解析器</strong>：喂给它不完整的字节块，它吐出"目前拼到了哪个事件、文本涨了几个字"。
-透传时用它<strong>读</strong>（预读判断是否错误事件），编排时用它<strong>拼</strong>（把多次往来的文本拼成成品）。两边共用这一个实现。</p>
+<p>要实现一个<strong>增量解析器</strong>（<code>SseTextStream</code>）：喂给它不完整的字节块，它吐出"目前拼到了哪个事件、文本涨了几个字"。
+块边界可以落在任何地方——一行中间、甚至一个中文字符的中间——所以它按字节缓冲、只处理完整行。</p>
+<p>反方向也有一个：<code>StreamEncoder</code> 把文本<strong>写成</strong>协议正确的 SSE 帧序列（起始帧 → 每只 pig 一个文本块 → 终止帧），
+编排边出文本边调用它。不流式时用的 <code>synthesize_sse</code> 就是同一个编码器跑一遍，保证两条路径的事件形状完全一致
+（测试里把编码结果回读，必须等于最终答复）。</p>
 </div>
 
 <h3>③ 两条字符串规则（全仓库唯一的定义处）</h3>

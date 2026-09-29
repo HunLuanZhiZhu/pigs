@@ -54,8 +54,42 @@
   <div class="ph"><b>② Executor（执行）</b><small>正式干活：带着 Pre 的产物，把剥掉 -pig 后的原始请求发给模型，拿到正式回答</small></div>
   <div class="ph"><b>③ Post（收拾）</b><small>把执行结果按约定格式加工/校验/补注，合成最终答复</small></div>
 </div>
-<p>每个相位 = <strong>组装一个协议原生的子请求 + 处理它的响应</strong>。相位是固定骨架，<strong>提示词是模板</strong>（<code>include_str!</code> 嵌入，协议 × 语言各一份），相位里模型看到什么、输出怎么用，全部由代码 + 模板决定，<strong>不进配置文件</strong>。</p>
-<p class="muted">注：相位的数量与职责以 <code>legacy/crates/pigs-api</code> 的实现为起点，手术中按"只保留编排必需"再裁剪——上面是概念图，不是最终定型。</p>
+<p>每个相位 = <strong>组装一个协议原生的子请求 + 处理它的响应</strong>。相位是固定骨架，<strong>提示词是模板</strong>（<code>include_str!</code> 嵌入，语言各一份），相位里模型看到什么、输出怎么用，全部由代码 + 模板决定，<strong>不进配置文件</strong>。</p>
+<p><strong>最终答复 = 三只 pig 的可见文本按顺序用空行拼接</strong>（Pre 的分析 + Executor 的执行 + Post 的评审），不是只取最后一只。
+简单问题（Pre 直接判断并作答、末尾带 PIGEND）则整轮只有 Pre 一段。这是 legacy HTTP 运行时（<code>pigs-api/src/http_runtime.rs</code>）的语义，照搬。</p>
+</div>
+
+<h2>状态机：控制标记 + 预算</h2>
+<div class="card">
+<p>相位靠模型输出<strong>最后一行</strong>的控制标记来路由（标记必须单独成行，且前面得有实质内容，防止模型光吐一个标记）：</p>
+<table>
+  <tr><th>当前相位</th><th>输出末行</th><th>下一步</th></tr>
+  <tr><td>Pre</td><td><code>PIGEND</code></td><td>整轮结束（简单路径，只此一段文本）</td></tr>
+  <tr><td>Pre</td><td><code>PIGFAIL</code></td><td>记录失败路径 → 回 Pre 重规划（预算 2 次）</td></tr>
+  <tr><td>Pre</td><td>无标记</td><td>把分析作为 <code>{pre_output}</code> 注入 → Executor</td></tr>
+  <tr><td>Executor</td><td>（不解析）</td><td>总是进 Post 验收</td></tr>
+  <tr><td>Post</td><td><code>PIGEND</code></td><td>整轮结束（正常路径）</td></tr>
+  <tr><td>Post</td><td><code>PIGFAIL</code></td><td>清空产物 → 回 Pre 重规划（预算 2 次）</td></tr>
+  <tr><td>Post</td><td>无标记</td><td>提示词要求它"继续执行任务" → <strong>再走一次 Post</strong>（预算 3 次）</td></tr>
+</table>
+<p><strong>预算耗尽 = 本轮失败</strong>：直接报错上抛（proxy 返回 422），绝不假装成功、不拿半成品当答复。
+重规划预算与 Post 重试预算都是<strong>代码里的常量</strong>（编排语义的一部分，不进配置）。</p>
+<p class="muted">注：实现以 legacy 实际在跑的 <code>pigs-api/src/orchestration.rs</code> + <code>http_runtime.rs</code> 为准
+（另一个较老的 <code>phased_runtime.rs</code> 是 Post↔Executor 回环、预算耗尽返回文本，那是 agent CLI 时代的形态，没有采用）。</p>
+</div>
+
+<h2>流式：边到边拼接（动态）</h2>
+<div class="card">
+<p>客户端带 <code>stream:true</code> 时，<strong>子请求也带 <code>stream:true</code></strong>——上游的增量一个字一个字到达，编排层边收边处理：</p>
+<pre>上游 SSE 增量 ──▶ MarkerFilter（按行缓冲）──▶ 安全可见文本 ──▶ 客户端 SSE 帧
+                     ▲
+                     └─ 控制标记可能跨增量到达（"PIG" + "END"），
+                        所以最后一行永远留在缓冲里，看到换行才敢放行</pre>
+<p>这套 <code>MarkerFilter</code> 是 legacy <code>http_runtime.rs</code> 里 <code>MarkerLineBuffer</code> 的移植：<strong>控制标记绝不会漏给客户端</strong>，
+相位之间由 SSE 编码器补一个空行。编排跑完时，客户端实时收到的内容与"最终答复"逐字一致（测试里就是这么对比的）。</p>
+<p>客户端<strong>没</strong>要流式时，子请求也不流式：一次性拿 JSON 全文、解析文本、最后合成一个 JSON 响应——两条路径共用同一套标记判定与拼接逻辑。</p>
+<div class="note"><strong>为什么子请求要去掉 <code>accept-encoding</code>：</strong>客户端可能带 <code>gzip</code>，原样转给上游后回来的就是压缩体，
+编排层按 JSON / SSE 解析会直接失败（真实踩过：<code>expected value at line 1 column 1</code>）。子请求一律不带该头，强制上游回明文。</div>
 </div>
 
 <h2>一次编排的生命周期</h2>
@@ -70,6 +104,8 @@
   <span class="arrow">▼ 4. Post：按模板加工，合成最终答复</span>
   <span class="box">交回 proxy → 客户端</span>
 </div>
+<p class="muted">每一步的产物都不是"只给下一步看"：Pre 的分析、Executor 的执行、Post 的评审会按顺序拼成一份答复，
+客户端要流式的话，这些文本在产生的当下就推过去了（见下面的"流式：边到边拼接"）。</p>
 
 <h2>四个关键设计</h2>
 
@@ -116,16 +152,21 @@
 <div class="note">
 <table>
   <tr><th>legacy 文件</th><th>拿什么</th></tr>
-  <tr><td><code>crates/pigs-api/src/orchestration.rs</code> / <code>phased_runtime.rs</code> / <code>phased_phase.rs</code></td><td>相位管线与运行时骨架（大手术：剥掉对 pigs-tools/session/mcp 的依赖）</td></tr>
-  <tr><td><code>crates/pigs-api/src/phased_prompts.rs</code></td><td>模板注入方式</td></tr>
-  <tr><td><code>crates/pigs-prompts/prompts/*.txt</code></td><td>Pre/Post 模板原文（中英双语），改由 <code>include_str!</code> 嵌入</td></tr>
+  <tr><td><code>crates/pigs-api/src/orchestration.rs</code></td><td><strong>状态机本体</strong>（标记路由、重规划/Post 重试预算、预算耗尽即失败）——逐条对齐</td></tr>
+  <tr><td><code>crates/pigs-api/src/http_runtime.rs</code></td><td><code>MarkerLineBuffer</code>（流式增量去标记）与相位循环骨架</td></tr>
+  <tr><td><code>crates/pigs-api/src/output.rs</code></td><td><code>StreamingEncoder</code>（客户端 SSE 帧序列：三协议各自的块开/关/终止帧）</td></tr>
+  <tr><td><code>crates/pigs-prompts/prompts/*.txt</code></td><td>Pre/Executor/Post 模板原文（中英双语，逐字节相同），改由 <code>include_str!</code> 嵌入</td></tr>
   <tr><td><code>crates/pigs-proxy/src/loopback.rs</code></td><td>回环传输与内部令牌机制</td></tr>
 </table>
 <p>同时<strong>砍掉</strong>：phased_tools（工具执行）、continuation/snapshots 等会话态、对 pigs-core/pigs-llm 的 SDK 式调用。</p>
+<p><strong>已知与 legacy 的差异（刻意保留，供审阅）</strong>：① 相位间的产物用<em>提示词文本块</em>传递，
+而不是 legacy 那样把上一只 pig 的输出作为<em>原生 assistant 消息</em>接回对话（信息量相同，格式不同，省掉整套 continuation 机制）；
+② Post 提示词里额外附了 Executor 草稿文本块（legacy 是靠原生对话记录让它看见草稿）。</p>
 </div>
 
 <div class="tip"><strong>验收标准：</strong>给一个固定的 <code>-pig</code> 请求 + 一个"假装上游"的固定响应序列，
-编排输出的子请求序列（顺序、model 名、注入的提示词、会话头）与预期逐字节一致；上游中途报错时编排立刻上抛、不发后续相位。</div>
+编排输出的子请求序列（顺序、model 名、注入的提示词、会话头、<code>stream</code> 标志）与预期逐字节一致；
+上游中途报错时编排立刻上抛、不发后续相位；流式路径下，客户端收到的 SSE 回读出的文本必须与最终答复完全相同、且不含任何控制标记。</div>
 
 </div>
 </body>

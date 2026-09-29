@@ -66,7 +66,8 @@
     <tr><th style="width:50%">没有 <code>-pig</code></th><th>有 <code>-pig</code></th></tr>
     <tr>
       <td>原样转发到上游，答复原样流回</td>
-      <td>交给编排引擎：拆成 Pre → Executor → Post 多次与模型的往来，最后合成一个答复</td>
+      <td>交给编排引擎：拆成 Pre → Executor → Post 多次与模型的往来；要流式就边产生边推给客户端，
+          最后合成一个答复（= 三只 pig 的可见文本按顺序拼接）</td>
     </tr>
   </table>
   <span class="arrow">▼</span>

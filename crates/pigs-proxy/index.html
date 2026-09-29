@@ -52,7 +52,8 @@
   <tr><td><code>POST /chat/completions</code></td><td>OpenAI Chat</td><td rowspan="3">三种协议共用一个监听端口，按裸路径自动区分</td></tr>
   <tr><td><code>POST /v1/messages</code></td><td>Anthropic Messages</td></tr>
   <tr><td><code>POST /responses</code></td><td>OpenAI Responses</td></tr>
-  <tr><td><code>GET /v1/models</code></td><td>—</td><td>模型列表：每个模型 + 其 <code>-pig</code> 变体（本地生成，不打上游）</td></tr>
+  <tr><td><code>GET /v1/models</code></td><td>—</td><td>未识别路径：原样透传给上游（不做本地模型列表）</td></tr>
+  <tr><td>其它任意路径</td><td>—</td><td>同上，全部落进 fallback 透传；只有"POST + 三协议路径 + model 带 -pig"才进编排</td></tr>
 </table>
 </div>
 
@@ -85,7 +86,10 @@
   <li>子请求通过 <strong>loopback（本机回环）</strong>再进 proxy 自己的透传通道发往上游——为什么绕一圈？
   因为透传通道里所有"搬运"细节（头处理、流式、错误返回）已经写好了，秘书处直接复用，不另造轮子；</li>
   <li>回环请求带一个<strong>随机内部令牌</strong>，handler 验证后跳过 <code>-pig</code> 分流（否则无限递归），发往上游前删掉令牌（不泄露）；</li>
-  <li>编排的最终答复由 proxy 以协议正确的格式（JSON 或 SSE）回给客户端。</li>
+  <li>客户端要流式（<code>stream:true</code>）时<strong>边编排边推帧</strong>：先把协议起始帧发出去（连接立刻变成流），
+  之后每只 pig 的安全文本一到就转成协议 SSE 帧推给客户端，跑完再补终止序列；中途出错发<em>流内错误帧</em>（HTTP 状态此时已定，改不了了）。
+  客户端没要流式时才等编排跑完一次性给 JSON；</li>
+  <li>子请求的 body 是编排层拼的（真 model 名、去 tools、替换最后一条 user 消息），proxy 只管照单发出去。</li>
 </ul>
 </div>
 

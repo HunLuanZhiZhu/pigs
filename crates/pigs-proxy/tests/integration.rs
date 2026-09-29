@@ -138,6 +138,28 @@ fn openai_text_response(text: &str) -> (&'static str, Bytes) {
     )
 }
 
+/// 假上游的 OpenAI 流式响应：把文本切成几段 delta（模拟真实 SSE）。
+fn openai_sse_response(text: &str) -> (&'static str, Bytes) {
+    let chunk = |t: &str| {
+        format!(
+            "data: {}\n\n",
+            json!({"id":"c1","object":"chat.completion.chunk","model":"gpt-x",
+                   "choices":[{"index":0,"delta":{"content":t},"finish_reason":null}]})
+        )
+    };
+    let mut sse = String::new();
+    let mut chars = text.chars();
+    loop {
+        let piece: String = chars.by_ref().take(3).collect();
+        if piece.is_empty() {
+            break;
+        }
+        sse.push_str(&chunk(&piece));
+    }
+    sse.push_str("data: [DONE]\n\n");
+    ("text/event-stream", Bytes::from(sse))
+}
+
 // ---------------- 测试 ----------------
 
 #[tokio::test]
@@ -207,7 +229,11 @@ async fn pig_flow_full_orchestration_via_loopback() {
 
     assert_eq!(resp.status(), 200);
     let final_json: Value = resp.json().await.unwrap();
-    assert_eq!(final_json["choices"][0]["message"]["content"], "验收通过");
+    // 最终答复 = 三只 pig 可见文本按顺序拼接（legacy 语义）
+    assert_eq!(
+        final_json["choices"][0]["message"]["content"],
+        "分析：需要X\n\n执行结果……\n\n验收通过"
+    );
     assert_eq!(final_json["choices"][0]["finish_reason"], "stop");
     assert_eq!(final_json["model"], "gpt-x");
 
@@ -297,4 +323,49 @@ async fn pig_streaming_client_gets_sse() {
     let body = resp.text().await.unwrap();
     assert!(body.contains("data: [DONE]"));
     assert!(body.contains("答案是 4"));
+}
+
+/// 流式客户端 + 上游流式：子请求必须带 `stream:true`，
+/// 客户端拿到的 SSE 必须是三只 pig 的实时拼接，且控制标记一个字都不许漏。
+#[tokio::test]
+async fn pig_streaming_end_to_end_streams_phases_without_markers() {
+    let (_up, upstream_url, fu) = spawn_fake_upstream().await;
+    let q = fu.responses.clone();
+    for text in ["分析：需要X\n第二行", "执行结果……\nPIGFAIL", "评审：继续\nPIGEND"] {
+        q.lock().unwrap().push(openai_sse_response(text));
+    }
+    let (_pigs, pigs_url) = spawn_pigs(&upstream_url).await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("{pigs_url}/chat/completions"))
+        .header("accept-encoding", "gzip, deflate, br")
+        .json(&openai_body("gpt-x-pig", true))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let sse = resp.text().await.unwrap();
+
+    // 上游收到的子请求：真名 + 流式 + 无 accept-encoding
+    let reqs = fu.requests.lock().unwrap();
+    assert_eq!(reqs.len(), 3, "Pre → Executor → Post 三次子请求");
+    for (i, (_p, body, hdrs)) in reqs.iter().enumerate() {
+        assert_eq!(body["model"], "gpt-x");
+        assert_eq!(body["stream"], true, "第 {i} 只 pig 的子请求应为流式");
+        assert!(
+            hdrs.get("h:accept-encoding").is_none(),
+            "子请求不允许携带 accept-encoding（第 {i} 只 pig）"
+        );
+    }
+    drop(reqs);
+
+    // 客户端流：三只 pig 的可见文本按顺序、空行分隔，控制标记已被剥掉
+    let text = pigs_protocol::extract_sse_text(pigs_protocol::Protocol::OpenAI, &sse).unwrap();
+    assert_eq!(text, "分析：需要X\n第二行\n\n执行结果……\n\n评审：继续");
+    assert!(!sse.contains("PIGEND") && !sse.contains("PIGFAIL"));
+    let order = ["分析：需要X", "执行结果……", "评审：继续"]
+        .map(|s| sse.find(s).expect("阶段文本应出现在客户端流里"));
+    assert!(order[0] < order[1] && order[1] < order[2]);
+    assert!(sse.contains("data: [DONE]"));
 }

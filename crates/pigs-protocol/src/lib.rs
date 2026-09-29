@@ -9,7 +9,10 @@ pub mod route;
 pub mod sse;
 pub mod surgery;
 
-pub use response::{extract_response_text, extract_sse_text, synthesize_json, synthesize_sse};
+pub use response::{
+    extract_response_text, extract_sse_text, synthesize_json, synthesize_sse, SseTextStream,
+    StreamEncoder,
+};
 pub use route::{has_pig, protocol_from_path, strip_pig_suffix, Protocol};
 pub use sse::is_sse_content_type;
 pub use surgery::{
@@ -30,8 +33,6 @@ pub enum Error {
     },
     #[error("无法在 body 中定位最后一条 user 消息（协议 {0:?}）")]
     NoUserMessage(Protocol),
-    #[error("无法从响应中提取文本（协议 {0:?}）")]
-    NoText(Protocol),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

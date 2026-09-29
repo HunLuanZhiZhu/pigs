@@ -3,6 +3,9 @@
 //! 三只 pig 组成一头 pigs：Pre（规划/分流）→ Executor（执行）→ Post（验收），
 //! 由 PIGEND / PIGFAIL 控制标记与预算驱动的状态机串起来。
 //!
+//! 客户端要流式时，子请求也走流式：上游增量边到边过滤控制标记边转发给客户端
+//! （[`markers::MarkerFilter`]），最终答复 = 各只 pig 可见文本按顺序拼接。
+//!
 //! 红线：不认识 axum（网络走 [`Transport`] 注入）、不做重试、不知道上游是谁。
 
 pub mod lang;
@@ -10,12 +13,11 @@ pub mod markers;
 pub mod prompts;
 pub mod transport;
 
-use markers::{detect_marker, strip_markers, Marker};
+use markers::{detect_marker, strip_markers, Marker, MarkerFilter};
 use pigs_protocol as proto;
-use transport::{SubRequest, SubResponse, Transport, TransportError};
-
+use transport::{SubRequest, SubResponse, TextSink, Transport, TransportError};
+use std::sync::{Arc, Mutex};
 use serde_json::Value;
-use std::sync::Arc;
 
 /// 会话头名：编排产生的稳定会话标识，所有子请求共用（mini-proxy 见已带就不覆盖）。
 pub const SESSION_HEADER: &str = "x-opencode-session";
@@ -24,8 +26,11 @@ pub const SESSION_HEADER: &str = "x-opencode-session";
 pub const LOOPBACK_TOKEN_HEADER: &str = "x-pigs-loopback";
 
 /// 预算常量（legacy 默认值；刻意不进配置——它们是编排语义的一部分）。
+/// - `MAX_PRE_REPLANS`：PIGFAIL 回到 Pre 重规划的次数上限；
+/// - `MAX_POST_ITERATIONS`：Post 无标记输出的连续重试次数上限。
+/// 超预算一律判为本轮失败（绝不假装成功）。
 const MAX_PRE_REPLANS: u32 = 2;
-const MAX_EXECUTOR_LOOPS: u32 = 3;
+const MAX_POST_ITERATIONS: u32 = 3;
 
 /// 单只 pig（一个相位）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +53,20 @@ impl Pig {
     }
 }
 
+/// 一只 pig 的生命周期事件（proxy 用它边编排边推 SSE 帧）。
+#[derive(Debug, Clone)]
+pub enum PigEvent {
+    /// 该 pig 的子请求已发出。
+    Start(Pig),
+    /// 一段可安全转发的可见文本（控制标记已过滤）。
+    Delta(String),
+    /// 该 pig 的文本流结束。
+    End(Pig),
+}
+
+/// 进度回调：整个编排过程中按顺序收到 [`PigEvent`]。
+pub type ProgressSink = Arc<dyn Fn(PigEvent) + Send + Sync>;
+
 /// 编排输入：proxy 已解析好的现场。
 #[derive(Debug, Clone)]
 pub struct TurnInput {
@@ -66,8 +85,10 @@ pub struct TurnInput {
 /// 编排结果。
 #[derive(Debug, Clone)]
 pub struct TurnResult {
-    /// 最终答复文本（已剥离控制标记）。
+    /// 最终答复文本 = 各只 pig 可见文本按顺序用空行拼接（已剥离控制标记）。
     pub text: String,
+    /// 每只 pig 的可见文本（按执行顺序，诊断/测试用）。
+    pub visible: Vec<String>,
     /// 结束方式（诊断/日志用）。
     pub ended_with: EndedWith,
     /// 实际使用的会话头值。
@@ -83,10 +104,6 @@ pub enum EndedWith {
     SimplePath,
     /// Post 验收通过。
     PigEnd,
-    /// 重规划预算耗尽。
-    PigFailBudget,
-    /// Executor 回环预算耗尽。
-    ExecutorLoopBudget,
 }
 
 impl EndedWith {
@@ -94,8 +111,6 @@ impl EndedWith {
         match self {
             EndedWith::SimplePath => "SIMPLE_PATH",
             EndedWith::PigEnd => "PIGEND",
-            EndedWith::PigFailBudget => "PIGFAIL_BUDGET",
-            EndedWith::ExecutorLoopBudget => "EXECUTOR_LOOP_BUDGET",
         }
     }
 }
@@ -109,6 +124,8 @@ pub enum Error {
     Transport(#[from] TransportError),
     #[error("上游响应无法提取文本（协议 {0:?}，pig {1}）")]
     NoText(proto::Protocol, &'static str),
+    #[error("编排预算耗尽: {0}")]
+    Budget(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -122,8 +139,19 @@ impl Orchestrator {
         Self
     }
 
-    /// 跑完一整轮三 pig 编排，返回最终文本。
+    /// 跑完一整轮三 pig 编排（非流式：子请求要 JSON 全文）。
     pub async fn run(&self, input: TurnInput, transport: Arc<dyn Transport>) -> Result<TurnResult> {
+        self.run_with_progress(input, transport, None).await
+    }
+
+    /// 跑完一整轮三 pig 编排；给了 `progress` 就走流式（子请求带 `stream:true`，
+    /// 上游增量边过滤边回调）。
+    pub async fn run_with_progress(
+        &self,
+        input: TurnInput,
+        transport: Arc<dyn Transport>,
+        progress: Option<ProgressSink>,
+    ) -> Result<TurnResult> {
         let session = input
             .client_session
             .clone()
@@ -137,15 +165,16 @@ impl Orchestrator {
             lang,
             user_question,
             transport,
+            progress,
         };
 
         let mut failure_paths: Vec<String> = Vec::new();
         let mut pre_output = String::new();
         let mut executor_draft = String::new();
-        let mut last_post_feedback = String::new();
-        let mut pre_replans: u32 = 0;
-        let mut executor_loops: u32 = 0;
+        let mut visible: Vec<String> = Vec::new();
         let mut path: Vec<Pig> = Vec::new();
+        let mut pre_replans: u32 = 0;
+        let mut post_iterations: u32 = 0;
 
         let mut pig = Pig::Pre;
         loop {
@@ -155,33 +184,29 @@ impl Orchestrator {
                 Pig::Pre => {
                     tracing::info!(pig = "pre", "starting pig");
                     let payload = prompts::pre_payload(&ctx.user_question, ctx.lang, &failure_paths);
-                    let text = ctx.call_pig(Pig::Pre, &payload).await?;
-                    match detect_marker(&text) {
+                    let raw = ctx.call_pig(Pig::Pre, &payload).await?;
+                    let text = strip_markers(&raw);
+                    visible.push(text.clone());
+                    match detect_marker(&raw) {
                         // 简单路径：Pre 直接给出答案，整轮结束
                         Some(Marker::End) => {
-                            return Ok(TurnResult {
-                                text: strip_markers(&text),
-                                ended_with: EndedWith::SimplePath,
-                                session: ctx.session.clone(),
-                                path,
-                            });
+                            return Ok(ctx.finish(visible, EndedWith::SimplePath, path));
                         }
-                        // 路径失败 → 记录，重规划（预算内）
+                        // 路径失败 → 记录，回 Pre 重规划（预算内）
                         Some(Marker::Failed) => {
-                            failure_paths.push(strip_markers(&text));
-                            pre_replans += 1;
-                            if pre_replans > MAX_PRE_REPLANS {
-                                return Ok(TurnResult {
-                                    text: failure_paths.last().cloned().unwrap_or_default(),
-                                    ended_with: EndedWith::PigFailBudget,
-                                    session: ctx.session.clone(),
-                                    path,
-                                });
+                            if pre_replans >= MAX_PRE_REPLANS {
+                                return Err(Error::Budget(format!(
+                                    "Pre 重规划次数超过 {MAX_PRE_REPLANS} 次"
+                                )));
                             }
+                            failure_paths.push(text);
+                            pre_replans += 1;
+                            pre_output.clear();
+                            post_iterations = 0;
                         }
                         // 正常计划 → 交给 Executor
                         None => {
-                            pre_output = strip_markers(&text);
+                            pre_output = text;
                             pig = Pig::Executor;
                         }
                     }
@@ -193,63 +218,55 @@ impl Orchestrator {
                         &ctx.user_question,
                         ctx.lang,
                         &pre_output,
-                        &last_post_feedback,
+                        // 无标记的 Post 是自己接着做（不回环给 Executor），所以没有"上一轮反馈"
+                        "",
                     );
+                    let raw = ctx.call_pig(Pig::Executor, &payload).await?;
                     // 不解析标记：Executor 之后总是进 Post 验收
-                    executor_draft = ctx.call_pig(Pig::Executor, &payload).await?;
-                    last_post_feedback.clear();
+                    executor_draft = strip_markers(&raw);
+                    visible.push(executor_draft.clone());
                     pig = Pig::Post;
                 }
                 // ---------------- Post pig：验收 / 路由 ----------------
                 Pig::Post => {
                     tracing::info!(pig = "post", "starting pig");
-                    let payload =
-                        prompts::post_payload(&ctx.user_question, ctx.lang, &pre_output, &executor_draft);
-                    let text = ctx.call_pig(Pig::Post, &payload).await?;
-                    match detect_marker(&text) {
+                    let payload = prompts::post_payload(
+                        &ctx.user_question,
+                        ctx.lang,
+                        &pre_output,
+                        &executor_draft,
+                    );
+                    let raw = ctx.call_pig(Pig::Post, &payload).await?;
+                    let text = strip_markers(&raw);
+                    visible.push(text.clone());
+                    match detect_marker(&raw) {
                         // 验收通过 → 整轮结束
                         Some(Marker::End) => {
-                            return Ok(TurnResult {
-                                text: strip_markers(&text),
-                                ended_with: EndedWith::PigEnd,
-                                session: ctx.session.clone(),
-                                path,
-                            });
+                            return Ok(ctx.finish(visible, EndedWith::PigEnd, path));
                         }
                         // 执行走偏 → 清空产物，回 Pre 重规划（预算内）
                         Some(Marker::Failed) => {
-                            failure_paths.push(strip_markers(&text));
+                            if pre_replans >= MAX_PRE_REPLANS {
+                                return Err(Error::Budget(format!(
+                                    "Pre 重规划次数超过 {MAX_PRE_REPLANS} 次"
+                                )));
+                            }
+                            failure_paths.push(text);
+                            pre_replans += 1;
                             pre_output.clear();
                             executor_draft.clear();
-                            last_post_feedback.clear();
-                            pre_replans += 1;
-                            if pre_replans > MAX_PRE_REPLANS {
-                                return Ok(TurnResult {
-                                    text: failure_paths.last().cloned().unwrap_or_default(),
-                                    ended_with: EndedWith::PigFailBudget,
-                                    session: ctx.session.clone(),
-                                    path,
-                                });
-                            }
+                            post_iterations = 0;
                             pig = Pig::Pre;
                         }
-                        // 推进了但没完成 → 反馈给 Executor 回环（预算内）
+                        // 推进了但没完成 → 提示词要求它继续执行任务，所以再走一次 Post
                         None => {
-                            last_post_feedback = strip_markers(&text);
-                            executor_loops += 1;
-                            if executor_loops > MAX_EXECUTOR_LOOPS {
-                                return Ok(TurnResult {
-                                    text: if executor_draft.is_empty() {
-                                        last_post_feedback.clone()
-                                    } else {
-                                        executor_draft.clone()
-                                    },
-                                    ended_with: EndedWith::ExecutorLoopBudget,
-                                    session: ctx.session.clone(),
-                                    path,
-                                });
+                            if post_iterations >= MAX_POST_ITERATIONS {
+                                return Err(Error::Budget(format!(
+                                    "Post 无标记重试次数超过 {MAX_POST_ITERATIONS} 次"
+                                )));
                             }
-                            pig = Pig::Executor;
+                            post_iterations += 1;
+                            pig = Pig::Post;
                         }
                     }
                 }
@@ -265,18 +282,32 @@ struct Ctx {
     lang: lang::Lang,
     user_question: String,
     transport: Arc<dyn Transport>,
+    progress: Option<ProgressSink>,
 }
 
 impl Ctx {
-    /// 组装并发送一只 pig 的子请求，返回提取出的文本。
+    /// 收尾：把各 pig 可见文本拼成最终答复。
+    fn finish(&self, visible: Vec<String>, ended_with: EndedWith, path: Vec<Pig>) -> TurnResult {
+        TurnResult {
+            text: join_visible(&visible),
+            visible,
+            ended_with,
+            session: self.session.clone(),
+            path,
+        }
+    }
+
+    /// 组装并发送一只 pig 的子请求，返回提取出的原始文本（含控制标记）。
     async fn call_pig(&self, pig: Pig, payload: &str) -> Result<String> {
+        // 客户端要流式 → 子请求也流式（增量边到边转发）；否则要 JSON 全文
+        let streaming = self.progress.is_some();
         let mut body = self.input.body.clone();
-        proto::set_stream(&mut body, false);
+        proto::set_stream(&mut body, streaming);
         proto::strip_tools(&mut body);
         proto::replace_last_user_text(&mut body, self.input.protocol, payload)?;
 
-        // 子请求不带 accept-encoding：强制上游回明文 JSON。
-        // 否则客户端的 gzip 头会一路透传到上游，压缩体回到编排层无法解析。
+        // 子请求不带 accept-encoding：否则客户端可能空的 gzip 头会一路透传到上游，
+        // 压缩体回到编排层就没法解析（也不利于增量解析 SSE）。
         let mut headers: Vec<(String, String)> = self
             .input
             .base_headers
@@ -297,22 +328,61 @@ impl Ctx {
         let body_bytes = bytes::Bytes::from(
             serde_json::to_vec(&body).map_err(|e| TransportError::Send(format!("body 序列化失败: {e}")))?,
         );
-        tracing::debug!(pig = pig.as_str(), bytes = body_bytes.len(), "sending subrequest");
+        tracing::debug!(pig = pig.as_str(), bytes = body_bytes.len(), streaming, "sending subrequest");
 
-        let resp = self
-            .transport
-            .send(SubRequest {
-                path: self.input.path.clone(),
-                headers,
-                body: body_bytes,
-            })
-            .await?;
+        let req = SubRequest {
+            path: self.input.path.clone(),
+            headers,
+            body: body_bytes,
+        };
+
+        let resp = match &self.progress {
+            // 流式：增量交给 MarkerFilter，确认安全的文本立刻回调出去
+            Some(progress) => {
+                progress(PigEvent::Start(pig));
+                let filter = Arc::new(Mutex::new(MarkerFilter::new()));
+                let sink: TextSink = {
+                    let filter = Arc::clone(&filter);
+                    let progress = Arc::clone(progress);
+                    Arc::new(move |delta: &str| {
+                        let visible = filter
+                            .lock()
+                            .map(|mut f| f.push(delta))
+                            .unwrap_or_default();
+                        if !visible.is_empty() {
+                            progress(PigEvent::Delta(visible));
+                        }
+                    })
+                };
+                let resp = self
+                    .transport
+                    .send_streaming(req, self.input.protocol, sink)
+                    .await?;
+                let tail = filter.lock().map(|mut f| f.finish()).unwrap_or_default();
+                if !tail.is_empty() {
+                    progress(PigEvent::Delta(tail));
+                }
+                progress(PigEvent::End(pig));
+                resp
+            }
+            None => self.transport.send(req).await?,
+        };
 
         extract_text(self.input.protocol, pig, &resp)
     }
 }
 
-/// 从子请求响应提取文本：JSON 走结构化提取，SSE 走增量拼接。
+/// 把各段可见文本用空行拼接成最终答复（空段丢弃）。
+fn join_visible(parts: &[String]) -> String {
+    parts
+        .iter()
+        .filter(|part| !part.is_empty())
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// 从子请求响应提取原始文本：JSON 走结构化提取，SSE 走增量拼接。
 fn extract_text(protocol: proto::Protocol, pig: Pig, resp: &SubResponse) -> Result<String> {
     if !(200..300).contains(&resp.status) {
         return Err(Error::Transport(TransportError::Upstream {
@@ -355,9 +425,12 @@ mod tests {
     use std::sync::Mutex;
 
     /// 脚本化假传输：按调用次序回放响应，并记录收到的每个子请求。
+    /// 流式方法把脚本响应里的文本按小块喂给 sink（模拟上游增量）。
     struct FakeTransport {
         responses: Mutex<Vec<SubResponse>>,
         requests: Mutex<Vec<SubRequest>>,
+        /// 每次发送时 body 里的 stream 标志（断言子请求是否流式）
+        stream_flags: Mutex<Vec<bool>>,
     }
 
     impl FakeTransport {
@@ -379,13 +452,36 @@ mod tests {
                 }),
             )
         }
+        /// 从脚本响应里取出文本（假上游的"增量源"）
+        fn text_of(resp: &SubResponse) -> String {
+            let v: Value = serde_json::from_slice(&resp.body).unwrap();
+            proto::extract_response_text(proto::Protocol::OpenAI, &v).unwrap_or_default()
+        }
     }
 
     #[async_trait::async_trait]
     impl Transport for FakeTransport {
         async fn send(&self, req: SubRequest) -> transport::TransportResult {
-            let resp = self.responses.lock().unwrap().remove(0);
+            let body: Value = serde_json::from_slice(&req.body).unwrap_or(Value::Null);
+            self.stream_flags
+                .lock()
+                .unwrap()
+                .push(body.get("stream").and_then(|s| s.as_bool()).unwrap_or(false));
             self.requests.lock().unwrap().push(req);
+            Ok(self.responses.lock().unwrap().remove(0))
+        }
+
+        async fn send_streaming(
+            &self,
+            req: SubRequest,
+            _protocol: proto::Protocol,
+            sink: TextSink,
+        ) -> transport::TransportResult {
+            let resp = self.send(req).await?;
+            // 逐字喂入，模拟上游把一行拆成多个 SSE 增量
+            for ch in Self::text_of(&resp).chars() {
+                sink(&ch.to_string());
+            }
             Ok(resp)
         }
     }
@@ -425,31 +521,46 @@ mod tests {
         }
     }
 
+    fn fake(responses: Vec<SubResponse>) -> Arc<FakeTransport> {
+        Arc::new(FakeTransport {
+            responses: Mutex::new(responses),
+            requests: Mutex::new(vec![]),
+            stream_flags: Mutex::new(vec![]),
+        })
+    }
+
     fn strip_model(body: &Value) -> &str {
         body.get("model").and_then(|m| m.as_str()).unwrap()
     }
 
+    fn last_user_content(body: &Value) -> String {
+        body["messages"].as_array().unwrap().last().unwrap()["content"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
     #[tokio::test]
     async fn happy_path_three_pigs_with_pigend() {
-        let fake = Arc::new(FakeTransport {
-            responses: Mutex::new(vec![
-                FakeTransport::text(200, "分析：需要X和Y"),  // pre
-                FakeTransport::text(200, "执行结果……"),      // executor
-                FakeTransport::text(200, "验收通过\nPIGEND"), // post
-            ]),
-            requests: Mutex::new(vec![]),
-        });
+        let fake = fake(vec![
+            FakeTransport::text(200, "分析：需要X和Y"),  // pre
+            FakeTransport::text(200, "执行结果……"),      // executor
+            FakeTransport::text(200, "验收通过\nPIGEND"), // post
+        ]);
         let result = Orchestrator::new()
             .run(input(proto::Protocol::OpenAI), fake.clone())
             .await
             .unwrap();
 
         assert_eq!(result.ended_with, EndedWith::PigEnd);
-        assert_eq!(result.text, "验收通过");
+        // 最终答复 = 三只 pig 的可见文本按顺序拼接（legacy 语义）
+        assert_eq!(result.text, "分析：需要X和Y\n\n执行结果……\n\n验收通过");
         assert_eq!(result.path, vec![Pig::Pre, Pig::Executor, Pig::Post]);
 
         let reqs = fake.requests.lock().unwrap();
         assert_eq!(reqs.len(), 3);
+        // 非流式编排：子请求都要求 JSON 全文
+        assert_eq!(*fake.stream_flags.lock().unwrap(), vec![false, false, false]);
         for (i, req) in reqs.iter().enumerate() {
             assert_eq!(req.path, "/chat/completions");
             let body: Value = serde_json::from_slice(&req.body).unwrap();
@@ -468,9 +579,7 @@ mod tests {
             // 鉴权透传
             assert!(req.headers.iter().any(|(k, v)| k == "authorization" && v == "Bearer k"));
             // payload 递进：pre → executor(含 pre 产物) → post(含草稿)
-            let content = body["messages"].as_array().unwrap().last().unwrap()["content"]
-                .as_str()
-                .unwrap();
+            let content = last_user_content(&body);
             if i == 0 {
                 assert!(content.contains("帮我完成任务Z") && content.contains("执行前分析"));
             } else if i == 1 {
@@ -481,12 +590,87 @@ mod tests {
         }
     }
 
+    /// 流式编排：子请求带 `stream:true`，增量逐字到达并被实时过滤。
+    /// 断言：① 客户端边收边拿到的内容（经协议编码器）== 最终答复；
+    /// ② 控制标记绝不出现在客户端流里。
+    #[tokio::test]
+    async fn streaming_turn_pushes_filtered_deltas_as_they_arrive() {
+        let fake = fake(vec![
+            FakeTransport::text(200, "分析：需要X\n第二行"),
+            FakeTransport::text(200, "草稿\nPIGFAIL"),
+            FakeTransport::text(200, "评审：还差一点"),
+            FakeTransport::text(200, "继续做完\nPIGEND"),
+        ]);
+        // 模拟 proxy：把进度事件喂给协议 SSE 编码器，攒出客户端实际收到的字节
+        let frames: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+        let encoder = Arc::new(Mutex::new(proto::StreamEncoder::new(
+            proto::Protocol::OpenAI,
+            "gpt-x-pig",
+        )));
+        frames.lock().unwrap().push_str(&encoder.lock().unwrap().start());
+        let events: Arc<Mutex<Vec<PigEvent>>> = Arc::new(Mutex::new(vec![]));
+        let sink: ProgressSink = {
+            let frames = Arc::clone(&frames);
+            let encoder = Arc::clone(&encoder);
+            let events = Arc::clone(&events);
+            Arc::new(move |event| {
+                let mut encoder = encoder.lock().unwrap();
+                let mut out = match &event {
+                    PigEvent::Delta(text) => encoder.push_text(text),
+                    PigEvent::End(_) => encoder.end_pig(),
+                    PigEvent::Start(_) => String::new(),
+                };
+                drop(encoder);
+                if !out.is_empty() {
+                    frames.lock().unwrap().push_str(&mut out);
+                }
+                events.lock().unwrap().push(event);
+            })
+        };
+        let result = Orchestrator::new()
+            .run_with_progress(input(proto::Protocol::OpenAI), fake.clone(), Some(sink))
+            .await
+            .unwrap();
+        frames
+            .lock()
+            .unwrap()
+            .push_str(&encoder.lock().unwrap().finish());
+
+        // 子请求必须是流式的
+        assert_eq!(
+            *fake.stream_flags.lock().unwrap(),
+            vec![true, true, true, true]
+        );
+        // 每只 pig 一对 Start/End，顺序正确
+        let starts: Vec<&'static str> = events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|e| match e {
+                PigEvent::Start(p) => Some(p.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(starts, vec!["pre", "executor", "post", "post"]);
+
+        // 最终答复 = 各 pig 可见文本空行拼接
+        assert_eq!(
+            result.text,
+            "分析：需要X\n第二行\n\n草稿\n\n评审：还差一点\n\n继续做完"
+        );
+        assert_eq!(result.ended_with, EndedWith::PigEnd);
+
+        // 客户端边收边拿到的内容（编码后的 SSE 回读）必须与最终答复完全一致
+        let streamed = proto::extract_sse_text(proto::Protocol::OpenAI, &frames.lock().unwrap())
+            .unwrap_or_default();
+        assert_eq!(streamed, result.text);
+        // 控制标记绝不出现在客户端流里
+        assert!(!streamed.contains("PIGFAIL") && !streamed.contains("PIGEND"));
+    }
+
     #[tokio::test]
     async fn simple_path_short_circuits_in_pre() {
-        let fake = Arc::new(FakeTransport {
-            responses: Mutex::new(vec![FakeTransport::text(200, "答案是 4\nPIGEND")]),
-            requests: Mutex::new(vec![]),
-        });
+        let fake = fake(vec![FakeTransport::text(200, "答案是 4\nPIGEND")]);
         let result = Orchestrator::new()
             .run(input(proto::Protocol::OpenAI), fake)
             .await
@@ -498,17 +682,14 @@ mod tests {
 
     #[tokio::test]
     async fn post_pigfail_returns_to_pre_with_failure_paths() {
-        let fake = Arc::new(FakeTransport {
-            responses: Mutex::new(vec![
-                FakeTransport::text(200, "计划一"),                 // pre#1
-                FakeTransport::text(200, "草稿一"),                 // executor#1
-                FakeTransport::text(200, "走偏了\nPIGFAIL"),        // post#1 → 重规划
-                FakeTransport::text(200, "计划二（这次记住失败路径）"), // pre#2
-                FakeTransport::text(200, "草稿二"),                 // executor#2
-                FakeTransport::text(200, "通过\nPIGEND"),           // post#2
-            ]),
-            requests: Mutex::new(vec![]),
-        });
+        let fake = fake(vec![
+            FakeTransport::text(200, "计划一"),                 // pre#1
+            FakeTransport::text(200, "草稿一"),                 // executor#1
+            FakeTransport::text(200, "走偏了\nPIGFAIL"),        // post#1 → 重规划
+            FakeTransport::text(200, "计划二（这次记住失败路径）"), // pre#2
+            FakeTransport::text(200, "草稿二"),                 // executor#2
+            FakeTransport::text(200, "通过\nPIGEND"),           // post#2
+        ]);
         let result = Orchestrator::new()
             .run(input(proto::Protocol::OpenAI), fake.clone())
             .await
@@ -522,41 +703,47 @@ mod tests {
         // 第二次 Pre 的 payload 应包含失败路径
         let reqs = fake.requests.lock().unwrap();
         let pre2_body: Value = serde_json::from_slice(&reqs[3].body).unwrap();
-        let content = pre2_body["messages"].as_array().unwrap().last().unwrap()["content"]
-            .as_str()
-            .unwrap();
-        assert!(content.contains("曾失败过") && content.contains("走偏了"));
+        assert!(last_user_content(&pre2_body).contains("走偏了"));
     }
 
     #[tokio::test]
-    async fn post_without_marker_loops_executor_until_budget() {
-        let mut responses = vec![FakeTransport::text(200, "计划"), FakeTransport::text(200, "草稿")];
-        // post 每次都不给标记 → executor 回环 3 次后超预算
+    async fn post_without_marker_retries_post_until_budget() {
+        // pre + executor + post×4（最后一次超预算 → 报错，不假装成功）
+        let mut responses = vec![
+            FakeTransport::text(200, "计划"),
+            FakeTransport::text(200, "草稿"),
+        ];
         for _ in 0..4 {
             responses.push(FakeTransport::text(200, "还需改进"));
-            responses.push(FakeTransport::text(200, "改进后的草稿"));
         }
-        let fake = Arc::new(FakeTransport {
-            responses: Mutex::new(responses),
-            requests: Mutex::new(vec![]),
-        });
-        let result = Orchestrator::new()
+        let fake = fake(responses);
+        let err = Orchestrator::new()
+            .run(input(proto::Protocol::OpenAI), fake.clone())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::Budget(m) if m.contains("Post 无标记重试")));
+        // Post 回环了三只 pig + 三次重试
+        let reqs = fake.requests.lock().unwrap();
+        assert_eq!(reqs.len(), MAX_POST_ITERATIONS as usize + 3);
+    }
+
+    #[tokio::test]
+    async fn pre_replan_budget_exhausted_is_an_error() {
+        let fake = fake(vec![
+            FakeTransport::text(200, "计划一\nPIGFAIL"),
+            FakeTransport::text(200, "计划二\nPIGFAIL"),
+            FakeTransport::text(200, "计划三\nPIGFAIL"),
+        ]);
+        let err = Orchestrator::new()
             .run(input(proto::Protocol::OpenAI), fake)
             .await
-            .unwrap();
-        assert_eq!(result.ended_with, EndedWith::ExecutorLoopBudget);
-        assert_eq!(result.text, "改进后的草稿");
+            .unwrap_err();
+        assert!(matches!(err, Error::Budget(m) if m.contains("Pre 重规划")));
     }
 
     #[tokio::test]
     async fn upstream_error_stops_immediately() {
-        let fake = Arc::new(FakeTransport {
-            responses: Mutex::new(vec![FakeTransport::json(
-                500,
-                serde_json::json!({"error": "boom"}),
-            )]),
-            requests: Mutex::new(vec![]),
-        });
+        let fake = fake(vec![FakeTransport::json(500, serde_json::json!({"error": "boom"}))]);
         let err = Orchestrator::new()
             .run(input(proto::Protocol::OpenAI), fake)
             .await
@@ -566,10 +753,7 @@ mod tests {
 
     #[tokio::test]
     async fn client_session_header_is_inherited() {
-        let fake = Arc::new(FakeTransport {
-            responses: Mutex::new(vec![FakeTransport::text(200, "答案\nPIGEND")]),
-            requests: Mutex::new(vec![]),
-        });
+        let fake = fake(vec![FakeTransport::text(200, "答案\nPIGEND")]);
         let mut input = input(proto::Protocol::OpenAI);
         input.client_session = Some("client-fixed-session".into());
         let result = Orchestrator::new().run(input, fake.clone()).await.unwrap();
@@ -586,10 +770,7 @@ mod tests {
 
     #[tokio::test]
     async fn anthropic_protocol_body_surgery() {
-        let fake = Arc::new(FakeTransport {
-            responses: Mutex::new(vec![FakeTransport::text(200, "答案\nPIGEND")]),
-            requests: Mutex::new(vec![]),
-        });
+        let fake = fake(vec![FakeTransport::text(200, "答案\nPIGEND")]);
         let result = Orchestrator::new()
             .run(input(proto::Protocol::Anthropic), fake.clone())
             .await
@@ -597,9 +778,7 @@ mod tests {
         assert_eq!(result.ended_with, EndedWith::SimplePath);
         let body: Value = serde_json::from_slice(&fake.requests.lock().unwrap()[0].body).unwrap();
         assert_eq!(strip_model(&body), "claude-x");
-        let content = body["messages"].as_array().unwrap().last().unwrap()["content"]
-            .as_str()
-            .unwrap();
+        let content = last_user_content(&body);
         assert!(content.contains("帮我完成任务Z") && content.contains("执行前分析"));
         // system 字段保持原样
         assert_eq!(body["system"], "sys");
