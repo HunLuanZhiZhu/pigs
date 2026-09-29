@@ -105,12 +105,26 @@ fn sse_line_events(protocol: Protocol, line: &str) -> Vec<LiveEvent> {
     if let Some(signature) = sse_payload_signature(protocol, &value) {
         events.push(LiveEvent::ThinkingSignature(signature));
     }
+    if protocol == Protocol::Responses {
+        if let Some(summary) = sse_payload_thinking_summary(&value) {
+            events.push(summary);
+        }
+    }
     events
 }
 
+/// Responses 的思考摘要增量（带 item_id）。
+fn sse_payload_thinking_summary(payload: &Value) -> Option<LiveEvent> {
+    let ty = payload.get("type").and_then(|t| t.as_str());
+    if ty != Some("response.reasoning_summary_text.delta") {
+        return None;
+    }
+    let item_id = payload.get("item_id").and_then(|v| v.as_str())?.to_string();
+    let text = payload.get("delta").and_then(|v| v.as_str())?.to_string();
+    Some(LiveEvent::ThinkingSummary { item_id, text })
+}
+
 /// 思考增量：Anthropic 的 `thinking_delta` / Chat 的 `reasoning_content`。
-///
-/// Responses 的思考是以完整条目在收尾时给的（`output[]` 里带加密内容），这里不重复流。
 fn sse_payload_thinking(protocol: Protocol, payload: &Value) -> Option<String> {
     match protocol {
         // Anthropic：外层是 content_block_delta，增量类型在 delta.type
@@ -154,6 +168,9 @@ pub enum LiveEvent {
     Text(String),
     /// 思考增量（原样转发，不过滤）。
     Thinking(String),
+    /// Responses 的思考摘要增量：**带上游给的 item_id**，
+    /// 客户端才能把增量归并到最后那条完整 reasoning 条目里（直连上游时就是这个形状）。
+    ThinkingSummary { item_id: String, text: String },
     /// 思考块的签名增量（Anthropic 把签名放在思考块末尾）。
     ThinkingSignature(String),
 }
@@ -532,6 +549,26 @@ impl StreamEncoder {
                 json!({"delta": text, "output_index": self.next_index, "summary_index": 0}),
             ),
         }
+    }
+
+    /// Responses 的思考摘要增量：`item_id` 用上游给的那个，客户端才能归并到最终条目。
+    pub fn push_reasoning_summary(&mut self, item_id: &str, text: &str) -> String {
+        if text.is_empty() {
+            return String::new();
+        }
+        if self.protocol != Protocol::Responses {
+            // 别的协议没有这种事件形状，退化成普通思考增量
+            return self.push_reasoning(text);
+        }
+        self.response_event(
+            "response.reasoning_summary_text.delta",
+            json!({
+                "item_id": item_id,
+                "output_index": self.next_index,
+                "summary_index": 0,
+                "delta": text
+            }),
+        )
     }
 
     /// 思考块的签名增量（Anthropic：签名在思考块末尾，客户端回传时要带上）。
@@ -1194,6 +1231,17 @@ mod tests {
         // 只要文本的入口不把思考混进来
         let mut stream = SseTextStream::new(Protocol::Anthropic);
         assert_eq!(stream.push(sse.as_bytes()), "答案");
+
+        // Responses：思考摘要增量要带 item_id（客户端靠它与最终条目对上）
+        let mut stream = SseTextStream::new(Protocol::Responses);
+        let chunk = "data: {\"type\":\"response.reasoning_summary_text.delta\",\"item_id\":\"rs_1\",\"output_index\":0,\"summary_index\":0,\"delta\":\"想\"}\n\n";
+        assert_eq!(
+            stream.push_events(chunk.as_bytes()),
+            vec![LiveEvent::ThinkingSummary {
+                item_id: "rs_1".into(),
+                text: "想".into()
+            }]
+        );
 
         // Chat：思考走 reasoning_content
         let mut stream = SseTextStream::new(Protocol::OpenAI);

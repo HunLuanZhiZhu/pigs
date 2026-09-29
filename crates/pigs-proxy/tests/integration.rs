@@ -287,6 +287,48 @@ data: {}
     ("text/event-stream", Bytes::from(sse))
 }
 
+
+/// 假上游的 Responses 流式响应：先流思考摘要，再流文本，最后 completed 带权威 output[]。
+fn responses_sse_with_reasoning() -> (&'static str, Bytes) {
+    let reasoning = json!({
+        "id": "rs_1", "type": "reasoning",
+        "summary": [{"type": "summary_text", "text": "想一下"}],
+        "encrypted_content": "blob"
+    });
+    let message = json!({
+        "id": "msg_1", "type": "message", "role": "assistant", "status": "completed",
+        "content": [{"type": "output_text", "text": "答案是 4
+PIGEND", "annotations": []}]
+    });
+    let frames = vec![
+        json!({"type":"response.created","response":{"id":"resp_1","status":"in_progress","output":[]}}),
+        json!({"type":"response.output_item.added","output_index":0,
+               "item":{"id":"rs_1","type":"reasoning","summary":[]}}),
+        json!({"type":"response.reasoning_summary_text.delta","item_id":"rs_1",
+               "output_index":0,"summary_index":0,"delta":"想一下"}),
+        json!({"type":"response.reasoning_summary_text.done","item_id":"rs_1",
+               "output_index":0,"summary_index":0,"text":"想一下"}),
+        json!({"type":"response.output_item.done","output_index":0,"item":reasoning.clone()}),
+        json!({"type":"response.output_item.added","output_index":1,
+               "item":{"id":"msg_1","type":"message","role":"assistant","status":"in_progress","content":[]}}),
+        json!({"type":"response.output_text.delta","item_id":"msg_1",
+               "output_index":1,"content_index":0,"delta":"答案是 4
+PIGEND"}),
+        json!({"type":"response.output_item.done","output_index":1,"item":message.clone()}),
+        json!({"type":"response.completed","response":{
+               "id":"resp_1","status":"completed","usage":{"input_tokens":9,"output_tokens":4},
+               "output":[reasoning, message]}}),
+    ];
+    let sse: String = frames
+        .iter()
+        .map(|f| format!("event: {}
+data: {}
+
+", f["type"].as_str().unwrap(), f))
+        .collect();
+    ("text/event-stream", Bytes::from(sse))
+}
+
 // ---------------- 测试 ----------------
 
 #[tokio::test]
@@ -764,4 +806,49 @@ async fn anthropic_thinking_streams_live_without_duplication() {
     assert_eq!(text, "答案是 4");
     // 收尾序列照常
     assert!(sse.contains("message_stop"));
+}
+
+/// Responses 协议：思考摘要**实时**流给客户端（带 item_id），完整 reasoning 条目
+/// （含 encrypted_content）在收尾照旧给——与直连上游时的形状一致，客户端可按 item_id 归并。
+#[tokio::test]
+async fn responses_reasoning_streams_live_and_item_arrives_at_end() {
+    let (_up, upstream_url, fu) = spawn_fake_upstream().await;
+    fu.responses
+        .lock()
+        .unwrap()
+        .push(responses_sse_with_reasoning());
+    let (_pigs, pigs_url) = spawn_pigs(&upstream_url).await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("{pigs_url}/responses"))
+        .json(&json!({
+            "model": "r-x-pig",
+            "stream": true,
+            "reasoning": {"effort": "high", "summary": "auto"},
+            "input": [{"role": "user", "content": [{"type": "input_text", "text": "1+1 等于几"}]}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let sse = resp.text().await.unwrap();
+
+    // 实时：思考摘要增量带上游的 item_id
+    assert!(
+        sse.contains("response.reasoning_summary_text.delta"),
+        "思考摘要必须实时流出去"
+    );
+    assert!(sse.contains("rs_1"), "增量要带 item_id，客户端才能归并");
+    // 收尾：完整的 reasoning 条目（含加密内容）在 output[] 里
+    assert!(sse.contains("blob"), "最终条目要带 encrypted_content");
+    // 顺序：思考摘要先于文本
+    let order = ["reasoning_summary_text.delta", "答案是 4"]
+        .map(|needle| sse.find(needle).expect("客户端流里缺少内容"));
+    assert!(order[0] < order[1], "思考要先于文本");
+    // 文本里没有思考、也没有控制标记
+    let text = pigs_protocol::extract_sse_text(pigs_protocol::Protocol::Responses, &sse).unwrap();
+    assert_eq!(text, "答案是 4");
+    // 上游收到的请求：reasoning 参数原样
+    let reqs = fu.requests.lock().unwrap();
+    assert_eq!(reqs[0].1["reasoning"]["summary"], "auto");
 }

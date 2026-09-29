@@ -244,6 +244,9 @@ fn orchestrate_streaming(
                 orch::PigEvent::Delta(text) => encoder.push_text(text),
                 // 思考也边想边流（Anthropic 需要块生命周期，编码器内部管）
                 orch::PigEvent::Thought(text) => encoder.push_reasoning(text),
+                orch::PigEvent::ThoughtSummary { item_id, text } => {
+                    encoder.push_reasoning_summary(item_id, text)
+                }
                 orch::PigEvent::ThoughtSignature(signature) => {
                     encoder.push_reasoning_signature(signature)
                 }

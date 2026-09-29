@@ -593,6 +593,9 @@ async fn streaming_turn_pushes_filtered_deltas_as_they_arrive() {
             let mut out = match &event {
                 PigEvent::Delta(text) => encoder.push_text(text),
                 PigEvent::Thought(text) => encoder.push_reasoning(text),
+                PigEvent::ThoughtSummary { item_id, text } => {
+                    encoder.push_reasoning_summary(item_id, text)
+                }
                 PigEvent::ThoughtSignature(signature) => encoder.push_reasoning_signature(signature),
                 PigEvent::End(_) => encoder.end_pig(),
                 PigEvent::Start(_) => String::new(),
@@ -665,6 +668,9 @@ async fn live_thinking_is_streamed_before_text() {
             let mut out = match &event {
                 PigEvent::Delta(text) => encoder.push_text(text),
                 PigEvent::Thought(text) => encoder.push_reasoning(text),
+                PigEvent::ThoughtSummary { item_id, text } => {
+                    encoder.push_reasoning_summary(item_id, text)
+                }
                 PigEvent::ThoughtSignature(signature) => encoder.push_reasoning_signature(signature),
                 PigEvent::End(_) => encoder.end_pig(),
                 PigEvent::Start(_) => String::new(),
@@ -697,6 +703,7 @@ async fn live_thinking_is_streamed_before_text() {
         .map(|event| match event {
             PigEvent::Start(_) => "start",
             PigEvent::Thought(_) => "thought",
+            PigEvent::ThoughtSummary { .. } => "thought",
             PigEvent::ThoughtSignature(_) => "signature",
             PigEvent::Delta(_) => "delta",
             PigEvent::End(_) => "end",
@@ -735,6 +742,9 @@ async fn streaming_tool_pause_emits_text_then_native_calls() {
             let out = match &event {
                 PigEvent::Delta(text) => encoder.push_text(text),
                 PigEvent::Thought(text) => encoder.push_reasoning(text),
+                PigEvent::ThoughtSummary { item_id, text } => {
+                    encoder.push_reasoning_summary(item_id, text)
+                }
                 PigEvent::ThoughtSignature(signature) => encoder.push_reasoning_signature(signature),
                 PigEvent::End(_) => encoder.end_pig(),
                 PigEvent::Start(_) => String::new(),

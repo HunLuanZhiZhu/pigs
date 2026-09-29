@@ -67,6 +67,8 @@ pub enum PigEvent {
     Delta(String),
     /// 一段思考文本（原样转发，不过滤）。
     Thought(String),
+    /// Responses 的思考摘要增量（带 item_id）。
+    ThoughtSummary { item_id: String, text: String },
     /// 思考块的签名（Anthropic：思考块末尾的签名，必须跟着一起给客户端）。
     ThoughtSignature(String),
     /// 该 pig 的文本流结束。
@@ -432,6 +434,9 @@ impl Ctx {
                             }
                             proto::LiveEvent::Thinking(text) => {
                                 progress(PigEvent::Thought(text));
+                            }
+                            proto::LiveEvent::ThinkingSummary { item_id, text } => {
+                                progress(PigEvent::ThoughtSummary { item_id, text });
                             }
                             proto::LiveEvent::ThinkingSignature(signature) => {
                                 progress(PigEvent::ThoughtSignature(signature));
