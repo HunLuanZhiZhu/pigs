@@ -81,12 +81,17 @@
 <h2>流式：边到边拼接（动态）</h2>
 <div class="card">
 <p>客户端带 <code>stream:true</code> 时，<strong>子请求也带 <code>stream:true</code></strong>——上游的增量一个字一个字到达，编排层边收边处理：</p>
-<pre>上游 SSE 增量 ──▶ MarkerFilter（按行缓冲）──▶ 安全可见文本 ──▶ 客户端 SSE 帧
+<pre>上游 SSE 增量 ──▶ MarkerFilter ──▶ 安全可见文本 ──▶ 客户端 SSE 帧
                      ▲
-                     └─ 控制标记可能跨增量到达（"PIG" + "END"），
-                        所以最后一行永远留在缓冲里，看到换行才敢放行</pre>
-<p>这套 <code>MarkerFilter</code> 是 legacy <code>http_runtime.rs</code> 里 <code>MarkerLineBuffer</code> 的移植：<strong>控制标记绝不会漏给客户端</strong>，
-相位之间由 SSE 编码器补一个空行。编排跑完时，客户端实时收到的内容与"最终答复"逐字一致（测试里就是这么对比的）。</p>
+                     └─ 只压住两种尾巴：可能正在长成标记的最后一行（"PIG" → "PIGEND"，
+                        连它前面的换行一起留着），以及悬在末尾还没等到下一行内容的换行。
+                        其余文本一拿到就放行 —— 逐字流式，不是攒够一整行才动。</pre>
+<p>这套 <code>MarkerFilter</code> 的安全性来自"凡是还能拼成控制标记的部分都被压住"：已经发出去的字符，
+事后不可能再与后面的字符拼成标记，所以<strong>标记绝不会漏给客户端</strong>。相位之间由 SSE 编码器补一个空行。
+编排跑完时，客户端实时收到的内容与"最终答复"逐字一致（测试里就是这么对比的）。</p>
+<p class="muted">注：legacy 的 <code>MarkerLineBuffer</code> 是"整行放行"——某只 pig 只输出一行时，
+这行要等到流结束才吐出去（简单问题看起来就像没流式）。这里改成只延迟"可能成标记"的尾巴，
+输出内容完全一致，只是更早到达；各种切片方式（含标记被切成任意片段）都有测试盯着。</p>
 <p>客户端<strong>没</strong>要流式时，子请求也不流式：一次性拿 JSON 全文、解析文本、最后合成一个 JSON 响应——两条路径共用同一套标记判定与拼接逻辑。</p>
 <div class="note"><strong>为什么子请求要去掉 <code>accept-encoding</code>：</strong>客户端可能带 <code>gzip</code>，原样转给上游后回来的就是压缩体，
 编排层按 JSON / SSE 解析会直接失败（真实踩过：<code>expected value at line 1 column 1</code>）。子请求一律不带该头，强制上游回明文。</div>
@@ -153,15 +158,16 @@
 <table>
   <tr><th>legacy 文件</th><th>拿什么</th></tr>
   <tr><td><code>crates/pigs-api/src/orchestration.rs</code></td><td><strong>状态机本体</strong>（标记路由、重规划/Post 重试预算、预算耗尽即失败）——逐条对齐</td></tr>
-  <tr><td><code>crates/pigs-api/src/http_runtime.rs</code></td><td><code>MarkerLineBuffer</code>（流式增量去标记）与相位循环骨架</td></tr>
+  <tr><td><code>crates/pigs-api/src/http_runtime.rs</code></td><td><code>MarkerLineBuffer</code>（流式增量去标记，本项目改为"只延迟可能成标记的尾巴"）与相位循环骨架</td></tr>
+  <tr><td><code>crates/pigs-api/src/protocol.rs</code></td><td>相位间的 body 手术：指令追加在 user 文本后（<code>\n\n---\n\n</code> 分隔）、产物作为 assistant 消息接回、Post 追加新的 user 消息</td></tr>
   <tr><td><code>crates/pigs-api/src/output.rs</code></td><td><code>StreamingEncoder</code>（客户端 SSE 帧序列：三协议各自的块开/关/终止帧）</td></tr>
   <tr><td><code>crates/pigs-prompts/prompts/*.txt</code></td><td>Pre/Executor/Post 模板原文（中英双语，逐字节相同），改由 <code>include_str!</code> 嵌入</td></tr>
   <tr><td><code>crates/pigs-proxy/src/loopback.rs</code></td><td>回环传输与内部令牌机制</td></tr>
 </table>
-<p>同时<strong>砍掉</strong>：phased_tools（工具执行）、continuation/snapshots 等会话态、对 pigs-core/pigs-llm 的 SDK 式调用。</p>
-<p><strong>已知与 legacy 的差异（刻意保留，供审阅）</strong>：① 相位间的产物用<em>提示词文本块</em>传递，
-而不是 legacy 那样把上一只 pig 的输出作为<em>原生 assistant 消息</em>接回对话（信息量相同，格式不同，省掉整套 continuation 机制）；
-② Post 提示词里额外附了 Executor 草稿文本块（legacy 是靠原生对话记录让它看见草稿）。</p>
+<p><strong>三只 pig 怎么看见彼此的产物</strong>（与 legacy 完全一致）：
+Pre 的分析填进 Executor 指令模板的 <code>{pre_output}</code>；Executor 的草稿和历次评审报告则作为
+<strong>assistant 消息接回对话</strong>，Post 的验收指令是<strong>新追加的一条 user 消息</strong>——
+模型看到的是"我自己刚写的稿子请验收"，而不是"用户塞来的一段材料"。用户原话（含图片等非文本内容）全程不被覆盖。</p>
 </div>
 
 <div class="tip"><strong>验收标准：</strong>给一个固定的 <code>-pig</code> 请求 + 一个"假装上游"的固定响应序列，

@@ -1,8 +1,10 @@
-//! 相位 payload 组装：模板 `include_str!` 嵌入，语言按用户问题自动选择。
+//! 相位指令组装：模板 `include_str!` 嵌入，语言按用户问题自动选择。
 //!
-//! 模板原文沿用 legacy `pigs-prompts`，只做了两处增强（legacy 缺失的输入补上）：
-//! - Executor 追加 Post 评审反馈块（legacy 占位参数未使用，回环时输入不变）；
-//! - Post 追加执行草稿块（legacy 未把 Executor 草稿交给评审，无从审起）。
+//! 这里只负责"指令正文"，**不含用户原问题**——命令与产物的接法由编排层决定，
+//! 与 legacy `pigs-prompts` 的模板逐字节一致：
+//! - Pre：模板 + 历次失败路径；
+//! - Executor：模板里填 `{pre_output}`（Pre 的分析）；
+//! - Post：纯模板（Executor 的草稿不走这里，而是作为 assistant 消息接回对话）。
 
 use crate::lang::Lang;
 
@@ -28,56 +30,44 @@ fn failure_paths_template(lang: Lang) -> String {
                       Lang::En => include_str!("../prompts/failure_paths_en.txt") })
 }
 
-/// Pre pig 的 user payload：原问题 + 分析指令（含历次失败路径）。
-pub fn pre_payload(user_question: &str, lang: Lang, failure_paths: &[String]) -> String {
+/// Pre pig 的指令：追加到最后一条 user 消息文本后面（含历次失败路径）。
+pub fn pre_instruction(lang: Lang, failure_paths: &[String]) -> String {
     let template = pre_template(lang);
     let fp = failure_paths_block(lang, failure_paths);
-    format!("{}
-
-{}", user_question, template.replace("{failure_paths}", &fp))
+    template.replace("{failure_paths}", &fp)
 }
 
-/// Executor pig 的 user payload：原问题 + 执行指令 + Pre 产物（+ 上轮评审反馈）。
-pub fn executor_payload(user_question: &str, lang: Lang, pre_output: &str, post_feedback: &str) -> String {
-    let template = executor_template(lang);
-    let mut payload = format!("{}\n\n{}", user_question, template.replace("{pre_output}", pre_output));
-    if !post_feedback.trim().is_empty() {
-        payload.push_str(&match lang {
-            Lang::Zh => format!("\n\n---\n以下是上轮评审反馈，请据此修正：\n{}", post_feedback),
-            Lang::En => format!("\n\n---\nThe following is the previous round's review feedback; revise accordingly:\n{}", post_feedback),
-        });
-    }
-    payload
+/// Executor pig 的指令：追加到最后一条 user 消息文本后面（含 Pre 的分析）。
+pub fn executor_instruction(lang: Lang, pre_output: &str) -> String {
+    executor_template(lang).replace("{pre_output}", pre_output)
 }
 
-/// Post pig 的 user payload：原问题 + 验收指令 + 执行草稿。
-pub fn post_payload(user_question: &str, lang: Lang, pre_output: &str, executor_draft: &str) -> String {
-    let template = post_template(lang);
-    let _ = pre_output; // 模板目前不引用 Pre 产物；保留参数以对齐管线语义
-    format!(
-        "{}\n\n{}\n\n---\n{}",
-        user_question,
-        template,
-        match lang {
-            Lang::Zh => format!("以下是需要验收的执行结果：\n{}", executor_draft),
-            Lang::En => format!("The following is the execution result to review:\n{}", executor_draft),
-        }
-    )
+/// Post pig 的指令：作为**新的一条** user 消息追加（草稿已作为 assistant 消息在场）。
+pub fn post_instruction(lang: Lang) -> String {
+    post_template(lang)
 }
 
-/// 失败路径块：空列表 → 空串；非空 → 模板 + 编号列表。
+/// 失败路径块：空列表 → 空串；非空 → 模板 + 编号列表（legacy 同款编号格式）。
 fn failure_paths_block(lang: Lang, paths: &[String]) -> String {
     if paths.is_empty() {
         return String::new();
     }
     let template = failure_paths_template(lang);
+    let entry = match lang {
+        Lang::Zh => "第 {n} 次失败：\n{failure}",
+        Lang::En => "Failure {n}:\n{failure}",
+    };
     let entries = paths
         .iter()
         .enumerate()
-        .map(|(i, p)| format!("{}. {}", i + 1, p))
+        .map(|(i, p)| {
+            entry
+                .replace("{n}", &(i + 1).to_string())
+                .replace("{failure}", p)
+        })
         .collect::<Vec<_>>()
         .join("\n");
-    template.replace("{failures}", &entries)
+    template.replace("{failures}", entries.trim_end())
 }
 
 #[cfg(test)]
@@ -86,32 +76,41 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pre_payload_embeds_failure_paths() {
-        let p = pre_payload("任务", Lang::Zh, &[]);
-        assert!(p.contains("任务"));
+    fn pre_instruction_embeds_failure_paths() {
+        let p = pre_instruction(Lang::Zh, &[]);
         assert!(p.contains("执行前分析"));
         assert!(!p.contains("曾失败过"));
+        assert!(p.trim_end().ends_with("PIGEND"), "模板本身没动");
 
-        let p = pre_payload("任务", Lang::Zh, &[String::from("第一次尝试报告")]);
+        let p = pre_instruction(Lang::Zh, &[String::from("第一次尝试报告")]);
         assert!(p.contains("曾失败过"));
-        assert!(p.contains("1. 第一次尝试报告"));
+        assert!(p.contains("第 1 次失败：\n第一次尝试报告"));
     }
 
     #[test]
-    fn executor_payload_includes_pre_output_and_feedback() {
-        let p = executor_payload("任务", Lang::Zh, "计划X", "");
+    fn executor_instruction_fills_pre_output() {
+        let p = executor_instruction(Lang::Zh, "计划X");
         assert!(p.contains("计划X"));
-        assert!(!p.contains("评审反馈"));
-
-        let p = executor_payload("任务", Lang::Zh, "计划X", "漏了第二步");
-        assert!(p.contains("计划X"));
-        assert!(p.contains("漏了第二步"));
+        assert!(p.starts_with("以下是对本次任务在"));
+        assert!(p.trim_end().ends_with("按照执行计划全力完成任务目标"));
+        // 不含用户问题（问题留在原 user 消息里，由 body 手术追加）
+        assert!(!p.contains("帮我完成任务"));
+        // 不再有 legacy 之外的自造块
+        assert!(!p.contains("评审反馈") && !p.contains("上轮"));
     }
 
     #[test]
-    fn post_payload_includes_draft() {
-        let p = post_payload("任务", Lang::Zh, "计划X", "草稿Y");
-        assert!(p.contains("PIGEND"));
-        assert!(p.contains("草稿Y"));
+    fn post_instruction_is_pure_template() {
+        let p = post_instruction(Lang::Zh);
+        assert!(p.starts_with("根据设定的目标，独立验收结果"));
+        assert!(p.contains("PIGEND") && p.contains("PIGFAIL"));
+        assert!(!p.contains("执行结果：") && !p.contains("以下是需要验收"));
+    }
+
+    #[test]
+    fn english_templates_exist() {
+        assert!(pre_instruction(Lang::En, &[]).contains("five questions"));
+        assert!(executor_instruction(Lang::En, "PRE").contains("PRE"));
+        assert!(post_instruction(Lang::En).contains("PIGFAIL"));
     }
 }

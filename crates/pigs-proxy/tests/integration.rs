@@ -306,6 +306,15 @@ async fn pig_flow_full_orchestration_via_loopback() {
             assert!(content.contains("帮我完成任务Z") && content.contains("执行前分析"));
         } else if i == 1 {
             assert!(content.contains("分析：需要X"));
+        } else {
+            // Post：原问题保留 + 草稿作为 assistant 消息 + 验收指令是新的一条 user 消息
+            let msgs = body["messages"].as_array().unwrap();
+            assert_eq!(msgs.len(), 4);
+            assert_eq!(msgs[1]["content"], "帮我完成任务Z");
+            assert_eq!(msgs[2]["role"], "assistant");
+            assert_eq!(msgs[2]["content"], "执行结果……");
+            assert_eq!(msgs[3]["role"], "user");
+            assert!(content.contains("验收"));
         }
     }
     // 会话头贯穿验证：Anthropic 协议 + 客户端自带会话头（录制模式，回 anthropic 形状响应）

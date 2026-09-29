@@ -54,6 +54,11 @@ pub fn is_control_marker_line(line: &str) -> bool {
     control_marker(line).is_some()
 }
 
+/// 这段文本是否"还有可能长成控制标记"（即它是某个标记的开头）。
+fn is_possible_marker_prefix(text: &str) -> bool {
+    !text.is_empty() && (PIGEND.starts_with(text) || PIGFAIL.starts_with(text))
+}
+
 /// 删除整行控制标记，但保留其它行与换行布局（用于流式增量转发）。
 pub fn strip_control_lines_preserving_layout(text: &str) -> String {
     text.split('\n')
@@ -62,17 +67,19 @@ pub fn strip_control_lines_preserving_layout(text: &str) -> String {
         .join("\n")
 }
 
-/// 流式增量过滤器：把上游增量按块喂进来，吐出"确认安全"的可见文本。
+/// 流式增量过滤器：把上游增量按块喂进来，吐出可以立刻转发给客户端的可见文本。
 ///
-/// 控制标记可能跨多个增量到达（"PIG" + "END"），所以最后一行永远留在缓冲里，
-/// 直到看到换行或流结束才敢断定它不是标记；其余已确认的行立即转发。
-/// 移植自 legacy `http_runtime.rs` 的 `MarkerLineBuffer`。
+/// 控制标记可能跨增量到达（"PIG" + "END"），所以**只压住两种尾巴**：
+/// 1. 可能正在长成标记的最后一行（`PIG` → `PIGEND`），连它前面那个换行一起留着——
+///    标记被丢弃时，这个换行也跟着丢掉，不会在答复里留下多余空行；
+/// 2. 悬在末尾、还没有下一行内容的换行（等下一行有实质内容了再放行）。
+///
+/// 其余文本**一拿到就放行**（逐字流式，而不是攒够一整行才动）。
+/// 安全性：凡是还能拼成控制标记的部分都被压住了，已经发出去的字符不可能事后变成标记。
 #[derive(Debug, Default)]
 pub struct MarkerFilter {
     /// 尚未决定是否转发的待处理文本。
     pending: String,
-    /// 是否已经发出过至少一段增量。
-    emitted: bool,
 }
 
 impl MarkerFilter {
@@ -83,57 +90,41 @@ impl MarkerFilter {
     /// 喂入一段（含标记的）原始增量，返回可以转发给客户端的可见文本（可能为空串）。
     pub fn push(&mut self, delta: &str) -> String {
         self.pending.push_str(delta);
-        let Some(last_start) = last_nonempty_line_start(&self.pending) else {
-            return String::new();
-        };
-        // 只转发到"最后一个非空行"之前的内容，该行留着继续观察
-        let keep_from = self.pending[..last_start].rfind('\n').unwrap_or(last_start);
-        if keep_from == 0 {
+        let cut = safe_forward_end(&self.pending);
+        if cut == 0 {
             return String::new();
         }
-        let prefix: String = self.pending.drain(..keep_from).collect();
-        let visible = strip_control_lines_preserving_layout(&prefix);
-        if visible.trim().is_empty() {
-            return String::new();
-        }
-        self.emitted = true;
-        visible
+        let prefix: String = self.pending.drain(..cut).collect();
+        strip_control_lines_preserving_layout(&prefix)
     }
 
-    /// 流结束：把缓冲里剩下的文本去标记后一次吐出。
+    /// 流结束：处理缓冲里剩下的一点尾巴。
+    ///
+    /// 此时剩余内容只可能是"被截断的标记"或"为标记预留的分隔换行"——都不该发给客户端。
     pub fn finish(&mut self) -> String {
-        let visible = strip_markers(&self.pending);
-        let out = if visible.is_empty() {
-            String::new()
-        } else if self.emitted && self.pending.starts_with('\n') {
-            // 之前发过增量且剩余以换行开头 → 补一个前导换行保持排版
-            format!("\n{visible}")
-        } else {
-            visible
-        };
-        self.pending.clear();
-        out
+        let rest = std::mem::take(&mut self.pending);
+        let visible = strip_control_lines_preserving_layout(&rest);
+        let trimmed = visible.trim();
+        if trimmed.is_empty() || is_possible_marker_prefix(trimmed) {
+            return String::new();
+        }
+        visible
     }
 }
 
-/// 返回最后一个非空行的起始字节偏移（决定保留多少待处理文本）。
-fn last_nonempty_line_start(text: &str) -> Option<usize> {
-    let mut offset = 0usize;
-    let mut last = None;
-    for segment in text.split_inclusive('\n') {
-        if !segment.trim().is_empty() {
-            last = Some(offset);
-        }
-        offset += segment.len();
+/// 返回"可以安全转发"的字节边界（此边界之前的部分可以立刻发出去）。
+fn safe_forward_end(pending: &str) -> usize {
+    let line_start = pending.rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let tail = pending[line_start..].trim();
+    if is_possible_marker_prefix(tail) {
+        // 保留最后一行（含它前面的那个换行）：cut 落在上一个换行之前
+        return pending[..line_start].rfind('\n').unwrap_or(0);
     }
-    // 末尾没有换行的最后一段
-    if offset < text.len() {
-        let segment = &text[offset..];
-        if !segment.trim().is_empty() {
-            last = Some(offset);
-        }
+    if pending.ends_with('\n') {
+        // 末尾悬着的换行先留着，等下一行有内容再一起放行
+        return pending.len() - 1;
     }
-    last
+    pending.len()
 }
 
 #[cfg(test)]
@@ -161,9 +152,9 @@ mod tests {
     fn filtered(raw: &str, step: usize) -> String {
         let mut filter = MarkerFilter::new();
         let mut out = String::new();
-        for chunk in raw.split_inclusive(|_| true).collect::<Vec<_>>().chunks(step.max(1)) {
-            let piece: String = chunk.concat();
-            out.push_str(&filter.push(&piece));
+        let chars: Vec<char> = raw.chars().collect();
+        for chunk in chars.chunks(step.max(1)) {
+            out.push_str(&filter.push(&chunk.iter().collect::<String>()));
         }
         out.push_str(&filter.finish());
         out
@@ -176,9 +167,11 @@ mod tests {
             ("第一行\n第二行\nPIGFAIL", "第一行\n第二行"),
             ("分析\n\n结论\nPIGEND\n", "分析\n\n结论"),
             ("没有标记的普通回答", "没有标记的普通回答"),
-            // 标记词出现在句中/行尾之外都不算标记
+            // 标记词出现在句中/行首但非独占一行都不算标记
             ("说明 PIGEND 的用法\n正文", "说明 PIGEND 的用法\n正文"),
             ("PIGEND 不是最后一行\n结尾", "PIGEND 不是最后一行\n结尾"),
+            // 普通正文里以 PIG 开头但不成标记的词
+            ("答案\nPIGX 是别的词", "答案\nPIGX 是别的词"),
         ];
         for (raw, want) in cases {
             for step in [1, 2, 3, 7, 100] {
@@ -190,10 +183,34 @@ mod tests {
     #[test]
     fn filter_detects_marker_split_across_chunks() {
         let mut filter = MarkerFilter::new();
-        // 换行会作为"下一行的前导"在后续增量里发出，所以这里只拿到已确认的一行
-        assert_eq!(filter.push("答案完成\nPIG"), "答案完成");
+        assert_eq!(filter.push("答案完成"), "答案完成");
+        assert_eq!(filter.push("\nPIG"), ""); // 可能是标记开头 → 压住
         assert_eq!(filter.push("E"), "");
         assert_eq!(filter.push("ND\n"), ""); // 整行是标记 → 丢掉
+        assert_eq!(filter.finish(), "");
+    }
+
+    /// 逐字放行：普通文本一拿到就出去，不必等一整行写完。
+    #[test]
+    fn filter_forwards_plain_text_immediately() {
+        let mut filter = MarkerFilter::new();
+        assert_eq!(filter.push("答"), "答");
+        assert_eq!(filter.push("案是 4"), "案是 4");
+        assert_eq!(filter.finish(), "");
+
+        // 末尾换行也很快放行（下一行有内容时）
+        let mut filter = MarkerFilter::new();
+        assert_eq!(filter.push("第一行\n"), "第一行");
+        assert_eq!(filter.push("第二"), "\n第二");
+        assert_eq!(filter.finish(), "");
+    }
+
+    /// 被压住的尾巴若不是标记（"PIGX"），换行不会被吞掉。
+    #[test]
+    fn filter_restores_newline_when_supposed_marker_was_not_one() {
+        let mut filter = MarkerFilter::new();
+        assert_eq!(filter.push("答案\nPIG"), "答案");
+        assert_eq!(filter.push("X 结尾"), "\nPIGX 结尾");
         assert_eq!(filter.finish(), "");
     }
 }

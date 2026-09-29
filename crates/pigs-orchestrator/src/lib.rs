@@ -157,20 +157,19 @@ impl Orchestrator {
             .clone()
             .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
         let lang = lang::detect_lang(&proto::extract_last_user_text(&input.body, input.protocol));
-        let user_question = proto::extract_last_user_text(&input.body, input.protocol);
 
         let ctx = Ctx {
             input,
             session,
             lang,
-            user_question,
             transport,
             progress,
         };
 
         let mut failure_paths: Vec<String> = Vec::new();
         let mut pre_output = String::new();
-        let mut executor_draft = String::new();
+        // 已产出的相位文本（Executor / Post），按顺序作为 assistant 消息接回 Post 的对话
+        let mut transcript: Vec<String> = Vec::new();
         let mut visible: Vec<String> = Vec::new();
         let mut path: Vec<Pig> = Vec::new();
         let mut pre_replans: u32 = 0;
@@ -183,8 +182,10 @@ impl Orchestrator {
                 // ---------------- Pre pig：规划 / 分流 ----------------
                 Pig::Pre => {
                     tracing::info!(pig = "pre", "starting pig");
-                    let payload = prompts::pre_payload(&ctx.user_question, ctx.lang, &failure_paths);
-                    let raw = ctx.call_pig(Pig::Pre, &payload).await?;
+                    let instruction = prompts::pre_instruction(ctx.lang, &failure_paths);
+                    let raw = ctx
+                        .call_pig(Pig::Pre, &instruction, Placement::AppendToUser, &[])
+                        .await?;
                     let text = strip_markers(&raw);
                     visible.push(text.clone());
                     match detect_marker(&raw) {
@@ -214,31 +215,27 @@ impl Orchestrator {
                 // ---------------- Executor pig：执行 ----------------
                 Pig::Executor => {
                     tracing::info!(pig = "executor", "starting pig");
-                    let payload = prompts::executor_payload(
-                        &ctx.user_question,
-                        ctx.lang,
-                        &pre_output,
-                        // 无标记的 Post 是自己接着做（不回环给 Executor），所以没有"上一轮反馈"
-                        "",
-                    );
-                    let raw = ctx.call_pig(Pig::Executor, &payload).await?;
+                    let instruction = prompts::executor_instruction(ctx.lang, &pre_output);
+                    let raw = ctx
+                        .call_pig(Pig::Executor, &instruction, Placement::AppendToUser, &[])
+                        .await?;
                     // 不解析标记：Executor 之后总是进 Post 验收
-                    executor_draft = strip_markers(&raw);
-                    visible.push(executor_draft.clone());
+                    let text = strip_markers(&raw);
+                    visible.push(text.clone());
+                    transcript.push(text);
                     pig = Pig::Post;
                 }
                 // ---------------- Post pig：验收 / 路由 ----------------
                 Pig::Post => {
                     tracing::info!(pig = "post", "starting pig");
-                    let payload = prompts::post_payload(
-                        &ctx.user_question,
-                        ctx.lang,
-                        &pre_output,
-                        &executor_draft,
-                    );
-                    let raw = ctx.call_pig(Pig::Post, &payload).await?;
+                    // 草稿与历次评审作为 assistant 消息在场，验收指令是新的一条 user 消息
+                    let instruction = prompts::post_instruction(ctx.lang);
+                    let raw = ctx
+                        .call_pig(Pig::Post, &instruction, Placement::NewUserMessage, &transcript)
+                        .await?;
                     let text = strip_markers(&raw);
                     visible.push(text.clone());
+                    transcript.push(text.clone());
                     match detect_marker(&raw) {
                         // 验收通过 → 整轮结束
                         Some(Marker::End) => {
@@ -254,7 +251,6 @@ impl Orchestrator {
                             failure_paths.push(text);
                             pre_replans += 1;
                             pre_output.clear();
-                            executor_draft.clear();
                             post_iterations = 0;
                             pig = Pig::Pre;
                         }
@@ -275,12 +271,20 @@ impl Orchestrator {
     }
 }
 
+/// 相位指令落在 body 的哪里。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Placement {
+    /// 追加到最后一条 user 消息的文本后面（Pre / Executor：接着用户的话说）。
+    AppendToUser,
+    /// 作为新的一条 user 消息（Post：草稿已作为 assistant 消息在场）。
+    NewUserMessage,
+}
+
 /// 一轮编排的内部上下文。
 struct Ctx {
     input: TurnInput,
     session: String,
     lang: lang::Lang,
-    user_question: String,
     transport: Arc<dyn Transport>,
     progress: Option<ProgressSink>,
 }
@@ -298,13 +302,33 @@ impl Ctx {
     }
 
     /// 组装并发送一只 pig 的子请求，返回提取出的原始文本（含控制标记）。
-    async fn call_pig(&self, pig: Pig, payload: &str) -> Result<String> {
+    ///
+    /// body 的手术顺序：① 把对话记录（上一只 pig 的产出）作为 assistant 消息接回；
+    /// ② 再落本相位的指令——Pre/Executor 追加到最后一条 user 消息文本上，
+    /// Post 作为新的一条 user 消息。这样用户原话、图片等内容一律不动。
+    async fn call_pig(
+        &self,
+        pig: Pig,
+        instruction: &str,
+        placement: Placement,
+        transcript: &[String],
+    ) -> Result<String> {
         // 客户端要流式 → 子请求也流式（增量边到边转发）；否则要 JSON 全文
         let streaming = self.progress.is_some();
         let mut body = self.input.body.clone();
         proto::set_stream(&mut body, streaming);
         proto::strip_tools(&mut body);
-        proto::replace_last_user_text(&mut body, self.input.protocol, payload)?;
+        for text in transcript {
+            proto::push_assistant_message(&mut body, self.input.protocol, text)?;
+        }
+        match placement {
+            Placement::AppendToUser => {
+                proto::append_to_last_user_text(&mut body, self.input.protocol, instruction)?
+            }
+            Placement::NewUserMessage => {
+                proto::push_user_message(&mut body, self.input.protocol, instruction)?
+            }
+        }
 
         // 子请求不带 accept-encoding：否则客户端可能空的 gzip 头会一路透传到上游，
         // 压缩体回到编排层就没法解析（也不利于增量解析 SSE）。
@@ -578,14 +602,26 @@ mod tests {
             assert_eq!(session, &result.session);
             // 鉴权透传
             assert!(req.headers.iter().any(|(k, v)| k == "authorization" && v == "Bearer k"));
-            // payload 递进：pre → executor(含 pre 产物) → post(含草稿)
+            // 相位指令的落点：pre/executor 追加在用户原话后面；post 是新的一条 user 消息
+            let msgs = body["messages"].as_array().unwrap();
             let content = last_user_content(&body);
             if i == 0 {
+                assert_eq!(msgs.len(), 2, "Pre：指令追加在原 user 消息上");
                 assert!(content.contains("帮我完成任务Z") && content.contains("执行前分析"));
+                assert!(content.contains("---"), "追加格式 = 空行 + 分隔线 + 空行");
             } else if i == 1 {
-                assert!(content.contains("分析：需要X和Y"));
+                assert_eq!(msgs.len(), 2, "Executor：同样追加在原 user 消息上");
+                assert!(content.contains("帮我完成任务Z") && content.contains("分析：需要X和Y"));
             } else {
-                assert!(content.contains("执行结果……") && content.contains("验收"));
+                // Post：原问题不许被覆盖；草稿作为 assistant 消息在场；指令是新的一条 user
+                assert_eq!(msgs.len(), 4, "system + user(原问题) + assistant(草稿) + user(验收指令)");
+                assert_eq!(msgs[1]["role"], "user");
+                assert_eq!(msgs[1]["content"], "帮我完成任务Z");
+                assert_eq!(msgs[2]["role"], "assistant");
+                assert_eq!(msgs[2]["content"], "执行结果……");
+                assert_eq!(msgs[3]["role"], "user");
+                assert!(content.contains("验收"));
+                assert!(!content.contains("执行结果……"), "草稿不该再抄一遍进指令");
             }
         }
     }

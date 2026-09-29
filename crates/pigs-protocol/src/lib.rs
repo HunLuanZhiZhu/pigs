@@ -16,8 +16,9 @@ pub use response::{
 pub use route::{has_pig, protocol_from_path, strip_pig_suffix, Protocol};
 pub use sse::is_sse_content_type;
 pub use surgery::{
-    extract_last_user_text, get_model, has_client_stream, replace_last_user_text, set_model,
-    set_stream, strip_tools,
+    append_to_last_user_text, extract_last_user_text, get_model, has_client_stream,
+    push_assistant_message, push_user_message, set_model, set_stream, strip_tools,
+    SUFFIX_SEPARATOR,
 };
 
 /// 编解码错误。
