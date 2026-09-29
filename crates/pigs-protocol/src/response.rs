@@ -84,16 +84,83 @@ fn sse_payload_text(protocol: Protocol, payload: &Value) -> Option<String> {
 }
 
 /// 解析一行 SSE（不含换行符）：`data:` 行走协议解析，其余行（`event:` / 注释 / 空行）忽略。
-fn sse_line_text(protocol: Protocol, line: &str) -> Option<String> {
-    let data = line.strip_prefix("data:")?.trim_start();
+fn sse_line_events(protocol: Protocol, line: &str) -> Vec<LiveEvent> {
+    let Some(data) = line.strip_prefix("data:") else {
+        return Vec::new();
+    };
+    let data = data.trim_start();
     if data.is_empty() || data == "[DONE]" {
-        return None;
+        return Vec::new();
     }
-    let value: Value = serde_json::from_str(data).ok()?;
-    sse_payload_text(protocol, &value)
+    let Ok(value) = serde_json::from_str::<Value>(data) else {
+        return Vec::new();
+    };
+    let mut events = Vec::new();
+    if let Some(text) = sse_payload_text(protocol, &value) {
+        events.push(LiveEvent::Text(text));
+    }
+    if let Some(thinking) = sse_payload_thinking(protocol, &value) {
+        events.push(LiveEvent::Thinking(thinking));
+    }
+    if let Some(signature) = sse_payload_signature(protocol, &value) {
+        events.push(LiveEvent::ThinkingSignature(signature));
+    }
+    events
 }
 
-/// 增量 SSE 文本提取器：喂入任意字节边界的响应块，吐出本次新增的文本。
+/// 思考增量：Anthropic 的 `thinking_delta` / Chat 的 `reasoning_content`。
+///
+/// Responses 的思考是以完整条目在收尾时给的（`output[]` 里带加密内容），这里不重复流。
+fn sse_payload_thinking(protocol: Protocol, payload: &Value) -> Option<String> {
+    match protocol {
+        // Anthropic：外层是 content_block_delta，增量类型在 delta.type
+        Protocol::Anthropic => {
+            let ty = payload.get("type").and_then(|t| t.as_str());
+            let delta = payload.get("delta");
+            (ty == Some("content_block_delta")
+                && delta.and_then(|d| d.get("type")).and_then(|t| t.as_str())
+                    == Some("thinking_delta"))
+            .then(|| delta.and_then(|d| d.get("thinking")).and_then(|t| t.as_str()))
+            .flatten()
+            .map(String::from)
+        }
+        Protocol::OpenAI => payload
+            .pointer("/choices/0/delta/reasoning_content")
+            .or_else(|| payload.pointer("/choices/0/delta/reasoning"))
+            .and_then(|t| t.as_str())
+            .map(String::from),
+        Protocol::Responses => None,
+    }
+}
+
+/// 思考块签名增量（Anthropic 的 `signature_delta`）。
+fn sse_payload_signature(protocol: Protocol, payload: &Value) -> Option<String> {
+    if protocol != Protocol::Anthropic {
+        return None;
+    }
+    let ty = payload.get("type").and_then(|t| t.as_str());
+    let delta = payload.get("delta");
+    (ty == Some("content_block_delta")
+        && delta.and_then(|d| d.get("type")).and_then(|t| t.as_str()) == Some("signature_delta"))
+    .then(|| delta.and_then(|d| d.get("signature")).and_then(|s| s.as_str()))
+    .flatten()
+    .map(String::from)
+}
+
+/// 上游 SSE 的一个实时增量（客户端要按类型编码，不能混为一谈）。
+#[derive(Debug, Clone, PartialEq)]
+pub enum LiveEvent {
+    /// 可见文本增量（要过控制标记过滤）。
+    Text(String),
+    /// 思考增量（原样转发，不过滤）。
+    Thinking(String),
+    /// 思考块的签名增量（Anthropic 把签名放在思考块末尾）。
+    ThinkingSignature(String),
+}
+
+/// 增量 SSE 提取器：喂入任意字节边界的响应块，吐出本次新增的事件。
+
+/// 增量 SSE 文本提取器（只取可见文本的旧入口，内部走 [`SseTextStream::push_events`]）。
 ///
 /// 上游 SSE 的块边界可以落在任何地方——一行中间，甚至一个中文字符的中间——
 /// 所以这里用字节缓冲按行切分：只处理完整行，尾部残缺字节留到下一次。
@@ -111,29 +178,52 @@ impl SseTextStream {
         }
     }
 
-    /// 喂入一段响应字节，返回本次新增的文本（可能为空串）。
-    pub fn push(&mut self, chunk: &[u8]) -> String {
+    /// 喂入一段响应字节，返回本次新增的**事件**（文本 / 思考 / 思考签名）。
+    pub fn push_events(&mut self, chunk: &[u8]) -> Vec<LiveEvent> {
         self.buf.extend_from_slice(chunk);
-        let mut out = String::new();
+        let mut events = Vec::new();
         while let Some(pos) = self.buf.iter().position(|b| *b == b'\n') {
             let line: Vec<u8> = self.buf.drain(..=pos).collect();
             let line = String::from_utf8_lossy(&line);
-            if let Some(text) = sse_line_text(self.protocol, line.trim_end_matches(['\r', '\n'])) {
-                out.push_str(&text);
-            }
+            events.extend(sse_line_events(
+                self.protocol,
+                line.trim_end_matches(['\r', '\n']),
+            ));
         }
-        out
+        events
+    }
+
+    /// 喂入一段响应字节，返回本次新增的**可见文本**（丢弃思考等其它事件）。
+    pub fn push(&mut self, chunk: &[u8]) -> String {
+        self.push_events(chunk)
+            .into_iter()
+            .filter_map(|event| match event {
+                LiveEvent::Text(text) => Some(text),
+                _ => None,
+            })
+            .collect()
     }
 
     /// 流结束：处理末尾没有换行的残留行。
-    pub fn finish(&mut self) -> String {
+    pub fn finish_events(&mut self) -> Vec<LiveEvent> {
         let rest = std::mem::take(&mut self.buf);
         let line = String::from_utf8_lossy(&rest);
         let line = line.trim_end_matches(['\r', '\n']);
         if line.is_empty() {
-            return String::new();
+            return Vec::new();
         }
-        sse_line_text(self.protocol, line).unwrap_or_default()
+        sse_line_events(self.protocol, line)
+    }
+
+    /// 流结束：处理末尾没有换行的残留行（只要可见文本）。
+    pub fn finish(&mut self) -> String {
+        self.finish_events()
+            .into_iter()
+            .filter_map(|event| match event {
+                LiveEvent::Text(text) => Some(text),
+                _ => None,
+            })
+            .collect()
     }
 }
 
@@ -172,6 +262,8 @@ pub struct StreamEncoder {
     stop_reason: Option<String>,
     /// 上游给的 usage（跨相位累加后的结果，原样透传）。
     usage: Option<Value>,
+    /// 思考块是否开着（Anthropic 的块有 start/stop 生命周期，实时流要边开边发）。
+    open_thinking: bool,
 }
 
 impl StreamEncoder {
@@ -195,6 +287,7 @@ impl StreamEncoder {
             output: Vec::new(),
             stop_reason: None,
             usage: None,
+            open_thinking: false,
         }
     }
 
@@ -321,16 +414,17 @@ impl StreamEncoder {
         }
     }
 
-    /// 发出一段可见文本增量（需要时先开块）。
+    /// 发出一段可见文本增量（先关思考块、需要时开文本块）。
     pub fn push_text(&mut self, text: &str) -> String {
         if text.is_empty() {
             return String::new();
         }
-        let mut frames = if self.open {
+        let mut frames = self.end_thinking();
+        frames.push_str(&if self.open {
             String::new()
         } else {
             self.open_block()
-        };
+        });
         self.wrote_text = true;
         frames.push_str(&match self.protocol {
             Protocol::OpenAI => self.chat_delta(text),
@@ -350,10 +444,10 @@ impl StreamEncoder {
         frames
     }
 
-    /// 关闭当前 pig 的文本块。
+    /// 关闭当前 pig 的文本块（思考块也一并收尾）。
     pub fn end_pig(&mut self) -> String {
         if !self.open {
-            return String::new();
+            return self.end_thinking();
         }
         self.open = false;
         match self.protocol {
@@ -377,8 +471,9 @@ impl StreamEncoder {
         if parts.is_empty() {
             return String::new();
         }
-        // 发原生内容前先把正在进行的文本段收尾（Anthropic/Responses 的块要闭合）
-        let mut frames = self.end_pig();
+        // 发原生内容前先把开着的思考块与文本段收尾（Anthropic/Responses 的块要闭合）
+        let mut frames = self.end_thinking();
+        frames.push_str(&self.end_pig());
         for part in parts {
             frames.push_str(&match part {
                 Part::Text(text) => self.push_text(text),
@@ -390,8 +485,8 @@ impl StreamEncoder {
         frames
     }
 
-    /// 一段思考文本（协议原生字段名）。
-    fn push_reasoning(&mut self, text: &str) -> String {
+    /// 一段思考增量：边想边发（Anthropic 需要先开块，Chat 直接给字段）。
+    pub fn push_reasoning(&mut self, text: &str) -> String {
         if text.is_empty() {
             return String::new();
         }
@@ -408,42 +503,62 @@ impl StreamEncoder {
                     "finish_reason": Value::Null
                 }]
             })),
-            Protocol::Anthropic => format!(
-                "{}{}{}{}",
-                event_frame(
-                    "content_block_start",
-                    json!({
-                        "type": "content_block_start",
-                        "index": self.next_index,
-                        "content_block": {"type": "thinking", "thinking": ""}
-                    })
-                ),
-                event_frame(
+            Protocol::Anthropic => {
+                let mut frames = String::new();
+                if !self.open_thinking {
+                    frames.push_str(&event_frame(
+                        "content_block_start",
+                        json!({
+                            "type": "content_block_start",
+                            "index": self.next_index,
+                            "content_block": {"type": "thinking", "thinking": ""}
+                        }),
+                    ));
+                    self.next_index += 1;
+                    self.open_thinking = true;
+                }
+                frames.push_str(&event_frame(
                     "content_block_delta",
                     json!({
                         "type": "content_block_delta",
-                        "index": self.next_index,
+                        "index": self.next_index.saturating_sub(1),
                         "delta": {"type": "thinking_delta", "thinking": text}
-                    })
-                ),
-                event_frame(
-                    "content_block_delta",
-                    json!({
-                        "type": "content_block_delta",
-                        "index": self.next_index,
-                        "delta": {"type": "signature_delta", "signature": ""}
-                    })
-                ),
-                event_frame(
-                    "content_block_stop",
-                    json!({"type": "content_block_stop", "index": self.next_index})
-                )
-            ),
+                    }),
+                ));
+                frames
+            }
             Protocol::Responses => self.response_event(
                 "response.reasoning_summary_text.delta",
                 json!({"delta": text, "output_index": self.next_index, "summary_index": 0}),
             ),
         }
+    }
+
+    /// 思考块的签名增量（Anthropic：签名在思考块末尾，客户端回传时要带上）。
+    pub fn push_reasoning_signature(&mut self, signature: &str) -> String {
+        if self.protocol != Protocol::Anthropic || !self.open_thinking || signature.is_empty() {
+            return String::new();
+        }
+        event_frame(
+            "content_block_delta",
+            json!({
+                "type": "content_block_delta",
+                "index": self.next_index.saturating_sub(1),
+                "delta": {"type": "signature_delta", "signature": signature}
+            }),
+        )
+    }
+
+    /// 收尾思考块（文本或其它内容开始前必须关掉）。
+    fn end_thinking(&mut self) -> String {
+        if !self.open_thinking {
+            return String::new();
+        }
+        self.open_thinking = false;
+        event_frame(
+            "content_block_stop",
+            json!({"type": "content_block_stop", "index": self.next_index.saturating_sub(1)}),
+        )
     }
 
     /// 一个原生内容块 / output item：原样发出去，不解释、不改写。
@@ -591,6 +706,12 @@ impl StreamEncoder {
 
     /// 发协议终止帧（成功的完整序列）。
     pub fn finish(&mut self) -> String {
+        let pending_thinking = self.end_thinking();
+        let frames = self.finish_frames();
+        format!("{pending_thinking}{frames}")
+    }
+
+    fn finish_frames(&mut self) -> String {
         // 停止原因与 usage 一律用上游给的值；上游没给才退回协议默认
         let stop_reason = self
             .stop_reason
@@ -1049,6 +1170,38 @@ mod tests {
         let responses = synthesize_json(Protocol::Responses, &ResponseContent::text_only("m", "t"));
         assert_eq!(responses["output"][0]["content"][0]["text"], "t");
         assert_eq!(responses["status"], "completed");
+    }
+
+    /// 实时增量提取：文本与思考必须分开报（这次就是靠它抓出了 Anthropic 嵌套字段的错）。
+    #[test]
+    fn live_events_split_text_and_thinking() {
+        let sse = concat!(
+            "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\n",
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"先想\"}}\n\n",
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"sig\"}}\n\n",
+            "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"答案\"}}\n\n"
+        );
+        let mut stream = SseTextStream::new(Protocol::Anthropic);
+        assert_eq!(
+            stream.push_events(sse.as_bytes()),
+            vec![
+                LiveEvent::Thinking("先想".into()),
+                LiveEvent::ThinkingSignature("sig".into()),
+                LiveEvent::Text("答案".into()),
+            ]
+        );
+        // 只要文本的入口不把思考混进来
+        let mut stream = SseTextStream::new(Protocol::Anthropic);
+        assert_eq!(stream.push(sse.as_bytes()), "答案");
+
+        // Chat：思考走 reasoning_content
+        let mut stream = SseTextStream::new(Protocol::OpenAI);
+        let chunk = "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"想\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"答\"}}]}\n\n";
+        assert_eq!(
+            stream.push_events(chunk.as_bytes()),
+            vec![LiveEvent::Thinking("想".into()), LiveEvent::Text("答".into())]
+        );
     }
 
     /// 思考内容必须原样交给客户端：Anthropic 的 thinking 块、Responses 的 reasoning 条目、

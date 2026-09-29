@@ -261,6 +261,32 @@ fn openai_tool_call_response() -> (&'static str, Bytes) {
     )
 }
 
+
+/// 假上游的 Anthropic 流式响应：先思考（含签名），再给文本。
+fn anthropic_sse_with_thinking() -> (&'static str, Bytes) {
+    let frames = [
+        json!({"type":"message_start","message":{"usage":{"input_tokens":9}}}),
+        json!({"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}),
+        json!({"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"先想一下"}}),
+        json!({"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig-1"}}),
+        json!({"type":"content_block_stop","index":0}),
+        json!({"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}),
+        json!({"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"答案是 4
+PIGEND"}}),
+        json!({"type":"content_block_stop","index":1}),
+        json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":7}}),
+        json!({"type":"message_stop"}),
+    ];
+    let sse: String = frames
+        .iter()
+        .map(|f| format!("event: {}
+data: {}
+
+", f["type"].as_str().unwrap(), f))
+        .collect();
+    ("text/event-stream", Bytes::from(sse))
+}
+
 // ---------------- 测试 ----------------
 
 #[tokio::test]
@@ -475,11 +501,12 @@ async fn pig_streaming_end_to_end_streams_phases_without_markers() {
     drop(reqs);
 
     // 客户端流：三只 pig 的可见文本按顺序、空行分隔，控制标记已被剥掉
+    // （实时阶段按上游到达的粒度逐帧发，所以这些断言基于"拼起来的文本"）
     let text = pigs_protocol::extract_sse_text(pigs_protocol::Protocol::OpenAI, &sse).unwrap();
     assert_eq!(text, "分析：需要X\n第二行\n\n执行结果……\n\n评审：继续");
-    assert!(!sse.contains("PIGEND") && !sse.contains("PIGFAIL"));
+    assert!(!text.contains("PIGEND") && !text.contains("PIGFAIL"), "标记不许漏");
     let order = ["分析：需要X", "执行结果……", "评审：继续"]
-        .map(|s| sse.find(s).expect("阶段文本应出现在客户端流里"));
+        .map(|s| text.find(s).expect("阶段文本应出现在客户端流里"));
     assert!(order[0] < order[1] && order[1] < order[2]);
     assert!(sse.contains("data: [DONE]"));
 }
@@ -696,4 +723,45 @@ PIGEND"}
     // 上游收到的请求：thinking 配置与 tools 一字不动
     let reqs = fu.requests.lock().unwrap();
     assert_eq!(reqs[0].1["thinking"]["budget_tokens"], 512);
+}
+
+/// 思考必须**边想边流**：客户端要按顺序收到 start(thinking) → thinking_delta → signature_delta
+/// → stop → 文本帧，而且不能因为"收尾补发"而收到两份。
+#[tokio::test]
+async fn anthropic_thinking_streams_live_without_duplication() {
+    let (_up, upstream_url, fu) = spawn_fake_upstream().await;
+    fu.responses
+        .lock()
+        .unwrap()
+        .push(anthropic_sse_with_thinking());
+    let (_pigs, pigs_url) = spawn_pigs(&upstream_url).await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("{pigs_url}/v1/messages"))
+        .json(&json!({
+            "model": "claude-x-pig",
+            "max_tokens": 512,
+            "stream": true,
+            "thinking": {"type": "enabled", "budget_tokens": 256},
+            "messages": [{"role": "user", "content": "1+1 等于几"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let sse = resp.text().await.unwrap();
+
+    assert_eq!(sse.matches("thinking_delta").count(), 1, "思考只许发一次");
+    assert_eq!(sse.matches("signature_delta").count(), 1, "签名只许发一次");
+    let order = ["content_block_start", "thinking_delta", "signature_delta", "答案是 4"]
+        .map(|needle| sse.find(needle).expect("客户端流里缺少内容"));
+    assert!(
+        order[0] < order[1] && order[1] < order[2] && order[2] < order[3],
+        "思考必须先于文本、且顺序为 开块 → 增量 → 签名"
+    );
+    // 文本仍然是"去标记后"的答复；思考不混进文本
+    let text = pigs_protocol::extract_sse_text(pigs_protocol::Protocol::Anthropic, &sse).unwrap();
+    assert_eq!(text, "答案是 4");
+    // 收尾序列照常
+    assert!(sse.contains("message_stop"));
 }

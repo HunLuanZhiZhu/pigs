@@ -242,6 +242,11 @@ fn orchestrate_streaming(
             };
             let frames = match &event {
                 orch::PigEvent::Delta(text) => encoder.push_text(text),
+                // 思考也边想边流（Anthropic 需要块生命周期，编码器内部管）
+                orch::PigEvent::Thought(text) => encoder.push_reasoning(text),
+                orch::PigEvent::ThoughtSignature(signature) => {
+                    encoder.push_reasoning_signature(signature)
+                }
                 orch::PigEvent::End(_) => encoder.end_pig(),
                 orch::PigEvent::Start(_) => String::new(),
             };
@@ -271,11 +276,12 @@ fn orchestrate_streaming(
                         content.stop_reason.map(String::from),
                         content.usage.cloned(),
                     );
-                    // 文本已经在增量阶段流给客户端了，这里只补原生内容（思考块、工具调用……）
+                    // 实时阶段已经流过的内容不要再发一遍（文本、思考增量），
+                    // 这里只补"没法边到边流"的原生内容：工具调用、redacted_thinking 等完整块
                     let tail: Vec<pigs_protocol::Part> = content
                         .parts
                         .iter()
-                        .filter(|part| !matches!(part, pigs_protocol::Part::Text(_)))
+                        .filter(|part| !already_streamed(part))
                         .cloned()
                         .collect();
                     let mut frames = encoder.push_parts(&tail);
@@ -304,6 +310,22 @@ fn orchestrate_streaming(
         .header("cache-control", "no-cache")
         .body(Body::from_stream(stream))
         .unwrap()
+}
+
+/// 这条内容在实时阶段是否已经流给客户端了（避免收尾重复发）。
+///
+/// - 文本：增量阶段逐段流过；
+/// - `reasoning_content`（Chat 思考字段）：增量阶段流过；
+/// - `thinking` 原生块：增量阶段按 thinking_delta 流过（签名单发）；
+/// - `redacted_thinking` 等完整块、以及工具调用：没法边到边流，收尾时给。
+fn already_streamed(part: &pigs_protocol::Part) -> bool {
+    match part {
+        pigs_protocol::Part::Text(_) | pigs_protocol::Part::Reasoning(_) => true,
+        pigs_protocol::Part::Native(block) => {
+            block.get("type").and_then(|t| t.as_str()) == Some("thinking")
+        }
+        pigs_protocol::Part::ToolCall(_) => false,
+    }
 }
 
 /// 把编排产出变成回客户端的内容（model 名用客户端请求的那个，usage/stop_reason 原样）。
@@ -471,7 +493,7 @@ impl orch::transport::Transport for LoopbackTransport {
         &self,
         req: orch::transport::SubRequest,
         protocol: pigs_protocol::Protocol,
-        sink: orch::transport::TextSink,
+        sink: orch::transport::LiveSink,
     ) -> Result<orch::transport::SubResponse, orch::transport::TransportError> {
         let resp = self
             .request(&req)
@@ -488,9 +510,18 @@ impl orch::transport::Transport for LoopbackTransport {
                 orch::transport::TransportError::Send(format!("回环响应读取失败: {e}"))
             })?;
             if let Ok(value) = serde_json::from_slice::<Value>(&body) {
-                let text = pigs_protocol::parse_json_output(protocol, &value).text;
-                if !text.is_empty() {
-                    sink(&text);
+                let output = pigs_protocol::parse_json_output(protocol, &value);
+                // 上游回了整体 JSON：文本与思考一次性报给编排层（顺序按内容序列）
+                for part in &output.parts {
+                    match part {
+                        pigs_protocol::Part::Text(text) => {
+                            sink(pigs_protocol::LiveEvent::Text(text.clone()))
+                        }
+                        pigs_protocol::Part::Reasoning(text) => {
+                            sink(pigs_protocol::LiveEvent::Thinking(text.clone()))
+                        }
+                        _ => {}
+                    }
                 }
             }
             return Ok(orch::transport::SubResponse {
@@ -508,14 +539,12 @@ impl orch::transport::Transport for LoopbackTransport {
                 orch::transport::TransportError::Send(format!("回环响应读取失败: {e}"))
             })?;
             accumulated.extend_from_slice(&chunk);
-            let delta = extractor.push(&chunk);
-            if !delta.is_empty() {
-                sink(&delta);
+            for event in extractor.push_events(&chunk) {
+                sink(event);
             }
         }
-        let tail = extractor.finish();
-        if !tail.is_empty() {
-            sink(&tail);
+        for event in extractor.finish_events() {
+            sink(event);
         }
         Ok(orch::transport::SubResponse {
             status,

@@ -22,7 +22,7 @@ use proto::{ModelOutput, Part, ToolCall};
 use state::{Continuation, ContinuationStore, TurnState};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use transport::{SubRequest, SubResponse, TextSink, Transport, TransportError};
+use transport::{LiveSink, SubRequest, SubResponse, Transport, TransportError};
 
 /// 会话头名：编排产生的稳定会话标识，所有子请求共用（mini-proxy 见已带就不覆盖）。
 pub const SESSION_HEADER: &str = "x-opencode-session";
@@ -65,6 +65,10 @@ pub enum PigEvent {
     Start(Pig),
     /// 一段可安全转发的可见文本（控制标记已过滤）。
     Delta(String),
+    /// 一段思考文本（原样转发，不过滤）。
+    Thought(String),
+    /// 思考块的签名（Anthropic：思考块末尾的签名，必须跟着一起给客户端）。
+    ThoughtSignature(String),
     /// 该 pig 的文本流结束。
     End(Pig),
 }
@@ -413,14 +417,25 @@ impl Ctx {
             Some(progress) => {
                 progress(PigEvent::Start(pig));
                 let filter = Arc::new(Mutex::new(MarkerFilter::new()));
-                let sink: TextSink = {
+                let sink: LiveSink = {
                     let filter = Arc::clone(&filter);
                     let progress = Arc::clone(progress);
-                    Arc::new(move |delta: &str| {
-                        let visible =
-                            filter.lock().map(|mut f| f.push(delta)).unwrap_or_default();
-                        if !visible.is_empty() {
-                            progress(PigEvent::Delta(visible));
+                    Arc::new(move |event: proto::LiveEvent| {
+                        match event {
+                            // 文本要过控制标记过滤；思考原样转发
+                            proto::LiveEvent::Text(delta) => {
+                                let visible =
+                                    filter.lock().map(|mut f| f.push(&delta)).unwrap_or_default();
+                                if !visible.is_empty() {
+                                    progress(PigEvent::Delta(visible));
+                                }
+                            }
+                            proto::LiveEvent::Thinking(text) => {
+                                progress(PigEvent::Thought(text));
+                            }
+                            proto::LiveEvent::ThinkingSignature(signature) => {
+                                progress(PigEvent::ThoughtSignature(signature));
+                            }
                         }
                     })
                 };

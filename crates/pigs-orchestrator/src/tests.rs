@@ -11,6 +11,8 @@ use serde_json::json;
 pub(super) struct FakeTransport {
     responses: Mutex<Vec<SubResponse>>,
     requests: Mutex<Vec<SubRequest>>,
+    /// 有值 = 流式时先吐思考增量（再吐签名），模拟"边想边答"。
+    thinking: Option<String>,
 }
 
 impl FakeTransport {
@@ -76,12 +78,18 @@ impl Transport for FakeTransport {
         &self,
         req: SubRequest,
         _protocol: proto::Protocol,
-        sink: TextSink,
+        sink: LiveSink,
     ) -> transport::TransportResult {
         let resp = self.send(req).await?;
-        // 逐字喂入，模拟上游把一行拆成多个 SSE 增量
+        // 先思考（含签名），再逐字吐文本——模拟上游真实的增量顺序
+        if let Some(thinking) = &self.thinking {
+            for ch in thinking.chars() {
+                sink(proto::LiveEvent::Thinking(ch.to_string()));
+            }
+            sink(proto::LiveEvent::ThinkingSignature("sig-1".into()));
+        }
         for ch in Self::text_of(&resp).chars() {
-            sink(&ch.to_string());
+            sink(proto::LiveEvent::Text(ch.to_string()));
         }
         Ok(resp)
     }
@@ -145,6 +153,16 @@ fn fake(responses: Vec<SubResponse>) -> Arc<FakeTransport> {
     Arc::new(FakeTransport {
         responses: Mutex::new(responses),
         requests: Mutex::new(vec![]),
+        thinking: None,
+    })
+}
+
+/// 假传输 + "先思考再回答"的流式行为。
+fn fake_with_thinking(responses: Vec<SubResponse>, thinking: &str) -> Arc<FakeTransport> {
+    Arc::new(FakeTransport {
+        responses: Mutex::new(responses),
+        requests: Mutex::new(vec![]),
+        thinking: Some(thinking.to_string()),
     })
 }
 
@@ -574,6 +592,8 @@ async fn streaming_turn_pushes_filtered_deltas_as_they_arrive() {
             let mut encoder = encoder.lock().unwrap();
             let mut out = match &event {
                 PigEvent::Delta(text) => encoder.push_text(text),
+                PigEvent::Thought(text) => encoder.push_reasoning(text),
+                PigEvent::ThoughtSignature(signature) => encoder.push_reasoning_signature(signature),
                 PigEvent::End(_) => encoder.end_pig(),
                 PigEvent::Start(_) => String::new(),
             };
@@ -621,6 +641,83 @@ async fn streaming_turn_pushes_filtered_deltas_as_they_arrive() {
     assert!(!streamed.contains("PIGFAIL") && !streamed.contains("PIGEND"));
 }
 
+/// 思考要**边想边流**：进度事件里先来 Thought/ThoughtSignature，再来文本；
+/// 编码后的客户端流里思考是原生帧，文本里不含思考。
+#[tokio::test]
+async fn live_thinking_is_streamed_before_text() {
+    let transport = fake_with_thinking(
+        vec![FakeTransport::text(200, "答案是 4\nPIGEND")],
+        "先想一想",
+    );
+    let frames: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+    let encoder = Arc::new(Mutex::new(proto::StreamEncoder::new(
+        proto::Protocol::Anthropic,
+        "claude-x-pig",
+    )));
+    frames.lock().unwrap().push_str(&encoder.lock().unwrap().start());
+    let events: Arc<Mutex<Vec<PigEvent>>> = Arc::new(Mutex::new(vec![]));
+    let sink: ProgressSink = {
+        let frames = Arc::clone(&frames);
+        let encoder = Arc::clone(&encoder);
+        let events = Arc::clone(&events);
+        Arc::new(move |event| {
+            let mut encoder = encoder.lock().unwrap();
+            let mut out = match &event {
+                PigEvent::Delta(text) => encoder.push_text(text),
+                PigEvent::Thought(text) => encoder.push_reasoning(text),
+                PigEvent::ThoughtSignature(signature) => encoder.push_reasoning_signature(signature),
+                PigEvent::End(_) => encoder.end_pig(),
+                PigEvent::Start(_) => String::new(),
+            };
+            drop(encoder);
+            if !out.is_empty() {
+                frames.lock().unwrap().push_str(&mut out);
+            }
+            events.lock().unwrap().push(event);
+        })
+    };
+    let rt = Runtime {
+        transport,
+        store: Arc::new(Mutex::new(ContinuationStore::default())),
+        progress: Some(sink),
+    };
+    let mut turn = input(proto::Protocol::Anthropic);
+    turn.body["stream"] = json!(true);
+    let result = completed(Orchestrator::new().run(turn, rt).await.unwrap());
+    frames
+        .lock()
+        .unwrap()
+        .push_str(&encoder.lock().unwrap().finish());
+
+    // 事件顺序：思考（含签名）先于文本
+    let order: Vec<&'static str> = events
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|event| match event {
+            PigEvent::Start(_) => "start",
+            PigEvent::Thought(_) => "thought",
+            PigEvent::ThoughtSignature(_) => "signature",
+            PigEvent::Delta(_) => "delta",
+            PigEvent::End(_) => "end",
+        })
+        .collect();
+    let first_thought = order.iter().position(|k| *k == "thought").expect("没有思考事件");
+    let first_delta = order.iter().position(|k| *k == "delta").expect("没有文本事件");
+    assert!(first_thought < first_delta, "思考必须先于文本: {order:?}");
+    assert!(order.iter().any(|k| *k == "signature"), "签名要跟着走");
+
+    // 客户端流：思考是原生帧；文本里不含思考
+    let sse = frames.lock().unwrap().clone();
+    assert!(sse.contains("thinking_delta") && sse.contains("signature_delta"));
+    assert_eq!(
+        proto::extract_sse_text(proto::Protocol::Anthropic, &sse).unwrap(),
+        "答案是 4",
+        "思考不许混进答案文本"
+    );
+    assert_eq!(result.text, "答案是 4");
+}
+
 /// 流式 + 工具调用：文本先流给客户端，暂停时把原生调用作为终止帧发出。
 #[tokio::test]
 async fn streaming_tool_pause_emits_text_then_native_calls() {
@@ -637,6 +734,8 @@ async fn streaming_tool_pause_emits_text_then_native_calls() {
             let mut encoder = encoder.lock().unwrap();
             let out = match &event {
                 PigEvent::Delta(text) => encoder.push_text(text),
+                PigEvent::Thought(text) => encoder.push_reasoning(text),
+                PigEvent::ThoughtSignature(signature) => encoder.push_reasoning_signature(signature),
                 PigEvent::End(_) => encoder.end_pig(),
                 PigEvent::Start(_) => String::new(),
             };

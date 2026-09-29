@@ -3,8 +3,13 @@
 use bytes::Bytes;
 use std::sync::Arc;
 
-/// 流式响应中接收原始文本增量的回调（**含控制标记**，过滤由编排层负责）。
-pub type TextSink = Arc<dyn Fn(&str) + Send + Sync>;
+/// 流式响应中接收**带类型增量**的回调。
+///
+/// 文本含控制标记（过滤由编排层负责）；思考增量原样转发、不过滤。
+pub type LiveSink = Arc<dyn Fn(pigs_protocol::LiveEvent) + Send + Sync>;
+
+/// 旧名（只有文本）保留为别名，便于调用方渐进迁移。
+pub type TextSink = LiveSink;
 
 /// 一个协议原生的子请求（发往上游 = 经 loopback 走 proxy 透传通道）。
 #[derive(Debug, Clone)]
@@ -48,11 +53,12 @@ pub trait Transport: Send + Sync {
 
     /// 流式发送：上游 SSE 增量到达时即时回调 `sink`，同时返回累积的完整响应。
     ///
-    /// 两者都由实现负责——回调用于"边收边转发"，返回值用于在全文上判定 PIGEND/PIGFAIL。
+    /// 两者都由实现负责——回调用于"边收边转发"（文本与思考分开报），
+    /// 返回值用于在全文上判定 PIGEND/PIGFAIL 与工具调用。
     async fn send_streaming(
         &self,
         req: SubRequest,
         protocol: pigs_protocol::Protocol,
-        sink: TextSink,
+        sink: LiveSink,
     ) -> TransportResult;
 }

@@ -14,8 +14,8 @@ pub use output::{
     parse_json_output, parse_sse_output, trailing_tool_result_ids, ModelOutput, Part, ToolCall,
 };
 pub use response::{
-    extract_response_text, extract_sse_text, synthesize_json, synthesize_sse, ResponseContent,
-    SseTextStream, StreamEncoder,
+    extract_response_text, extract_sse_text, synthesize_json, synthesize_sse, LiveEvent,
+    ResponseContent, SseTextStream, StreamEncoder,
 };
 pub use route::{has_pig, protocol_from_path, strip_pig_suffix, Protocol};
 pub use sse::is_sse_content_type;

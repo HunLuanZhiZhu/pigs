@@ -107,6 +107,10 @@ pigs：按 tool_call id 匹配到现场 → 接着同一只 pig 继续 → 模�
 这行要等到流结束才吐出去（简单问题看起来就像没流式）。这里改成只延迟"可能成标记"的尾巴，
 输出内容完全一致，只是更早到达；各种切片方式（含标记被切成任意片段）都有测试盯着。</p>
 <p>客户端<strong>没</strong>要流式时，子请求也不流式：一次性拿 JSON 全文、解析文本、最后合成一个 JSON 响应——两条路径共用同一套标记判定与拼接逻辑。</p>
+<p><strong>思考（thinking / reasoning）也边想边流：</strong>实时通道传的是<em>带类型的增量</em>（文本 / 思考 / 思考签名），
+文本照旧过控制标记过滤，思考原样转发。Anthropic 的思考块有开关生命周期（开块 → thinking_delta → signature_delta → 关块），
+由 SSE 编码器管；收尾时只补"没法边到边流"的完整块（工具调用、redacted_thinking 等），<strong>不会重复发</strong>。</p>
+<p class="muted">例外：Responses 协议的思考是以完整条目（含 encrypted_content）在收尾时按原生 item 发出的，不做增量流。</p>
 <div class="note"><strong>为什么子请求要去掉 <code>accept-encoding</code>：</strong>客户端可能带 <code>gzip</code>，原样转给上游后回来的就是压缩体，
 编排层按 JSON / SSE 解析会直接失败（真实踩过：<code>expected value at line 1 column 1</code>）。子请求一律不带该头，强制上游回明文。</div>
 </div>
