@@ -23,6 +23,17 @@ struct FakeUpstreamState {
     responses: Arc<Mutex<Vec<(&'static str, Bytes)>>>, 
     /// 原样回显模式（透传测试）：回显收到的 headers + body
     echo_mode: Arc<Mutex<bool>>,
+    /// 慢速 SSE 脚本：每个子请求一段"分段文本"，段与段之间 sleep 150ms
+    slow_sse: Arc<Mutex<Vec<Vec<String>>>>,
+}
+
+/// 把一段文本包成合法的 OpenAI chat SSE 帧。
+fn sse_frame(text: &str) -> String {
+    format!(
+        "data: {}\n\n",
+        json!({"id":"c1","object":"chat.completion.chunk","model":"gpt-x",
+               "choices":[{"index":0,"delta":{"content":text},"finish_reason":null}]})
+    )
 }
 
 async fn fake_handler(
@@ -33,6 +44,44 @@ async fn fake_handler(
     body: Bytes,
 ) -> Response<axum::body::Body> {
     let _ = method;
+    // 慢速 SSE 模式：分段吐出（第一段立刻，之后每段前 sleep）
+    let script = {
+        let mut queue = state.slow_sse.lock().unwrap();
+        if queue.is_empty() {
+            None
+        } else {
+            Some(queue.remove(0))
+        }
+    };
+    if let Some(parts) = script {
+        let mut header_echo = serde_json::Map::new();
+        for (k, v) in headers.iter() {
+            header_echo.insert(
+                format!("h:{}", k.as_str().to_lowercase()),
+                Value::String(v.to_str().unwrap_or("").into()),
+            );
+        }
+        state.requests.lock().unwrap().push((
+            "recorded".into(),
+            serde_json::from_slice(&body).unwrap_or(Value::Null),
+            Value::Object(header_echo),
+        ));
+        let stream = futures_util::stream::unfold(
+            (parts.into_iter(), false),
+            |(mut parts, started)| async move {
+                let part = parts.next()?;
+                if started {
+                    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                }
+                Some((Ok::<Bytes, std::io::Error>(Bytes::from(sse_frame(&part))), (parts, true)))
+            },
+        );
+        return Response::builder()
+            .status(StatusCode::OK)
+            .header("content-type", "text/event-stream")
+            .body(axum::body::Body::from_stream(stream))
+            .unwrap();
+    }
     if *state.echo_mode.lock().unwrap() {
         // 回显：body 原样返回，外加记录到的请求头摘要
         let mut echo = serde_json::Map::new();
@@ -90,6 +139,7 @@ async fn spawn_fake_upstream() -> FakeUpstream {
         requests: Arc::new(Mutex::new(vec![])),
         responses: Arc::new(Mutex::new(vec![])),
         echo_mode: Arc::new(Mutex::new(false)),
+        slow_sse: Arc::new(Mutex::new(vec![])),
     };
     let app = Router::new().fallback(any(fake_handler)).with_state(state.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -368,4 +418,60 @@ async fn pig_streaming_end_to_end_streams_phases_without_markers() {
         .map(|s| sse.find(s).expect("阶段文本应出现在客户端流里"));
     assert!(order[0] < order[1] && order[1] < order[2]);
     assert!(sse.contains("data: [DONE]"));
+}
+
+/// 真·流式验证（时间维度）：上游分三段、每段间隔 150ms 才吐完。
+/// 若编排是"等全文再回"，首段文本要等整轮跑完才可能出现；
+/// 这里断言客户端在很早就拿到了第一只 pig 的文本，而整体耗时确实包含那些 sleep。
+#[tokio::test]
+async fn pig_streaming_is_progressive_not_buffered() {
+    let (_up, upstream_url, fu) = spawn_fake_upstream().await;
+    {
+        let mut q = fu.slow_sse.lock().unwrap();
+        // Pre → Executor → Post(带结尾标记，标记本身跨段到达)
+        q.push(vec!["分析一".into(), "分析二".into()]);
+        q.push(vec!["执行草".into(), "稿完毕".into()]);
+        q.push(vec!["验收通过".into(), "\nPIG".into(), "END".into()]);
+    }
+    let (_pigs, pigs_url) = spawn_pigs(&upstream_url).await;
+
+    let started = std::time::Instant::now();
+    let resp = reqwest::Client::new()
+        .post(format!("{pigs_url}/chat/completions"))
+        .json(&openai_body("gpt-x-pig", true))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let mut body = Vec::new();
+    let mut first_text_at = None;
+    let mut stream = resp.bytes_stream();
+    use futures_util::StreamExt;
+    while let Some(chunk) = stream.next().await {
+        body.extend_from_slice(&chunk.unwrap());
+        if first_text_at.is_none() && String::from_utf8_lossy(&body).contains("分析一") {
+            first_text_at = Some(started.elapsed());
+        }
+    }
+    let total = started.elapsed();
+    let first = first_text_at.expect("客户端从未收到第一段文本");
+
+    // 总共 4 次 150ms 的 sleep ≈ 600ms；首段必须在整轮跑完之前就到达
+    assert!(total.as_millis() >= 450, "上游的 sleep 没生效？total={total:?}");
+    assert!(
+        first < total / 2,
+        "首段文本等了 {first:?}，整轮 {total:?} —— 说明是等全文才回，不是真正的流式"
+    );
+
+    let sse = String::from_utf8_lossy(&body).to_string();
+    assert_eq!(
+        pigs_protocol::extract_sse_text(pigs_protocol::Protocol::OpenAI, &sse).unwrap(),
+        "分析一分析二\n\n执行草稿完毕\n\n验收通过"
+    );
+    assert!(!sse.contains("PIGEND"), "控制标记跨段到达也必须被拦住");
+    // 子请求确实是流式的
+    let reqs = fu.requests.lock().unwrap();
+    assert_eq!(reqs.len(), 3);
+    assert!(reqs.iter().all(|(_p, body, _h)| body["stream"] == true));
 }
