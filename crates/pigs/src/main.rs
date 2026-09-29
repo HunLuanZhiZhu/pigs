@@ -49,15 +49,24 @@ async fn main() -> Result<()> {
         config.listen = listen;
     }
     if let Some(base_url) = pick("--base-url") {
-        config.base_url = base_url;
+        config.upstream = pigs_proxy::Upstreams::same(&base_url);
     }
-    if config.base_url.is_empty() {
-        bail!("base_url 未配置：请编辑 {CONFIG_PATH} 或使用 --base-url");
+    if config.upstream.openai.is_empty()
+        || config.upstream.responses.is_empty()
+        || config.upstream.anthropic.is_empty()
+    {
+        bail!("upstream 三个协议的地址都要配置：请编辑 {CONFIG_PATH} 或用 --base-url 统一覆盖");
     }
 
     // 日志：控制台 + logs/pigs.log.<日期>，RUST_LOG 可调级别
     let _log_guard = logging::init()?;
-    tracing::info!(listen = %config.listen, base_url = %config.base_url, "pigs 启动");
+    tracing::info!(
+        listen = %config.listen,
+        openai = %config.upstream.openai,
+        responses = %config.upstream.responses,
+        anthropic = %config.upstream.anthropic,
+        "pigs 启动"
+    );
 
     pigs_proxy::serve(config).await
 }

@@ -16,7 +16,7 @@ use axum::serve as axum_serve;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 
-pub use config::Config;
+pub use config::{Config, Upstreams};
 
 /// 启动服务（阻塞直到进程退出）。
 pub async fn serve(config: Config) -> anyhow::Result<()> {
@@ -42,10 +42,19 @@ pub async fn serve_on(listener: TcpListener, config: Config) -> anyhow::Result<(
 
 /// 组装 Router。
 fn build(config: Config, addr: std::net::SocketAddr) -> axum::Router {
-    tracing::info!(listen = %addr, base_url = %config.base_url, "pigs 已启动");
+    tracing::info!(
+        listen = %addr,
+        openai = %config.upstream.openai,
+        responses = %config.upstream.responses,
+        anthropic = %config.upstream.anthropic,
+        "pigs 已启动"
+    );
     println!("═══════════════════════════════════════════");
     println!("  pigs 已启动，监听 http://{addr}");
-    println!("  上游：{}", config.base_url);
+    println!(
+        "  上游：chat={} responses={} anthropic={}",
+        config.upstream.openai, config.upstream.responses, config.upstream.anthropic
+    );
     println!("  -pig 编排：Pre → Executor → Post");
     println!("═══════════════════════════════════════════");
     server::router(build_state(config, addr))
@@ -60,7 +69,7 @@ pub fn build_state(config: Config, addr: std::net::SocketAddr) -> server::AppSta
     let self_url = format!("http://{}:{}", self_host, addr.port());
     server::AppState {
         config: Arc::new(config.clone()),
-        upstream: Arc::new(upstream::Upstream::new(&config.base_url, &config.key)),
+        upstream: Arc::new(upstream::Upstream::new(&config.upstream, &config.key)),
         loopback_token: Arc::new(uuid::Uuid::now_v7().to_string()),
         self_url: Arc::new(self_url),
         store: Arc::new(std::sync::Mutex::new(

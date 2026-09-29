@@ -9,7 +9,7 @@ use axum::extract::{RawQuery, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::any;
 use axum::Router;
-use pigs_proxy::{build_state, Config};
+use pigs_proxy::{build_state, Config, Upstreams};
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 
@@ -44,6 +44,7 @@ fn sse_frame(text: &str) -> String {
 
 async fn fake_handler(
     State(state): State<FakeUpstreamState>,
+    uri: axum::http::Uri,
     method: axum::http::Method,
     RawQuery(_query): RawQuery,
     headers: HeaderMap,
@@ -68,7 +69,7 @@ async fn fake_handler(
             );
         }
         state.requests.lock().unwrap().push((
-            "recorded".into(),
+            uri.path().to_string(),
             serde_json::from_slice(&body).unwrap_or(Value::Null),
             Value::Object(header_echo),
         ));
@@ -132,7 +133,7 @@ async fn fake_handler(
         );
     }
     state.requests.lock().unwrap().push((
-        "recorded".into(),
+        uri.path().to_string(),
         serde_json::from_slice(&body).unwrap_or(Value::Null),
         Value::Object(header_echo),
     ));
@@ -180,8 +181,8 @@ async fn spawn_fake_upstream() -> FakeUpstream {
 async fn spawn_pigs(upstream_url: &str) -> (tokio::task::JoinHandle<()>, String) {
     let config = Config {
         listen: "127.0.0.1:0".into(),
-        base_url: upstream_url.into(),
         key: String::new(),
+        upstream: Upstreams::same(upstream_url),
     };
     let listener = pigs_proxy::bind_listener(&config.listen).await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -851,4 +852,93 @@ async fn responses_reasoning_streams_live_and_item_arrives_at_end() {
     // 上游收到的请求：reasoning 参数原样
     let reqs = fu.requests.lock().unwrap();
     assert_eq!(reqs[0].1["reasoning"]["summary"], "auto");
+}
+
+
+// ---------------- 按协议选 base 的回归 ----------------
+
+/// 同 spawn_pigs，但三个协议指到同一假上游的不同路径前缀（/oa /rs /an）——
+/// 用来验证"按协议选 base + 客户端路径逐字上浮"。
+async fn spawn_pigs_with_bases(upstream_url: &str) -> (tokio::task::JoinHandle<()>, String) {
+    let config = Config {
+        listen: "127.0.0.1:0".into(),
+        key: String::new(),
+        upstream: Upstreams {
+            openai: format!("{upstream_url}/oa"),
+            responses: format!("{upstream_url}/rs"),
+            anthropic: format!("{upstream_url}/an"),
+        },
+    };
+    let listener = pigs_proxy::bind_listener(&config.listen).await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let state = build_state(config, addr);
+    let app = pigs_proxy::server::router(state);
+    let task = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (task, format!("http://{addr}"))
+}
+
+/// 回归：三协议各走各的 base（anthropic 的 /v1 属于协议路径，base 不带版本段），
+/// 客户端路径逐字上浮 —— 上游看到的路径 = 所选 base + 原路径，一个字不改。
+#[tokio::test]
+async fn per_protocol_bases_route_by_protocol_and_path_stays_verbatim() {
+    let (_up, upstream_url, fu) = spawn_fake_upstream().await;
+    // 假上游按 FIFO 回放：①anthropic 透传 ②models ③-pig 的 Pre 子请求（PIGEND 一发结束）
+    fu.responses.lock().unwrap().push(openai_text_response("上游原样回"));
+    fu.responses.lock().unwrap().push(openai_text_response("上游原样回"));
+    fu.responses.lock().unwrap().push(openai_text_response("直接回答\nPIGEND"));
+    let (_pigs, pigs_url) = spawn_pigs_with_bases(&upstream_url).await;
+
+    let client = reqwest::Client::new();
+
+    // ① Anthropic 路径（model 不带 -pig → 透传）：上游必须看到 /an/v1/messages
+    let resp = client
+        .post(format!("{pigs_url}/v1/messages"))
+        .json(&json!({
+            "model": "claude-x", "max_tokens": 16,
+            "messages": [{"role": "user", "content": "hi"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    // ② GET /v1/models（非协议路径 → 落 OpenAI 约定 base）
+    let resp = client
+        .get(format!("{pigs_url}/v1/models"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    // ③ -pig 编排（chat）：子请求经回环也必须按协议落 /oa/chat/completions
+    let resp = client
+        .post(format!("{pigs_url}/chat/completions"))
+        .json(&openai_body("gpt-x-pig", false))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["choices"][0]["message"]["content"], "直接回答");
+
+    let reqs = fu.requests.lock().unwrap();
+    let paths: Vec<&str> = reqs.iter().map(|(p, _b, _h)| p.as_str()).collect();
+    assert!(
+        paths.contains(&"/an/v1/messages"),
+        "anthropic 要落自己的 base（路径逐字上浮）：{paths:?}"
+    );
+    assert!(
+        paths.contains(&"/oa/v1/models"),
+        "非协议路径落 OpenAI 约定 base：{paths:?}"
+    );
+    assert!(
+        paths.contains(&"/oa/chat/completions"),
+        "-pig 的回环子请求也要按协议选 base：{paths:?}"
+    );
+    assert!(
+        !paths.iter().any(|p| p.contains("/v1/v1/")),
+        "不许出现 v1 双叠：{paths:?}"
+    );
 }

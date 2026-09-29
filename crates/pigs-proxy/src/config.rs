@@ -9,11 +9,37 @@ pub const EXAMPLE_CONFIG: &str = include_str!("../../../config.toml");
 pub struct Config {
     /// 监听地址。
     pub listen: String,
-    /// 上游地址：mini-proxy 或任意直连上游 API。
-    pub base_url: String,
     /// 留空 = 透传客户端 key；填了则覆盖。
     #[serde(default)]
     pub key: String,
+    /// 三个协议各一个上游地址：base + 客户端原样路径 = 上游 URL。
+    pub upstream: Upstreams,
+}
+
+/// 三协议各自的上游前缀。
+///
+/// 路径约定：chat `/chat/completions`、responses `/responses` 不带版本段
+/// （版本属于 base）；anthropic `/v1/messages` 自带 `/v1`（版本属于协议，
+/// base 不带）——A 社的 v1 是协议的一部分，对其他协议不是。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Upstreams {
+    /// OpenAI Chat 上游（接 /chat/completions）。
+    pub openai: String,
+    /// Responses 上游（接 /responses）。
+    pub responses: String,
+    /// Anthropic 上游（接 /v1/messages）。
+    pub anthropic: String,
+}
+
+impl Upstreams {
+    /// `--base-url` 统一覆盖用：三个协议指到同一个前缀。
+    pub fn same(base_url: &str) -> Self {
+        Self {
+            openai: base_url.to_string(),
+            responses: base_url.to_string(),
+            anthropic: base_url.to_string(),
+        }
+    }
 }
 
 impl Config {

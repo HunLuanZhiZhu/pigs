@@ -14,13 +14,16 @@ const HOP_SKIP: &[&str] = &["host", "content-length", "connection", "transfer-en
 #[derive(Debug, Clone)]
 pub struct Upstream {
     client: Client,
-    base_url: String,
+    /// 三个协议各一个 base（anthropic 的版本段属于协议路径，base 不带）。
+    openai: String,
+    responses: String,
+    anthropic: String,
     /// 非空时覆盖客户端的鉴权头。
     key: String,
 }
 
 impl Upstream {
-    pub fn new(base_url: &str, key: &str) -> Self {
+    pub fn new(upstream: &crate::config::Upstreams, key: &str) -> Self {
         Self {
             client: Client::builder()
                 // 不设总超时：长流式对话不受"10 分钟毒墙"限制
@@ -31,13 +34,24 @@ impl Upstream {
                 .deflate(false)
                 .build()
                 .expect("构建上游 HTTP 客户端失败"),
-            base_url: base_url.trim_end_matches('/').to_string(),
+            openai: upstream.openai.trim_end_matches('/').to_string(),
+            responses: upstream.responses.trim_end_matches('/').to_string(),
+            anthropic: upstream.anthropic.trim_end_matches('/').to_string(),
             key: key.to_string(),
         }
     }
 
-    pub fn base_url(&self) -> &str {
-        &self.base_url
+    /// 按路径选 base：三协议各一个；非协议路径（如 /v1/models）落 OpenAI 约定。
+    ///
+    /// 客户端路径逐字上浮、零改写：anthropic 的 `/v1` 属于协议路径（base 不带
+    /// 版本段），chat/responses 的版本段属于 base（路径不带 /v1）。
+    fn base_for(&self, path: &str) -> &str {
+        match pigs_protocol::protocol_from_path(path) {
+            Some(pigs_protocol::Protocol::OpenAI) => &self.openai,
+            Some(pigs_protocol::Protocol::Responses) => &self.responses,
+            Some(pigs_protocol::Protocol::Anthropic) => &self.anthropic,
+            None => &self.openai,
+        }
     }
 
     /// 转发头集合：跳过逐跳头；`key` 覆盖模式时替换鉴权头，其余端到端头
@@ -65,9 +79,9 @@ impl Upstream {
         out
     }
 
-    /// 拼上游 URL：base_url + 原路径（+ 原查询串）。
+    /// 拼上游 URL：按协议选 base + 原路径（+ 原查询串）。
     fn url(&self, path: &str, query: Option<&str>) -> String {
-        let mut url = format!("{}{}", self.base_url, path_char(path));
+        let mut url = format!("{}{}", self.base_for(path), path_char(path));
         if let Some(q) = query.filter(|q| !q.is_empty()) {
             url.push('?');
             url.push_str(q);
