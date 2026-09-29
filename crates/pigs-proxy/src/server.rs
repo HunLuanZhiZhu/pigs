@@ -104,7 +104,19 @@ async fn orchestrate(
         client_session,
     };
 
-    tracing::info!(model = %real_model, protocol = ?protocol, streaming = client_wants_stream, "进入编排");
+    // 客户端带了几个工具（有工具却拿不到工具调用 = 编排把 tools 剥掉了，日志里能一眼看出来）
+    let tool_count = parsed
+        .get("tools")
+        .and_then(|t| t.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0);
+    tracing::info!(
+        model = %real_model,
+        protocol = ?protocol,
+        streaming = client_wants_stream,
+        tools = tool_count,
+        "进入编排"
+    );
 
     if client_wants_stream {
         return orchestrate_streaming(input, transport, protocol, real_model);

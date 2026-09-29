@@ -146,6 +146,11 @@
 <div class="warn">
 <ul>
   <li><strong>不做工具执行</strong>：没有 bash/file/MCP——编排只通过协议消息与模型交互（这是本次手术砍掉 agent 循环的核心）；</li>
+  <li><strong>⚠ 已知缺口：子请求目前会把 <code>tools</code> 整个删掉</strong>（<code>surgery.rs:strip_tools</code>），所以 <code>-pig</code> 模型<b>无法真正发起工具调用</b>——
+  模型会把"工具调用格式"当普通文本吐出来（如 longcat 的 <code>&lt;longcat_tool_call&gt;</code>）。
+  legacy 不这么做：它把 tools 透传，遇到工具调用就暂停并把调用交给客户端执行（continuation 机制）。
+  修法待定：① 忠实 legacy（工具调用暂停 + 内存 continuation 恢复同一相位）；② 简化版（工具调用即结束本轮，
+  客户端执行完再来一轮，pigs 重新从 Pre 跑）。</li>
   <li><strong>不做重试</strong>（见③）；</li>
   <li><strong>不知道上游是谁</strong>：mini-proxy 还是直连 API，与它无关；</li>
   <li><strong>不认识 axum</strong>：HTTP 只通过窄接口注入；</li>
