@@ -44,6 +44,7 @@
 | 7 | 子请求丢失 query string（`TurnInput`/`SubRequest` 只有 path；legacy 存 `path_and_query`，`legacy/crates/pigs-api/src/protocol.rs:112`） | 违反 | 把 path+query 一起带进子请求 |
 | 8 | 工具调用在响应提取时被丢弃（`crates/pigs-protocol/src/response.rs` 只认文本块/只认 `message` item） | 违反 | 原样回吐工具调用（三协议） |
 | 9 | `finish_reason`/`stop_reason` 固定合成（上游因 `max_tokens` 截断也说 `stop`） | 违反 | 以最后一次上游响应的真实值回吐 |
+| 10 | 把多段相位产物**合并成一条** assistant 消息（`crates/pigs-orchestrator/src/lib.rs` `transcript.join("\n\n")`） | 违反（形状被加工；legacy 逐条追加） | 回退为逐条追加，与 legacy 一致 |
 
 ## 语言约定
 
