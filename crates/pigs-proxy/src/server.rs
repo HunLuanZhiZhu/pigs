@@ -1,4 +1,8 @@
 //! axum 服务：fallback 接住所有路径与方法，按需分流。
+//!
+//! -pig 请求的两种情形：
+//! - 客户端的第一发 → 新开一轮编排；
+//! - 尾部带工具结果（模型上一轮要的工具执行完了）→ 接着被暂停的相位继续。
 
 use crate::config::Config;
 use crate::upstream::Upstream;
@@ -20,6 +24,8 @@ pub struct AppState {
     pub loopback_token: Arc<String>,
     /// 回环目标（http://127.0.0.1:port）。
     pub self_url: Arc<String>,
+    /// 工具调用暂停的现场（跨请求保留：客户端执行完工具会带结果回来）。
+    pub store: Arc<Mutex<orch::state::ContinuationStore>>,
 }
 
 pub fn router(state: AppState) -> Router {
@@ -28,7 +34,7 @@ pub fn router(state: AppState) -> Router {
 
 /// 单一入口：所有路径、所有方法。
 /// - 回环子请求（带内部令牌）→ 直接透传（防递归）；
-/// - POST 三协议路径 + model 带 `-pig` → 编排；
+/// - POST 三协议路径 + model 带 `-pig` → 编排（新开或恢复）；
 /// - 其余一切 → 原样透传。
 async fn handle(
     State(state): State<AppState>,
@@ -52,10 +58,17 @@ async fn handle(
         if let Some(protocol) = pigs_protocol::protocol_from_path(&path) {
             match serde_json::from_slice::<Value>(&body) {
                 Ok(mut parsed) => {
-                    let model = parsed.get("model").and_then(|m| m.as_str()).unwrap_or("").to_string();
+                    let model = parsed
+                        .get("model")
+                        .and_then(|m| m.as_str())
+                        .unwrap_or("")
+                        .to_string();
                     if let Some(real_model) = pigs_protocol::strip_pig_suffix(&model) {
+                        // 唯一允许的字段改动：发给上游用真名，回客户端用原名
+                        pigs_protocol::set_model(&mut parsed, &real_model);
                         return orchestrate(
-                            &state, &headers, &mut parsed, protocol, &real_model, &path,
+                            &state, &headers, parsed, protocol, &model, &real_model, &path,
+                            query,
                         )
                         .await;
                     }
@@ -73,66 +86,115 @@ async fn handle(
     passthrough(&state, method, &path, query, &headers, body).await
 }
 
-/// -pig 编排：剥后缀 → 三 pig 状态机 → 合成协议正确的响应。
-///
-/// 客户端要流式时**边编排边推帧**：每只 pig 的上游增量实时过滤后立刻转给客户端；
-/// 客户端不要流式时，等编排跑完一次性给出 JSON（内容 = 各 pig 可见文本拼接）。
+/// 编排：判断这一发是新开一轮还是恢复被工具调用暂停的相位，然后交给状态机。
+#[allow(clippy::too_many_arguments)]
 async fn orchestrate(
     state: &AppState,
     headers: &HeaderMap,
-    parsed: &mut Value,
+    parsed: Value,
     protocol: pigs_protocol::Protocol,
+    client_model: &str,
     real_model: &str,
     path: &str,
+    query: Option<&str>,
 ) -> Response<Body> {
-    let client_wants_stream = pigs_protocol::has_client_stream(parsed);
-    pigs_protocol::set_model(parsed, real_model);
-
+    let client_wants_stream = pigs_protocol::has_client_stream(&parsed);
     let base_headers = state.upstream.forward_headers(headers);
-    let client_session = orch::find_client_session(&base_headers);
-
-    let transport = Arc::new(LoopbackTransport {
-        client: reqwest::Client::new(),
-        self_url: state.self_url.as_str().to_string(),
-        token: state.loopback_token.as_str().to_string(),
-    });
-    let input = orch::TurnInput {
-        protocol,
-        body: parsed.clone(),
-        path: path.to_string(),
-        base_headers,
-        client_session,
-    };
-
-    // 客户端带了几个工具（有工具却拿不到工具调用 = 编排把 tools 剥掉了，日志里能一眼看出来）
     let tool_count = parsed
         .get("tools")
         .and_then(|t| t.as_array())
         .map(|a| a.len())
         .unwrap_or(0);
+
+    let input = orch::TurnInput {
+        protocol,
+        body: parsed.clone(),
+        path: path.to_string(),
+        query: query.map(String::from),
+        base_headers,
+        client_session: orch::find_client_session(&state.upstream.forward_headers(headers)),
+    };
+
+    // 尾部是工具结果 = 客户端执行完了工具，要接着被暂停的那只 pig 继续
+    let result_ids = pigs_protocol::trailing_tool_result_ids(protocol, &parsed);
+    let continuation = if result_ids.is_empty() {
+        None
+    } else {
+        match state
+            .store
+            .lock()
+            .ok()
+            .and_then(|mut store| store.take_match(&result_ids))
+        {
+            Some(continuation) => {
+                tracing::info!(
+                    model = %real_model,
+                    continuation = %continuation.id,
+                    results = result_ids.len(),
+                    "继续被工具调用暂停的相位"
+                );
+                Some(continuation)
+            }
+            None => {
+                // 没有现场可接：不假装成功，也不悄悄重跑一整轮
+                tracing::warn!(
+                    model = %real_model,
+                    results = ?result_ids,
+                    "尾部带工具结果，但没有匹配的编排现场"
+                );
+                return error_response(
+                    StatusCode::CONFLICT,
+                    "找不到与这批工具结果对应的编排现场（可能已过期或服务重启过），请重新发起该轮请求",
+                );
+            }
+        }
+    };
+
     tracing::info!(
         model = %real_model,
         protocol = ?protocol,
         streaming = client_wants_stream,
         tools = tool_count,
+        resume = continuation.is_some(),
         "进入编排"
     );
 
+    let store = Arc::clone(&state.store);
+    let transport: Arc<dyn orch::transport::Transport> = Arc::new(LoopbackTransport {
+        client: reqwest::Client::new(),
+        self_url: state.self_url.as_str().to_string(),
+        token: state.loopback_token.as_str().to_string(),
+    });
+
     if client_wants_stream {
-        return orchestrate_streaming(input, transport, protocol, real_model);
+        return orchestrate_streaming(
+            transport,
+            store,
+            input,
+            continuation,
+            protocol,
+            client_model.to_string(),
+        );
     }
 
-    match orch::Orchestrator::new().run(input, transport).await {
-        Ok(turn) => {
-            tracing::info!(
-                ended_with = turn.ended_with.as_str(),
-                pigs = turn.path.len(),
-                session = %turn.session,
-                chars = turn.text.chars().count(),
-                "编排完成"
-            );
-            let json = pigs_protocol::synthesize_json(protocol, real_model, &turn.text);
-            let mut resp = Response::new(Body::from(json.to_string()));
+    let rt = orch::Runtime {
+        transport,
+        store,
+        progress: None,
+    };
+    let orchestrator = orch::Orchestrator::new();
+    let outcome = match continuation {
+        Some(continuation) => orchestrator.resume(input, rt, continuation).await,
+        None => orchestrator.run(input, rt).await,
+    };
+
+    match outcome {
+        Ok(outcome) => {
+            let content = final_content(client_model, &outcome);
+            log_outcome(&outcome);
+            let mut resp = Response::new(Body::from(
+                pigs_protocol::synthesize_json(protocol, &content).to_string(),
+            ));
             resp.headers_mut()
                 .insert("content-type", "application/json".parse().unwrap());
             resp
@@ -140,7 +202,6 @@ async fn orchestrate(
         Err(e) => {
             tracing::warn!(error = %e, "编排失败");
             let status = if matches!(e, orch::Error::Budget(_)) {
-                // 预算耗尽 = 本轮没做成，不是上游故障
                 StatusCode::UNPROCESSABLE_ENTITY
             } else {
                 StatusCode::BAD_GATEWAY
@@ -150,15 +211,17 @@ async fn orchestrate(
     }
 }
 
-/// 流式编排：起一个后台任务跑状态机，把 SSE 帧通过 channel 推给客户端。
+/// 流式编排：起后台任务跑状态机，帧通过 channel 推给客户端。
 ///
-/// 起始帧立刻发出（客户端连接马上变成流），此后每只 pig 的文本边到边转；
-/// 出错则发流内错误帧（此时 HTTP 状态已定，无法再改）。
+/// 文本边到边转；模型要工具时把原生调用作为终止帧发出（相位到此暂停，等客户端执行）。
+#[allow(clippy::too_many_arguments)]
 fn orchestrate_streaming(
-    input: orch::TurnInput,
     transport: Arc<dyn orch::transport::Transport>,
+    store: Arc<Mutex<orch::state::ContinuationStore>>,
+    input: orch::TurnInput,
+    continuation: Option<orch::state::Continuation>,
     protocol: pigs_protocol::Protocol,
-    client_model: &str,
+    client_model: String,
 ) -> Response<Body> {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Result<Bytes, std::io::Error>>();
     let encoder = Arc::new(Mutex::new(pigs_protocol::StreamEncoder::new(
@@ -180,10 +243,7 @@ fn orchestrate_streaming(
             let frames = match &event {
                 orch::PigEvent::Delta(text) => encoder.push_text(text),
                 orch::PigEvent::End(_) => encoder.end_pig(),
-                orch::PigEvent::Start(pig) => {
-                    tracing::debug!(pig = pig.as_str(), "pig started (streaming)");
-                    String::new()
-                }
+                orch::PigEvent::Start(_) => String::new(),
             };
             if !frames.is_empty() {
                 let _ = tx.send(Ok(Bytes::from(frames)));
@@ -192,20 +252,28 @@ fn orchestrate_streaming(
     };
 
     tokio::spawn(async move {
-        let outcome = orch::Orchestrator::new()
-            .run_with_progress(input, transport, Some(progress))
-            .await;
+        let rt = orch::Runtime {
+            transport,
+            store,
+            progress: Some(progress),
+        };
+        let orchestrator = orch::Orchestrator::new();
+        let outcome = match continuation {
+            Some(continuation) => orchestrator.resume(input, rt, continuation).await,
+            None => orchestrator.run(input, rt).await,
+        };
         let frames = match encoder.lock() {
             Ok(mut encoder) => match &outcome {
-                Ok(turn) => {
-                    tracing::info!(
-                        ended_with = turn.ended_with.as_str(),
-                        pigs = turn.path.len(),
-                        session = %turn.session,
-                        chars = turn.text.chars().count(),
-                        "编排完成（流式）"
+                Ok(outcome) => {
+                    log_outcome(outcome);
+                    let content = final_content(&client_model, outcome);
+                    encoder.set_finish(
+                        content.stop_reason.map(String::from),
+                        content.usage.cloned(),
                     );
-                    encoder.finish()
+                    let mut frames = encoder.push_tool_calls(content.tool_calls);
+                    frames.push_str(&encoder.finish());
+                    frames
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "编排失败（流式，已发部分内容）");
@@ -231,6 +299,47 @@ fn orchestrate_streaming(
         .unwrap()
 }
 
+/// 把编排产出变成回客户端的内容（model 名用客户端请求的那个，usage/stop_reason 原样）。
+fn final_content<'a>(
+    client_model: &'a str,
+    outcome: &'a orch::Outcome,
+) -> pigs_protocol::ResponseContent<'a> {
+    match outcome {
+        orch::Outcome::Completed(turn) => pigs_protocol::ResponseContent {
+            model: client_model,
+            text: &turn.text,
+            tool_calls: &[],
+            stop_reason: turn.stop_reason.as_deref(),
+            usage: turn.usage.as_ref(),
+        },
+        orch::Outcome::Paused(paused) => pigs_protocol::ResponseContent {
+            model: client_model,
+            text: &paused.text,
+            tool_calls: &paused.tool_calls,
+            // 上游这一轮怎么停的就怎么说（工具暂停通常是 tool_calls / tool_use）
+            stop_reason: paused.stop_reason.as_deref(),
+            usage: None,
+        },
+    }
+}
+
+fn log_outcome(outcome: &orch::Outcome) {
+    match outcome {
+        orch::Outcome::Completed(turn) => tracing::info!(
+            ended_with = turn.ended_with.as_str(),
+            pigs = turn.path.len(),
+            session = %turn.session,
+            chars = turn.text.chars().count(),
+            "编排完成"
+        ),
+        orch::Outcome::Paused(paused) => tracing::info!(
+            continuation = %paused.continuation_id,
+            calls = paused.tool_calls.len(),
+            "编排暂停：等待客户端执行工具"
+        ),
+    }
+}
+
 /// 原样透传：转发请求，响应流式回传（content-encoding 跟 body 一起走）。
 async fn passthrough(
     state: &AppState,
@@ -253,7 +362,10 @@ async fn passthrough(
             for (name, value) in resp_headers.iter() {
                 let lower = name.as_str().to_lowercase();
                 // 只跳过逐跳头；content-encoding 必须跟着 body 走（血泪教训）
-                if matches!(lower.as_str(), "connection" | "transfer-encoding" | "content-length") {
+                if matches!(
+                    lower.as_str(),
+                    "connection" | "transfer-encoding" | "content-length"
+                ) {
                     continue;
                 }
                 if let (Ok(n), Ok(v)) = (
@@ -286,15 +398,21 @@ fn error_response(status: StatusCode, message: &str) -> Response<Body> {
 
 /// 编排子请求的回环传输：POST 到本服务的透传入口，带内部令牌防递归。
 struct LoopbackTransport {
+    /// 自动解压的客户端：请求头照原样发（含客户端的 accept-encoding），
+    /// 响应体压缩由本机解开——这样上游看到的请求与父请求逐字节一致。
     client: reqwest::Client,
     self_url: String,
     token: String,
 }
 
 impl LoopbackTransport {
-    /// 组一个回环请求（路径 + 内部令牌 + 端到端头）。
+    /// 组一个回环请求（路径 + 查询串 + 内部令牌 + 端到端头）。
     fn request(&self, req: &orch::transport::SubRequest) -> reqwest::RequestBuilder {
-        let url = format!("{}/{}", self.self_url, req.path.trim_start_matches('/'));
+        let mut url = format!("{}/{}", self.self_url, req.path.trim_start_matches('/'));
+        if let Some(query) = req.query.as_deref().filter(|q| !q.is_empty()) {
+            url.push('?');
+            url.push_str(query);
+        }
         let mut builder = self
             .client
             .post(url)
@@ -343,7 +461,7 @@ impl orch::transport::Transport for LoopbackTransport {
     }
 
     /// 流式：把回环响应（上游 SSE）按块解析出文本增量，边收边交给 `sink`，
-    /// 同时累积完整 body —— 编排还要在全文上判定 PIGEND/PIGFAIL。
+    /// 同时累积完整 body —— 编排还要在全文上判定 PIGEND/PIGFAIL 与工具调用。
     async fn send_streaming(
         &self,
         req: orch::transport::SubRequest,
@@ -359,16 +477,15 @@ impl orch::transport::Transport for LoopbackTransport {
         let status = resp.status().as_u16();
         let content_type = Self::content_type(&resp);
 
-        // 上游无视 stream:true 回了整体 JSON → 一次性把文本推给 sink
+        // 上游无视 stream 回了整体 JSON → 一次性把文本推给 sink
         if !pigs_protocol::is_sse_content_type(content_type.as_deref()) {
             let body = resp.bytes().await.map_err(|e| {
                 orch::transport::TransportError::Send(format!("回环响应读取失败: {e}"))
             })?;
             if let Ok(value) = serde_json::from_slice::<Value>(&body) {
-                if let Some(text) = pigs_protocol::extract_response_text(protocol, &value) {
-                    if !text.is_empty() {
-                        sink(&text);
-                    }
+                let text = pigs_protocol::parse_json_output(protocol, &value).text;
+                if !text.is_empty() {
+                    sink(&text);
                 }
             }
             return Ok(orch::transport::SubResponse {

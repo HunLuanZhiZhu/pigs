@@ -63,5 +63,8 @@ pub fn build_state(config: Config, addr: std::net::SocketAddr) -> server::AppSta
         upstream: Arc::new(upstream::Upstream::new(&config.base_url, &config.key)),
         loopback_token: Arc::new(uuid::Uuid::now_v7().to_string()),
         self_url: Arc::new(self_url),
+        store: Arc::new(std::sync::Mutex::new(
+            pigs_orchestrator::state::ContinuationStore::default(),
+        )),
     }
 }

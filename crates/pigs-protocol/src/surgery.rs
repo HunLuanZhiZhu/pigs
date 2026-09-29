@@ -99,6 +99,38 @@ pub fn append_to_last_user_text(body: &mut Value, protocol: Protocol, suffix: &s
     }
 }
 
+/// 把相位指令追加到请求**尾部**。
+///
+/// 规则：末条消息是 user → 追加到它的文本尾部（Pre/Executor 接在用户原话后面）；
+/// 末条是别的（assistant / tool 结果 / 全新请求）→ 新增一条 user 消息。
+///
+/// 只动尾部是刻意的：上游 prompt cache 按前缀命中，尾部追加才不打断缓存。
+pub fn append_instruction(body: &mut Value, protocol: Protocol, text: &str) -> Result<()> {
+    let tail_is_user = match protocol {
+        Protocol::OpenAI | Protocol::Anthropic => body
+            .get("messages")
+            .and_then(|m| m.as_array())
+            .and_then(|arr| arr.last())
+            .and_then(|m| m.get("role"))
+            .and_then(|r| r.as_str())
+            == Some("user"),
+        Protocol::Responses => match body.get("input") {
+            Some(Value::String(_)) => true,
+            Some(Value::Array(items)) => items
+                .last()
+                .and_then(|m| m.get("role"))
+                .and_then(|r| r.as_str())
+                == Some("user"),
+            _ => false,
+        },
+    };
+    if tail_is_user {
+        append_to_last_user_text(body, protocol, text)
+    } else {
+        push_user_message(body, protocol, text)
+    }
+}
+
 /// 追加一条新的 user 消息（Post 相位的验收指令用）。
 ///
 /// Responses 的 `input` 若是字符串，会先被就地展开成一条 user 消息（legacy 同款处理），

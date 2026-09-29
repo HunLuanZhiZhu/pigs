@@ -11,6 +11,8 @@ pub type TextSink = Arc<dyn Fn(&str) + Send + Sync>;
 pub struct SubRequest {
     /// 协议路径（如 `/v1/messages`）。
     pub path: String,
+    /// 原查询串（有就原样带上）。
+    pub query: Option<String>,
     /// 需要随行的端到端头（鉴权、会话头等）。
     pub headers: Vec<(String, String)>,
     /// JSON body。

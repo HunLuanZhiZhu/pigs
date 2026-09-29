@@ -78,6 +78,20 @@
 （另一个较老的 <code>phased_runtime.rs</code> 是 Post↔Executor 回环、预算耗尽返回文本，那是 agent CLI 时代的形态，没有采用）。</p>
 </div>
 
+<h2>工具调用：一只 pig 可以来回好几次</h2>
+<div class="card">
+<p><strong>一只 pig 是一段对话区间，不是一次请求。</strong>它结束的条件是"模型这一轮不再要工具"：</p>
+<pre>模型：我要调用 Bash      → 相位暂停，调用原样交给客户端（原生 tool_calls / tool_use / function_call）
+客户端：执行 Bash         → 结果写进它自己的历史，再发一发请求
+pigs：按 tool_call id 匹配到现场 → 接着同一只 pig 继续 → 模型：还要再看一眼文件
+  …（如此往复任意次）…
+模型：不再要工具，给出这一相的产出 → 这才做 PIGEND/PIGFAIL 路由</pre>
+<p>跨这段等待的现场（相位、产物、失败路径、预算计数、已产生的可见文本、usage）存在内存
+<code>ContinuationStore</code> 里（容量 64 / TTL 30 分钟，按 id 匹配取出即独占）。
+客户端<b>不需要知道 continuation 的存在</b>：它照常把工具结果接回自己的历史再发请求即可。</p>
+<p class="muted">尾部带工具结果却匹配不到现场（服务重启过、现场过期）→ 明确返回 409，不悄悄重跑一整轮。</p>
+</div>
+
 <h2>流式：边到边拼接（动态）</h2>
 <div class="card">
 <p>客户端带 <code>stream:true</code> 时，<strong>子请求也带 <code>stream:true</code></strong>——上游的增量一个字一个字到达，编排层边收边处理：</p>
@@ -146,11 +160,9 @@
 <div class="warn">
 <ul>
   <li><strong>不做工具执行</strong>：没有 bash/file/MCP——编排只通过协议消息与模型交互（这是本次手术砍掉 agent 循环的核心）；</li>
-  <li><strong>⚠ 已知缺口：子请求目前会把 <code>tools</code> 整个删掉</strong>（<code>surgery.rs:strip_tools</code>），所以 <code>-pig</code> 模型<b>无法真正发起工具调用</b>——
-  模型会把"工具调用格式"当普通文本吐出来（如 longcat 的 <code>&lt;longcat_tool_call&gt;</code>）。
-  legacy 不这么做：它把 tools 透传，遇到工具调用就暂停并把调用交给客户端执行（continuation 机制）。
-  修法待定：① 忠实 legacy（工具调用暂停 + 内存 continuation 恢复同一相位）；② 简化版（工具调用即结束本轮，
-  客户端执行完再来一轮，pigs 重新从 Pre 跑）。</li>
+  <li><strong>工具调用：暂停交棒，不自己执行</strong>——<code>tools</code> 原样透传给上游；模型要工具时，相位<b>暂停</b>，
+  调用原样交给客户端执行；客户端带工具结果回来时按 tool_call id 匹配到现场，<b>接着同一只 pig 继续</b>
+  （见下节"工具调用：一只 pig 可以来回好几次"）。</li>
   <li><strong>不做重试</strong>（见③）；</li>
   <li><strong>不知道上游是谁</strong>：mini-proxy 还是直连 API，与它无关；</li>
   <li><strong>不认识 axum</strong>：HTTP 只通过窄接口注入；</li>

@@ -4,6 +4,7 @@
 //! - [`SseTextStream`]：**读**上游 SSE，按字节边界增量提取文本；
 //! - [`StreamEncoder`]：**写**客户端 SSE，边编排边逐段发帧。
 
+use crate::output::ToolCall;
 use crate::route::Protocol;
 use serde_json::{json, Value};
 use uuid::Uuid;
@@ -167,6 +168,10 @@ pub struct StreamEncoder {
     item_text: String,
     /// Responses 已完成的 output 数组（response.completed 要用）。
     output: Vec<Value>,
+    /// 上游给的停止原因（最后一个相位的值，原样透传；没有则用协议默认值）。
+    stop_reason: Option<String>,
+    /// 上游给的 usage（跨相位累加后的结果，原样透传）。
+    usage: Option<Value>,
 }
 
 impl StreamEncoder {
@@ -188,7 +193,15 @@ impl StreamEncoder {
             item_id: String::new(),
             item_text: String::new(),
             output: Vec::new(),
+            stop_reason: None,
+            usage: None,
         }
+    }
+
+    /// 记录上游给的停止原因与 usage（原样透传，不改写；缺失时终止帧用协议默认值）。
+    pub fn set_finish(&mut self, stop_reason: Option<String>, usage: Option<Value>) {
+        self.stop_reason = stop_reason;
+        self.usage = usage;
     }
 
     /// 发协议起始帧，让客户端流立刻开始（不依赖第一次上游增量）。
@@ -357,8 +370,106 @@ impl StreamEncoder {
         }
     }
 
+    /// 把工具调用原样发给客户端（协议原生帧）。
+    ///
+    /// 工具调用的 `native` 是上游给的原生 JSON，这里只按客户端协议该有的位置摆好，
+    /// 不改参数、不改名字、不改 id。
+    pub fn push_tool_calls(&mut self, calls: &[ToolCall]) -> String {
+        if calls.is_empty() {
+            return String::new();
+        }
+        // 该相位的文本段到此为止；这一轮是"因工具而停"，上游没给原因时按协议默认记下
+        let mut frames = self.end_pig();
+        if self.stop_reason.is_none() {
+            self.stop_reason = Some(match self.protocol {
+                Protocol::OpenAI => "tool_calls".into(),
+                Protocol::Anthropic => "tool_use".into(),
+                // Responses 用 items 表达工具调用，停止原因是空
+                Protocol::Responses => String::new(),
+            });
+        }
+        match self.protocol {
+            // Chat：一帧 delta.tool_calls（每个调用补一个 index）
+            Protocol::OpenAI => {
+                let calls: Vec<Value> = calls
+                    .iter()
+                    .enumerate()
+                    .map(|(index, call)| {
+                        let mut native = call.native.clone();
+                        if let Some(obj) = native.as_object_mut() {
+                            obj.insert("index".into(), json!(index));
+                        }
+                        native
+                    })
+                    .collect();
+                frames.push_str(&data_frame(json!({
+                    "id": self.id,
+                    "object": "chat.completion.chunk",
+                    "created": self.created,
+                    "model": self.model,
+                    "choices": [{"index": 0, "delta": {"tool_calls": calls}, "finish_reason": Value::Null}]
+                })));
+            }
+            // Anthropic：每个调用一个 tool_use 块（start → input_json_delta → stop）
+            Protocol::Anthropic => {
+                for call in calls {
+                    let index = self.next_index;
+                    self.next_index += 1;
+                    let mut block = call.native.clone();
+                    // 原生块里的 input 已经算好；start 帧按协议要求先给空对象
+                    if let Some(obj) = block.as_object_mut() {
+                        obj.insert("input".into(), json!({}));
+                    }
+                    frames.push_str(&event_frame(
+                        "content_block_start",
+                        json!({"type": "content_block_start", "index": index, "content_block": block}),
+                    ));
+                    frames.push_str(&event_frame(
+                        "content_block_delta",
+                        json!({
+                            "type": "content_block_delta",
+                            "index": index,
+                            "delta": {"type": "input_json_delta", "partial_json": call.arguments_json()}
+                        }),
+                    ));
+                    frames.push_str(&event_frame(
+                        "content_block_stop",
+                        json!({"type": "content_block_stop", "index": index}),
+                    ));
+                }
+            }
+            // Responses：每个调用一个 function_call item（added → done）
+            Protocol::Responses => {
+                for call in calls {
+                    let output_index = self.next_index;
+                    self.next_index += 1;
+                    frames.push_str(&self.response_event(
+                        "response.output_item.added",
+                        json!({"output_index": output_index, "item": call.native}),
+                    ));
+                    frames.push_str(&self.response_event(
+                        "response.output_item.done",
+                        json!({"output_index": output_index, "item": call.native}),
+                    ));
+                    self.output.push(call.native.clone());
+                }
+            }
+        }
+        frames
+    }
+
     /// 发协议终止帧（成功的完整序列）。
     pub fn finish(&mut self) -> String {
+        // 停止原因与 usage 一律用上游给的值；上游没给才退回协议默认
+        let stop_reason = self
+            .stop_reason
+            .clone()
+            .unwrap_or_else(|| match self.protocol {
+                Protocol::OpenAI => "stop".into(),
+                Protocol::Anthropic => "end_turn".into(),
+                Protocol::Responses => String::new(),
+            });
+        let usage = self.usage.clone().unwrap_or_else(|| json!({}));
         match self.protocol {
             Protocol::OpenAI => format!(
                 "{}{}",
@@ -367,7 +478,8 @@ impl StreamEncoder {
                     "object": "chat.completion.chunk",
                     "created": self.created,
                     "model": self.model,
-                    "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": stop_reason}],
+                    "usage": usage
                 })),
                 "data: [DONE]\n\n"
             ),
@@ -377,23 +489,29 @@ impl StreamEncoder {
                     "message_delta",
                     json!({
                         "type": "message_delta",
-                        "delta": {"stop_reason": "end_turn", "stop_sequence": Value::Null},
-                        "usage": {}
+                        "delta": {"stop_reason": stop_reason, "stop_sequence": Value::Null},
+                        "usage": usage
                     }),
                 ),
                 event_frame("message_stop", json!({"type": "message_stop"}))
             ),
             Protocol::Responses => {
+                // Responses 用 status/incomplete_details 表达截断
+                let (status, incomplete) = if stop_reason.is_empty() {
+                    ("completed", Value::Null)
+                } else {
+                    ("incomplete", json!({"reason": stop_reason}))
+                };
                 let completed = json!({
                     "id": self.id,
                     "object": "response",
                     "created_at": self.created,
-                    "status": "completed",
+                    "status": status,
                     "model": self.model,
                     "output": std::mem::take(&mut self.output),
-                    "usage": {},
+                    "usage": usage,
                     "error": Value::Null,
-                    "incomplete_details": Value::Null
+                    "incomplete_details": incomplete
                 });
                 self.response_event("response.completed", json!({"response": completed}))
             }
@@ -511,57 +629,145 @@ impl StreamEncoder {
     }
 }
 
-/// 把最终文本合成为协议正确的**非流式 JSON 响应**（客户端未要求流式时使用）。
-pub fn synthesize_json(protocol: Protocol, model: &str, text: &str) -> Value {
-    match protocol {
-        Protocol::OpenAI => json!({
-            "id": format!("chatcmpl-{}", Uuid::now_v7()),
-            "object": "chat.completion",
-            "created": now_secs(),
-            "model": model,
-            "choices": [{
-                "index": 0,
-                "message": {"role": "assistant", "content": text},
-                "finish_reason": "stop"
-            }],
-            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-        }),
-        Protocol::Anthropic => json!({
-            "id": format!("msg_{}", Uuid::now_v7()),
-            "type": "message",
-            "role": "assistant",
-            "model": model,
-            "content": [{"type": "text", "text": text}],
-            "stop_reason": "end_turn",
-            "stop_sequence": Value::Null,
-            "usage": {"input_tokens": 0, "output_tokens": 0}
-        }),
-        Protocol::Responses => json!({
-            "id": format!("resp_{}", Uuid::now_v7()),
-            "object": "response",
-            "status": "completed",
-            "model": model,
-            "output": [{
-                "type": "message",
-                "role": "assistant",
-                "status": "completed",
-                "content": [{"type": "output_text", "text": text, "annotations": []}]
-            }],
-            "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
-        }),
+/// 回给客户端的一轮内容：文本 + 工具调用 + 原样透传的停止原因与 usage。
+///
+/// `model` 是**客户端请求的那个名字**（带 `-pig`），原样回显；
+/// `stop_reason` / `usage` 是上游给的值（缺失才用协议默认）。
+#[derive(Debug, Clone)]
+pub struct ResponseContent<'a> {
+    pub model: &'a str,
+    pub text: &'a str,
+    pub tool_calls: &'a [ToolCall],
+    pub stop_reason: Option<&'a str>,
+    pub usage: Option<&'a Value>,
+}
+
+impl<'a> ResponseContent<'a> {
+    /// 只有文本的简单构造（测试与纯文本路径用）。
+    pub fn text_only(model: &'a str, text: &'a str) -> Self {
+        Self {
+            model,
+            text,
+            tool_calls: &[],
+            stop_reason: None,
+            usage: None,
+        }
+    }
+
+    fn usage_value(&self) -> Value {
+        self.usage.cloned().unwrap_or_else(|| json!({}))
     }
 }
 
-/// 把最终文本合成为**完整的 SSE 流文本**（客户端要求流式时使用）。
+/// 把一轮内容合成为协议正确的**非流式 JSON 响应**（客户端未要求流式时使用）。
+pub fn synthesize_json(protocol: Protocol, content: &ResponseContent) -> Value {
+    let usage = content.usage_value();
+    match protocol {
+        Protocol::OpenAI => {
+            let stop = content.stop_reason.unwrap_or(if content.tool_calls.is_empty() {
+                "stop"
+            } else {
+                "tool_calls"
+            });
+            let mut message = json!({"role": "assistant"});
+            // 纯工具调用时 content 为 null（与上游形状一致）
+            message["content"] = if content.text.is_empty() && !content.tool_calls.is_empty() {
+                Value::Null
+            } else {
+                json!(content.text)
+            };
+            if !content.tool_calls.is_empty() {
+                let calls: Vec<Value> = content
+                    .tool_calls
+                    .iter()
+                    .enumerate()
+                    .map(|(index, call)| {
+                        let mut native = call.native.clone();
+                        if let Some(obj) = native.as_object_mut() {
+                            obj.insert("index".into(), json!(index));
+                        }
+                        native
+                    })
+                    .collect();
+                message["tool_calls"] = Value::Array(calls);
+            }
+            json!({
+                "id": format!("chatcmpl-{}", Uuid::now_v7()),
+                "object": "chat.completion",
+                "created": now_secs(),
+                "model": content.model,
+                "choices": [{"index": 0, "message": message, "finish_reason": stop}],
+                "usage": usage
+            })
+        }
+        Protocol::Anthropic => {
+            let mut blocks = Vec::new();
+            if !content.text.is_empty() {
+                blocks.push(json!({"type": "text", "text": content.text}));
+            }
+            for call in content.tool_calls {
+                blocks.push(call.native.clone());
+            }
+            let stop = content.stop_reason.unwrap_or(if content.tool_calls.is_empty() {
+                "end_turn"
+            } else {
+                "tool_use"
+            });
+            json!({
+                "id": format!("msg_{}", Uuid::now_v7()),
+                "type": "message",
+                "role": "assistant",
+                "model": content.model,
+                "content": blocks,
+                "stop_reason": stop,
+                "stop_sequence": Value::Null,
+                "usage": usage
+            })
+        }
+        Protocol::Responses => {
+            let mut output = Vec::new();
+            if !content.text.is_empty() {
+                output.push(json!({
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": content.text, "annotations": []}]
+                }));
+            }
+            for call in content.tool_calls {
+                output.push(call.native.clone());
+            }
+            let (status, incomplete) = match content.stop_reason {
+                Some(reason) => ("incomplete", json!({"reason": reason})),
+                None => ("completed", Value::Null),
+            };
+            json!({
+                "id": format!("resp_{}", Uuid::now_v7()),
+                "object": "response",
+                "status": status,
+                "model": content.model,
+                "output": output,
+                "usage": usage,
+                "error": Value::Null,
+                "incomplete_details": incomplete
+            })
+        }
+    }
+}
+
+/// 把一轮内容合成为**完整的 SSE 流文本**（客户端要求流式时使用）。
 /// 与实时流式走同一个编码器，保证两条路径的事件形状完全一致。
-pub fn synthesize_sse(protocol: Protocol, model: &str, text: &str) -> String {
-    let mut encoder = StreamEncoder::new(protocol, model);
-    format!(
-        "{}{}{}",
-        encoder.start(),
-        encoder.push_text(text),
-        encoder.finish()
-    )
+pub fn synthesize_sse(protocol: Protocol, content: &ResponseContent) -> String {
+    let mut encoder = StreamEncoder::new(protocol, content.model);
+    encoder.set_finish(
+        content.stop_reason.map(String::from),
+        content.usage.cloned(),
+    );
+    let mut frames = encoder.start();
+    frames.push_str(&encoder.push_text(content.text));
+    frames.push_str(&encoder.push_tool_calls(content.tool_calls));
+    frames.push_str(&encoder.finish());
+    frames
 }
 
 /// 生成一个 `{prefix}_{uuid}` 形式的响应 ID。
@@ -652,13 +858,63 @@ mod tests {
 
     #[test]
     fn synthesize_json_shapes() {
-        let openai = synthesize_json(Protocol::OpenAI, "m", "t");
+        let openai = synthesize_json(Protocol::OpenAI, &ResponseContent::text_only("m", "t"));
         assert_eq!(openai["choices"][0]["message"]["content"], "t");
-        let anthropic = synthesize_json(Protocol::Anthropic, "m", "t");
+        assert_eq!(openai["choices"][0]["finish_reason"], "stop");
+        let anthropic = synthesize_json(Protocol::Anthropic, &ResponseContent::text_only("m", "t"));
         assert_eq!(anthropic["content"][0]["text"], "t");
         assert_eq!(anthropic["stop_reason"], "end_turn");
-        let responses = synthesize_json(Protocol::Responses, "m", "t");
+        let responses = synthesize_json(Protocol::Responses, &ResponseContent::text_only("m", "t"));
         assert_eq!(responses["output"][0]["content"][0]["text"], "t");
+        assert_eq!(responses["status"], "completed");
+    }
+
+    /// 上游给的 stop_reason 与 usage 必须原样透传（不许改写、不许清零）。
+    #[test]
+    fn synthesize_passes_through_stop_reason_and_usage() {
+        let usage = json!({"input_tokens": 11, "output_tokens": 22});
+        let content = ResponseContent {
+            model: "m-pig",
+            text: "被截断的一半",
+            tool_calls: &[],
+            stop_reason: Some("max_tokens"),
+            usage: Some(&usage),
+        };
+        let anthropic = synthesize_json(Protocol::Anthropic, &content);
+        assert_eq!(anthropic["stop_reason"], "max_tokens");
+        assert_eq!(anthropic["usage"], usage);
+        assert_eq!(anthropic["model"], "m-pig");
+
+        let openai = synthesize_json(Protocol::OpenAI, &content);
+        assert_eq!(openai["choices"][0]["finish_reason"], "max_tokens");
+        assert_eq!(openai["usage"], usage);
+
+        let responses = synthesize_json(Protocol::Responses, &content);
+        assert_eq!(responses["status"], "incomplete");
+        assert_eq!(responses["incomplete_details"]["reason"], "max_tokens");
+        assert_eq!(responses["usage"], usage);
+    }
+
+    /// 工具调用：三协议的非流式响应都必须带上原生调用，finish_reason 说 tool_calls。
+    #[test]
+    fn synthesize_json_with_tool_calls() {
+        let calls = [ToolCall {
+            id: "call_1".into(),
+            name: "Bash".into(),
+            arguments: Value::String("{\"command\":\"ls\"}".into()),
+            native: json!({"id":"call_1","type":"function","function":{"name":"Bash","arguments":"{\"command\":\"ls\"}"}}),
+        }];
+        let content = ResponseContent {
+            model: "m",
+            text: "",
+            tool_calls: &calls,
+            stop_reason: Some("tool_calls"),
+            usage: None,
+        };
+        let openai = synthesize_json(Protocol::OpenAI, &content);
+        assert!(openai["choices"][0]["message"]["content"].is_null());
+        assert_eq!(openai["choices"][0]["message"]["tool_calls"][0]["id"], "call_1");
+        assert_eq!(openai["choices"][0]["finish_reason"], "tool_calls");
     }
 
     #[test]
@@ -668,9 +924,57 @@ mod tests {
             (Protocol::Anthropic, "message_stop"),
             (Protocol::Responses, "response.completed"),
         ] {
-            let sse = synthesize_sse(p, "m", "最终文本");
+            let content = ResponseContent::text_only("m", "最终文本");
+            let sse = synthesize_sse(p, &content);
             assert!(sse.contains(done), "{p:?} 缺少结束标记");
             assert_eq!(extract_sse_text(p, &sse).unwrap(), "最终文本");
+        }
+    }
+
+    /// 流式工具调用：回吐的帧必须能被自己的解析器还原成同一次调用。
+    #[test]
+    fn encoder_emits_tool_calls_that_round_trip() {
+        for protocol in [Protocol::OpenAI, Protocol::Anthropic, Protocol::Responses] {
+            let native = match protocol {
+                Protocol::OpenAI => json!({
+                    "id": "call_1", "type": "function",
+                    "function": {"name": "Bash", "arguments": "{\"command\":\"ls\"}"}
+                }),
+                Protocol::Anthropic => json!({
+                    "type": "tool_use", "id": "toolu_1", "name": "Bash", "input": {"command": "ls"}
+                }),
+                Protocol::Responses => json!({
+                    "type": "function_call", "call_id": "fc_1", "name": "Bash", "arguments": "{\"command\":\"ls\"}"
+                }),
+            };
+            let calls = [ToolCall {
+                id: match protocol {
+                    Protocol::OpenAI => "call_1".into(),
+                    Protocol::Anthropic => "toolu_1".into(),
+                    Protocol::Responses => "fc_1".into(),
+                },
+                name: "Bash".into(),
+                arguments: Value::String("{\"command\":\"ls\"}".into()),
+                native,
+            }];
+            let mut encoder = StreamEncoder::new(protocol, "gpt-x-pig");
+            encoder.set_finish(Some("tool_calls".into()), None);
+            let mut frames = encoder.start();
+            frames.push_str(&encoder.push_text("我先看一下"));
+            frames.push_str(&encoder.push_tool_calls(&calls));
+            frames.push_str(&encoder.finish());
+
+            let parsed = crate::output::parse_sse_output(protocol, &frames);
+            assert_eq!(parsed.tool_calls.len(), 1, "{protocol:?} 调用丢失");
+            assert_eq!(parsed.tool_calls[0].name, "Bash");
+            assert_eq!(parsed.tool_calls[0].arguments_json(), "{\"command\":\"ls\"}");
+            assert_eq!(parsed.text, "我先看一下", "{protocol:?} 文本丢失");
+            // 终止帧必须说"有工具调用"（三协议各自的表达）
+            match protocol {
+                Protocol::OpenAI => assert!(frames.contains("\"tool_calls\"")),
+                Protocol::Anthropic => assert!(frames.contains("tool_use")),
+                Protocol::Responses => assert!(frames.contains("function_call")),
+            }
         }
     }
 

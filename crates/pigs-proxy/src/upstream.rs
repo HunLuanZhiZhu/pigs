@@ -25,6 +25,10 @@ impl Upstream {
             client: Client::builder()
                 // 不设总超时：长流式对话不受"10 分钟毒墙"限制
                 .connect_timeout(std::time::Duration::from_secs(30))
+                // 透传必须逐字节：关掉自动解压，content-encoding 与 body 一起搬给客户端
+                .gzip(false)
+                .brotli(false)
+                .deflate(false)
                 .build()
                 .expect("构建上游 HTTP 客户端失败"),
             base_url: base_url.trim_end_matches('/').to_string(),

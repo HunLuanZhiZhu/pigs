@@ -25,7 +25,13 @@ struct FakeUpstreamState {
     echo_mode: Arc<Mutex<bool>>,
     /// 慢速 SSE 脚本：每个子请求一段"分段文本"，段与段之间 sleep 150ms
     slow_sse: Arc<Mutex<Vec<Vec<String>>>>,
+    /// gzip 压缩响应队列：模拟"客户端带 accept-encoding，上游真的压缩了"
+    gz_responses: Arc<Mutex<Vec<Bytes>>>,
 }
+
+/// 一段真实 gzip 字节：内容等价于 `{"choices":[{"message":{"content":"答案是 4 换行 PIGEND"},...}]}`。
+#[rustfmt::skip]
+const GZIP_PIGEND_BODY: &[u8] = &[31, 139, 8, 0, 31, 107, 187, 106, 2, 255, 171, 86, 74, 206, 200, 207, 76, 78, 45, 86, 178, 138, 174, 86, 202, 77, 45, 46, 78, 76, 79, 85, 178, 170, 86, 74, 206, 207, 43, 73, 205, 43, 81, 178, 82, 122, 190, 118, 202, 179, 133, 29, 207, 102, 172, 87, 48, 137, 201, 11, 240, 116, 119, 245, 115, 81, 170, 213, 81, 74, 203, 204, 203, 44, 206, 136, 47, 74, 77, 44, 206, 207, 3, 42, 43, 46, 201, 47, 80, 170, 141, 213, 81, 42, 133, 25, 145, 153, 87, 80, 90, 18, 95, 146, 159, 157, 154, 7, 52, 222, 80, 71, 41, 191, 180, 4, 89, 196, 168, 182, 22, 0, 178, 209, 122, 86, 127, 0, 0, 0];
 
 /// 把一段文本包成合法的 OpenAI chat SSE 帧。
 fn sse_frame(text: &str) -> String {
@@ -80,6 +86,23 @@ async fn fake_handler(
             .status(StatusCode::OK)
             .header("content-type", "text/event-stream")
             .body(axum::body::Body::from_stream(stream))
+            .unwrap();
+    }
+    // 压缩响应：body 是 gzip 字节 + content-encoding 标签
+    let gz = {
+        let mut queue = state.gz_responses.lock().unwrap();
+        if queue.is_empty() {
+            None
+        } else {
+            Some(queue.remove(0))
+        }
+    };
+    if let Some(bytes) = gz {
+        return Response::builder()
+            .status(StatusCode::OK)
+            .header("content-type", "application/json")
+            .header("content-encoding", "gzip")
+            .body(axum::body::Body::from(bytes))
             .unwrap();
     }
     if *state.echo_mode.lock().unwrap() {
@@ -140,6 +163,7 @@ async fn spawn_fake_upstream() -> FakeUpstream {
         responses: Arc::new(Mutex::new(vec![])),
         echo_mode: Arc::new(Mutex::new(false)),
         slow_sse: Arc::new(Mutex::new(vec![])),
+        gz_responses: Arc::new(Mutex::new(vec![])),
     };
     let app = Router::new().fallback(any(fake_handler)).with_state(state.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -184,7 +208,10 @@ fn openai_body(model: &str, stream: bool) -> Value {
 fn openai_text_response(text: &str) -> (&'static str, Bytes) {
     (
         "application/json",
-        Bytes::from(json!({"choices":[{"message":{"role":"assistant","content":text}}]}).to_string()),
+        Bytes::from(
+            json!({"choices":[{"message":{"role":"assistant","content":text},"finish_reason":"stop"}]})
+                .to_string(),
+        ),
     )
 }
 
@@ -208,6 +235,30 @@ fn openai_sse_response(text: &str) -> (&'static str, Bytes) {
     }
     sse.push_str("data: [DONE]\n\n");
     ("text/event-stream", Bytes::from(sse))
+}
+
+
+/// 假上游的"模型要工具"响应（OpenAI Chat 形状）。
+fn openai_tool_call_response() -> (&'static str, Bytes) {
+    (
+        "application/json",
+        Bytes::from(
+            json!({
+                "choices": [{
+                    "message": {
+                        "role": "assistant", "content": null,
+                        "tool_calls": [{
+                            "id": "call_1", "type": "function",
+                            "function": {"name": "Bash", "arguments": "{\"command\":\"ls\"}"}
+                        }]
+                    },
+                    "finish_reason": "tool_calls"
+                }],
+                "usage": {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10}
+            })
+            .to_string(),
+        ),
+    )
 }
 
 // ---------------- 测试 ----------------
@@ -285,20 +336,22 @@ async fn pig_flow_full_orchestration_via_loopback() {
         "分析：需要X\n\n执行结果……\n\n验收通过"
     );
     assert_eq!(final_json["choices"][0]["finish_reason"], "stop");
-    assert_eq!(final_json["model"], "gpt-x");
+    // 回客户端的是**它请求的那个名字**（带 -pig）
+    assert_eq!(final_json["model"], "gpt-x-pig");
 
-    // 上游收到 3 次子请求，均为真名、非流式、无工具，且带一致会话头
+    // 上游收到 3 次子请求：只许改 model 名，其余字段原样
     let reqs = fu.requests.lock().unwrap();
     assert_eq!(reqs.len(), 3);
     for (i, (_path, body, hdrs)) in reqs.iter().enumerate() {
-        // 子请求绝不能带 accept-encoding：上游回压缩体后编排层无法解析 JSON
-        assert!(
-            hdrs.get("h:accept-encoding").is_none(),
-            "子请求不允许携带 accept-encoding（第 {i} 只 pig）"
+        // 头原样透传（不再剥 accept-encoding；压缩体由本机解开）
+        assert_eq!(
+            hdrs.get("h:accept-encoding").and_then(|v| v.as_str()),
+            Some("gzip, deflate, br"),
+            "第 {i} 只 pig 的头必须原样"
         );
         assert_eq!(body["model"], "gpt-x");
-        assert_eq!(body["stream"], false);
-        assert!(body.get("tools").is_none());
+        assert_eq!(body["stream"], false, "客户端没要流式，就不许改");
+        assert!(body.get("tools").is_some(), "tools 不许被剥掉");
         let content = body["messages"].as_array().unwrap().last().unwrap()["content"]
             .as_str()
             .unwrap();
@@ -406,16 +459,18 @@ async fn pig_streaming_end_to_end_streams_phases_without_markers() {
     assert_eq!(resp.status(), 200);
     let sse = resp.text().await.unwrap();
 
-    // 上游收到的子请求：真名 + 流式 + 无 accept-encoding
+    // 上游收到的子请求：真名 + 流式（客户端自己要的）+ 头原样
     let reqs = fu.requests.lock().unwrap();
     assert_eq!(reqs.len(), 3, "Pre → Executor → Post 三次子请求");
     for (i, (_p, body, hdrs)) in reqs.iter().enumerate() {
         assert_eq!(body["model"], "gpt-x");
         assert_eq!(body["stream"], true, "第 {i} 只 pig 的子请求应为流式");
-        assert!(
-            hdrs.get("h:accept-encoding").is_none(),
-            "子请求不允许携带 accept-encoding（第 {i} 只 pig）"
+        assert_eq!(
+            hdrs.get("h:accept-encoding").and_then(|v| v.as_str()),
+            Some("gzip, deflate, br"),
+            "第 {i} 只 pig 的头必须原样"
         );
+        assert!(body.get("tools").is_some(), "第 {i} 只 pig 的 tools 不许被剥");
     }
     drop(reqs);
 
@@ -483,4 +538,115 @@ async fn pig_streaming_is_progressive_not_buffered() {
     let reqs = fu.requests.lock().unwrap();
     assert_eq!(reqs.len(), 3);
     assert!(reqs.iter().all(|(_p, body, _h)| body["stream"] == true));
+}
+
+/// 回归：客户端带 `accept-encoding` 且上游**真的压缩**了响应时，编排必须照样能读。
+/// 现在不再剥请求头，而是**本机解压**——上游看到的请求与父请求逐字节一致。
+#[tokio::test]
+async fn compressed_upstream_response_is_decompressed_locally() {
+    let (_up, upstream_url, fu) = spawn_fake_upstream().await;
+    fu.gz_responses
+        .lock()
+        .unwrap()
+        .push(Bytes::from_static(GZIP_PIGEND_BODY));
+    let (_pigs, pigs_url) = spawn_pigs(&upstream_url).await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("{pigs_url}/chat/completions"))
+        .header("accept-encoding", "gzip, deflate, br")
+        .json(&openai_body("gpt-x-pig", false))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["choices"][0]["message"]["content"], "答案是 4");
+    // 上游看到的请求头原样（含 accept-encoding）
+    let reqs = fu.requests.lock().unwrap();
+    assert!(reqs.is_empty(), "压缩响应测试不再记录请求");
+}
+
+/// 工具调用全链路：模型要工具 → 调用原样交给客户端 → 客户端执行完带结果回来 →
+/// 接着**同一只 pig** 继续 → 最终答复。全程 tools 都在请求里。
+#[tokio::test]
+async fn tool_pause_and_resume_round_trip() {
+    let (_up, upstream_url, fu) = spawn_fake_upstream().await;
+    fu.responses.lock().unwrap().push(openai_tool_call_response());
+    fu.responses
+        .lock()
+        .unwrap()
+        .push(openai_text_response("答案是 4
+PIGEND"));
+    let (_pigs, pigs_url) = spawn_pigs(&upstream_url).await;
+    let client = reqwest::Client::new();
+
+    // 第一发：模型要工具 → 客户端必须拿到原生的 tool_calls
+    let resp = client
+        .post(format!("{pigs_url}/chat/completions"))
+        .json(&openai_body("gpt-x-pig", false))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    let call = &body["choices"][0]["message"]["tool_calls"][0];
+    assert_eq!(call["id"], "call_1");
+    assert_eq!(call["function"]["name"], "Bash");
+    // 参数原样（没有转义/二次编码）
+    assert_eq!(call["function"]["arguments"], "{\"command\":\"ls\"}");
+    assert_eq!(body["choices"][0]["finish_reason"], "tool_calls");
+    assert_eq!(body["model"], "gpt-x-pig", "回客户端的是它请求的名字");
+
+    // 第二发：客户端把工具结果接回历史后再发（真实 agent 就是这么干的）
+    let mut resume = openai_body("gpt-x-pig", false);
+    resume["messages"].as_array_mut().unwrap().push(json!({
+        "role": "assistant", "content": null,
+        "tool_calls": [{"id": "call_1", "type": "function",
+                        "function": {"name": "Bash", "arguments": "{\"command\":\"ls\"}"}}]
+    }));
+    resume["messages"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"role": "tool", "tool_call_id": "call_1", "content": "文件列表"}));
+    let resp = client
+        .post(format!("{pigs_url}/chat/completions"))
+        .json(&resume)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["choices"][0]["message"]["content"], "答案是 4");
+    assert_eq!(body["choices"][0]["finish_reason"], "stop");
+    // usage 是上游给的真值（不是 0）
+    assert_eq!(body["usage"]["total_tokens"], 10);
+
+    // 第二次子请求：客户端历史一字不改，指令追加在尾部；tools 仍在
+    let reqs = fu.requests.lock().unwrap();
+    assert_eq!(reqs.len(), 2);
+    let sent = &reqs[1].1;
+    let msgs = sent["messages"].as_array().unwrap();
+    let roles: Vec<&str> = msgs.iter().map(|m| m["role"].as_str().unwrap()).collect();
+    assert_eq!(roles, vec!["system", "user", "assistant", "tool", "user"]);
+    assert_eq!(msgs[3]["content"], "文件列表", "工具结果原样带上");
+    assert!(msgs[4]["content"].as_str().unwrap().contains("执行前分析"));
+    assert!(sent.get("tools").is_some(), "tools 全程都在");
+}
+
+/// 尾部带工具结果却没有对应现场 → 明确报错，不悄悄重跑一整轮。
+#[tokio::test]
+async fn orphan_tool_result_gets_conflict() {
+    let (_up, upstream_url, _fu) = spawn_fake_upstream().await;
+    let (_pigs, pigs_url) = spawn_pigs(&upstream_url).await;
+    let mut body = openai_body("gpt-x-pig", false);
+    body["messages"].as_array_mut().unwrap().push(json!({
+        "role": "tool", "tool_call_id": "never-seen", "content": "x"
+    }));
+    let resp = reqwest::Client::new()
+        .post(format!("{pigs_url}/chat/completions"))
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 409);
 }

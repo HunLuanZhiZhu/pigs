@@ -89,7 +89,10 @@
   <li>客户端要流式（<code>stream:true</code>）时<strong>边编排边推帧</strong>：先把协议起始帧发出去（连接立刻变成流），
   之后每只 pig 的安全文本一到就转成协议 SSE 帧推给客户端，跑完再补终止序列；中途出错发<em>流内错误帧</em>（HTTP 状态此时已定，改不了了）。
   客户端没要流式时才等编排跑完一次性给 JSON；</li>
-  <li>子请求的 body 是编排层拼的（真 model 名、去 tools、替换最后一条 user 消息），proxy 只管照单发出去。</li>
+  <li>子请求的 body 是编排层拼的（只改 model 名 + 尾部追加指令），proxy 只管照单发出去；
+  回客户端的 <code>model</code> 是<b>客户端请求的那个名字</b>（带 <code>-pig</code>）。</li>
+  <li>模型要工具 → 编排暂停，proxy 把调用作为<b>终止帧</b>发给客户端（三协议各自的原生形状）；
+  客户端执行完带工具结果再发一发，proxy 按 tool_call id 取出现场，交给编排层接着同一只 pig 继续。</li>
 </ul>
 </div>
 

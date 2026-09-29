@@ -33,18 +33,25 @@
 
 ## 当前代码与此准则的差距（逐条待裁决，裁决后修正代码）
 
-| # | 现状 | 与准则的冲突 | 合规改法 |
-|---|---|---|---|
-| 1 | 子请求删掉 `tools` + `tool_choice`（`crates/pigs-protocol/src/surgery.rs:44`，`crates/pigs-orchestrator/src/lib.rs:325` 每只 pig 都调） | 直接违反 | 不删；上游回的工具调用原样交给客户端；恢复 continuation 以接着同一相位 |
-| 2 | 响应里的 model 名回的是剥掉后缀的真名（`crates/pigs-proxy/src/server.rs:134,158`） | 违反 | 回客户端请求的原名（legacy `pigs-proxy/src/server.rs:89,113,129,187,199`） |
-| 3 | 合成响应的 `usage` 全是 0 / 空对象（`crates/pigs-protocol/src/response.rs:220,381,394,527,537,550`） | 违反 | 跨相位累加真实 usage（legacy `pigs-api/src/output.rs` 用 `result.usage`） |
-| 4 | 子请求过滤掉 `accept-encoding` 头（`crates/pigs-orchestrator/src/lib.rs` `call_pig`） | 违反 | 头原样透传，改为**本地解压**：reqwest 开启 `gzip`/`brotli`/`deflate`，子请求客户端自动解压，透传客户端用 `.gzip(false)...` 保持逐字节 |
-| 5 | `stream` 字段被显式覆盖（`set_stream`），取值恰好等于客户端的选择 | 写法上违反（效果等价） | 完全不写该字段：客户端要流式就流式读、边读边转 |
-| 6 | 客户端没带 `x-opencode-session` 时编排层主动注入（`crates/pigs-orchestrator/src/lib.rs`） | 违反（凭空加头） | 不注入；客户端带了的随请求头自动透传；补头归 mini-proxy |
-| 7 | 子请求丢失 query string（`TurnInput`/`SubRequest` 只有 path；legacy 存 `path_and_query`，`legacy/crates/pigs-api/src/protocol.rs:112`） | 违反 | 把 path+query 一起带进子请求 |
-| 8 | 工具调用在响应提取时被丢弃（`crates/pigs-protocol/src/response.rs` 只认文本块/只认 `message` item） | 违反 | 原样回吐工具调用（三协议） |
-| 9 | `finish_reason`/`stop_reason` 固定合成（上游因 `max_tokens` 截断也说 `stop`） | 违反 | 以最后一次上游响应的真实值回吐 |
-| 10 | 把多段相位产物**合并成一条** assistant 消息（`crates/pigs-orchestrator/src/lib.rs` `transcript.join("\n\n")`） | 违反（形状被加工；legacy 逐条追加） | 回退为逐条追加，与 legacy 一致 |
+| # | 事项 | 状态 |
+|---|---|---|
+| 1 | `tools` / `tool_choice` 透传，不再删除；上游回的工具调用原样交给客户端；客户端带结果回来接着同一只 pig 继续（`state::Continuation`） | ✅ 已改 |
+| 2 | 回客户端的 `model` 用客户端请求的原名（带 `-pig`），发给上游用真名 | ✅ 已改 |
+| 3 | `usage` 跨相位累加后原样回传（上游没给才是空对象），不再清零 | ✅ 已改 |
+| 4 | `accept-encoding` 头原样透传，改为**本机解压**（reqwest 开 `gzip/brotli/deflate`；透传客户端 `.gzip(false)...` 保持逐字节） | ✅ 已改 |
+| 5 | 完全不写 `stream` 字段 | ✅ 已改 |
+| 6 | 客户端没带 `x-opencode-session` 时注入一个（补头归 mini-proxy 才是终态） | ⏸ 按裁决暂缓 |
+| 7 | `path` + `query` 一起带进子请求 | ✅ 已改 |
+| 8 | 工具调用原样回吐（三协议，JSON 与 SSE 都覆盖） | ✅ 已改 |
+| 9 | `finish_reason` / `stop_reason` 透传上游的真实值（以最后一轮为准） | ✅ 已改 |
+| 10 | 相位产物**逐条**追加，不再合并成一条 assistant 消息 | ✅ 已改 |
+
+## 遗留细节（已登记，未改）
+
+- **解压的副作用**：reqwest 在请求没带 `Accept-Encoding` 时会补一个 `gzip`（它的默认行为，为本地解压服务）。
+  客户端带了该头时不影响；客户端没带时这是相对父请求的一处**库级添加**。
+- 尾部工具结果匹配不到现场时返回 **409**（与 legacy 的 `UnknownContinuation` 一致），不悄悄重跑一整轮。
+- 工具暂停时回给客户端的 `usage` 是"到目前为止累加值"（legacy 同款），最终答复给的是全量累加值。
 
 ## 语言约定
 
