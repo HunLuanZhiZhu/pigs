@@ -306,6 +306,11 @@ impl Ctx {
     /// body 的手术顺序：① 把对话记录（上一只 pig 的产出）作为 assistant 消息接回；
     /// ② 再落本相位的指令——Pre/Executor 追加到最后一条 user 消息文本上，
     /// Post 作为新的一条 user 消息。这样用户原话、图片等内容一律不动。
+    ///
+    /// 多段产物**合成一条** assistant 消息：直连 Anthropic 官方 API 时连续同角色会被它
+    /// 自己合并，但 Bedrock / Vertex 这类网关会直接 400（`roles must alternate…`）。
+    /// 正常路径（只有 Executor 一段草稿）产物本来就只有一条，发出去的东西与 legacy 逐字节相同；
+    /// 只有 Post 重试/重规划才会出现多段，那时合并不损失任何信息。
     async fn call_pig(
         &self,
         pig: Pig,
@@ -318,8 +323,8 @@ impl Ctx {
         let mut body = self.input.body.clone();
         proto::set_stream(&mut body, streaming);
         proto::strip_tools(&mut body);
-        for text in transcript {
-            proto::push_assistant_message(&mut body, self.input.protocol, text)?;
+        if !transcript.is_empty() {
+            proto::push_assistant_message(&mut body, self.input.protocol, &transcript.join("\n\n"))?;
         }
         match placement {
             Placement::AppendToUser => {
@@ -740,6 +745,47 @@ mod tests {
         let reqs = fake.requests.lock().unwrap();
         let pre2_body: Value = serde_json::from_slice(&reqs[3].body).unwrap();
         assert!(last_user_content(&pre2_body).contains("走偏了"));
+    }
+
+    /// 相邻的同角色消息必须合成一条（Bedrock / Vertex 会因此 400）：
+    /// - 正常路径只有 Executor 一段产物 → 与 legacy 逐字节相同（一条 assistant）；
+    /// - 重规划后再进 Post → 三段产物（草稿一、走偏了的评审、草稿二）压成一条 assistant。
+    #[tokio::test]
+    async fn post_turn_never_sends_two_assistant_messages_in_a_row() {
+        let fake = fake(vec![
+            FakeTransport::text(200, "计划一"),
+            FakeTransport::text(200, "草稿一"),
+            FakeTransport::text(200, "走偏了\nPIGFAIL"),
+            FakeTransport::text(200, "计划二"),
+            FakeTransport::text(200, "草稿二"),
+            FakeTransport::text(200, "通过\nPIGEND"),
+        ]);
+        Orchestrator::new()
+            .run(input(proto::Protocol::OpenAI), fake.clone())
+            .await
+            .unwrap();
+
+        let reqs = fake.requests.lock().unwrap();
+        let post1: Value = serde_json::from_slice(&reqs[2].body).unwrap();
+        let post2: Value = serde_json::from_slice(&reqs[5].body).unwrap();
+        for (name, body) in [("post#1", &post1), ("post#2", &post2)] {
+            let roles: Vec<&str> = body["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|m| m["role"].as_str().unwrap())
+                .collect();
+            assert_eq!(roles, vec!["system", "user", "assistant", "user"], "{name}");
+        }
+        // post#1 只有草稿一
+        assert_eq!(post1["messages"][2]["content"], "草稿一");
+        // post#2 三段产物都在同一条 assistant 里，顺序不变
+        assert_eq!(
+            post2["messages"][2]["content"],
+            "草稿一\n\n走偏了\n\n草稿二"
+        );
+        // 原问题没被覆盖
+        assert_eq!(post2["messages"][1]["content"], "帮我完成任务Z");
     }
 
     #[tokio::test]

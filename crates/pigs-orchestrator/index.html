@@ -168,6 +168,9 @@
 Pre 的分析填进 Executor 指令模板的 <code>{pre_output}</code>；Executor 的草稿和历次评审报告则作为
 <strong>assistant 消息接回对话</strong>，Post 的验收指令是<strong>新追加的一条 user 消息</strong>——
 模型看到的是"我自己刚写的稿子请验收"，而不是"用户塞来的一段材料"。用户原话（含图片等非文本内容）全程不被覆盖。</p>
+<p><strong>多段产物会合成一条 assistant 消息</strong>（用空行连接）：Post 重试/重规划时草稿与历次评审会挨在一起，
+而 Bedrock / Vertex 这类网关对"连续两条 assistant"直接 400（<code>roles must alternate…</code>；直连 A 社官方 API 则自己会合并）。
+正常路径只有 Executor 一段草稿，产物本来就只有一条，发出去的东西与 legacy 逐字节相同。</p>
 </div>
 
 <div class="tip"><strong>验收标准：</strong>给一个固定的 <code>-pig</code> 请求 + 一个"假装上游"的固定响应序列，
