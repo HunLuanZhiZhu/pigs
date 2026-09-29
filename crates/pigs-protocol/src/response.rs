@@ -340,7 +340,8 @@ impl StreamEncoder {
                         "content": [],
                         "stop_reason": Value::Null,
                         "stop_sequence": Value::Null,
-                        "usage": {}
+                        // 官方 usage 必填数值字段，空对象会被官方客户端拒收（legacy format.rs:125 同款零值占位）
+                        "usage": {"input_tokens": 0, "output_tokens": 0}
                     }
                 }),
             ),
@@ -758,7 +759,11 @@ impl StreamEncoder {
                 Protocol::Anthropic => "end_turn".into(),
                 Protocol::Responses => String::new(),
             });
-        let usage = self.usage.clone().unwrap_or_else(|| json!({}));
+        // Anthropic 的 message_delta.usage 必填 output_tokens（数值）；上游真值原样透传，缺失时给合法占位
+        let usage = self.usage.clone().unwrap_or_else(|| match self.protocol {
+            Protocol::Anthropic => json!({"output_tokens": 0}),
+            _ => json!({}),
+        });
         match self.protocol {
             Protocol::OpenAI => format!(
                 "{}{}",
@@ -1460,5 +1465,56 @@ mod tests {
         assert!(frames.contains("content_block_stop"));
         assert!(frames.contains("\"type\":\"error\""));
         assert!(!frames.contains("message_stop"));
+    }
+
+    /// 取 `event: {event}\ndata: {json}\n\n` 帧里的 data JSON（官方形状回归用）。
+    fn frame_data(frames: &str, event: &str) -> Value {
+        let marker = format!("event: {event}\ndata: ");
+        let at = frames.find(&marker).unwrap_or_else(|| panic!("缺少 {event} 帧"));
+        let rest = &frames[at + marker.len()..];
+        let end = rest.find("\n\n").expect("帧没有 \\n\\n 结尾");
+        serde_json::from_str(&rest[..end]).expect("data 不是合法 JSON")
+    }
+
+    /// 官方形状回归：合成帧的 usage 必须是数值字段齐全的对象，空 `{}` 会被官方客户端拒收。
+    #[test]
+    fn anthropic_stream_usage_shapes_are_official_valid() {
+        // ① message_start.usage：input_tokens / output_tokens 必填数值
+        //   （message_start 时刻上游 usage 未到，合法零值占位，legacy format.rs:125 同款）
+        let mut encoder = StreamEncoder::new(Protocol::Anthropic, "claude-x-pig".to_string());
+        let start = encoder.start();
+        let start_json = frame_data(&start, "message_start");
+        let usage = &start_json["message"]["usage"];
+        assert!(
+            usage["input_tokens"].is_number() && usage["output_tokens"].is_number(),
+            "message_start.usage 必须含数值 input_tokens/output_tokens，实际: {usage}"
+        );
+
+        // ② 上游没给 usage：收尾 message_delta.usage 也必须形状合法（output_tokens 数值必填）
+        let mut encoder = StreamEncoder::new(Protocol::Anthropic, "claude-x-pig".to_string());
+        let _ = encoder.start();
+        encoder.set_finish(Some("end_turn".to_string()), None);
+        let finish = encoder.finish();
+        let delta_json = frame_data(&finish, "message_delta");
+        assert!(
+            delta_json["usage"]["output_tokens"].is_number(),
+            "message_delta.usage.output_tokens 必须是数值，实际: {}",
+            delta_json["usage"]
+        );
+        assert!(finish.contains("message_stop"));
+
+        // ③ 上游给了真值：原样透传，一个字段都不改
+        let mut encoder = StreamEncoder::new(Protocol::Anthropic, "claude-x-pig".to_string());
+        let _ = encoder.start();
+        encoder.set_finish(
+            Some("end_turn".to_string()),
+            Some(json!({"output_tokens": 77})),
+        );
+        let delta = frame_data(&encoder.finish(), "message_delta");
+        assert_eq!(
+            delta["usage"]["output_tokens"],
+            77,
+            "上游 usage 真值必须原样透传"
+        );
     }
 }
