@@ -18,7 +18,7 @@ pub mod transport;
 
 use markers::{detect_marker, strip_markers, Marker, MarkerFilter};
 use pigs_protocol as proto;
-use proto::{ModelOutput, ToolCall};
+use proto::{ModelOutput, Part, ToolCall};
 use state::{Continuation, ContinuationStore, TurnState};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -115,6 +115,8 @@ pub struct TurnResult {
     pub text: String,
     /// 每段可见文本（按执行顺序，诊断/测试用）。
     pub visible: Vec<String>,
+    /// 给客户端的内容序列（文本 + 思考 + 工具调用 + 其它原生块，按顺序）。
+    pub parts: Vec<Part>,
     /// 结束方式（诊断/日志用）。
     pub ended_with: EndedWith,
     /// 实际使用的会话头值。
@@ -134,6 +136,8 @@ pub struct PausedTurn {
     pub tool_calls: Vec<ToolCall>,
     /// 到目前为止的可见文本（流式客户端已经收到了；非流式用它拼响应）。
     pub text: String,
+    /// 到目前为止的内容序列（给客户端的内容，顺序权威）。
+    pub parts: Vec<Part>,
     /// 这一轮的停止原因（上游原话，通常是 tool_calls / tool_use）。
     pub stop_reason: Option<String>,
     /// 恢复句柄（proxy 存自己手里，客户端不感知）。
@@ -253,6 +257,7 @@ impl Orchestrator {
                     "模型请求工具调用，暂停相位等待客户端执行"
                 );
                 let text = state.final_text();
+                let parts = state.parts.clone();
                 let continuation_id = ctx
                     .store
                     .lock()
@@ -266,6 +271,7 @@ impl Orchestrator {
                 return Ok(Outcome::Paused(PausedTurn {
                     tool_calls: output.tool_calls,
                     text,
+                    parts,
                     stop_reason: output.stop_reason,
                     continuation_id,
                 }));

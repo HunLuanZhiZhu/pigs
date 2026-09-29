@@ -271,7 +271,14 @@ fn orchestrate_streaming(
                         content.stop_reason.map(String::from),
                         content.usage.cloned(),
                     );
-                    let mut frames = encoder.push_tool_calls(content.tool_calls);
+                    // 文本已经在增量阶段流给客户端了，这里只补原生内容（思考块、工具调用……）
+                    let tail: Vec<pigs_protocol::Part> = content
+                        .parts
+                        .iter()
+                        .filter(|part| !matches!(part, pigs_protocol::Part::Text(_)))
+                        .cloned()
+                        .collect();
+                    let mut frames = encoder.push_parts(&tail);
                     frames.push_str(&encoder.finish());
                     frames
                 }
@@ -307,15 +314,13 @@ fn final_content<'a>(
     match outcome {
         orch::Outcome::Completed(turn) => pigs_protocol::ResponseContent {
             model: client_model,
-            text: &turn.text,
-            tool_calls: &[],
+            parts: &turn.parts,
             stop_reason: turn.stop_reason.as_deref(),
             usage: turn.usage.as_ref(),
         },
         orch::Outcome::Paused(paused) => pigs_protocol::ResponseContent {
             model: client_model,
-            text: &paused.text,
-            tool_calls: &paused.tool_calls,
+            parts: &paused.parts,
             // 上游这一轮怎么停的就怎么说（工具暂停通常是 tool_calls / tool_use）
             stop_reason: paused.stop_reason.as_deref(),
             usage: None,

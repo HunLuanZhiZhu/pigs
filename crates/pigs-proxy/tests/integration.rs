@@ -650,3 +650,50 @@ async fn orphan_tool_result_gets_conflict() {
         .unwrap();
     assert_eq!(resp.status(), 409);
 }
+
+/// 上游回到客户端的**内容**必须原样：Anthropic 的思考块、工具块、文本块按顺序都在。
+#[tokio::test]
+async fn anthropic_thinking_and_blocks_reach_the_client() {
+    let (_up, upstream_url, fu) = spawn_fake_upstream().await;
+    fu.responses.lock().unwrap().push((
+        "application/json",
+        Bytes::from(
+            json!({
+                "content": [
+                    {"type": "thinking", "thinking": "先想想怎么答", "signature": "sig-1"},
+                    {"type": "text", "text": "答案是 4
+PIGEND"}
+                ],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 9, "output_tokens": 4}
+            })
+            .to_string(),
+        ),
+    ));
+    let (_pigs, pigs_url) = spawn_pigs(&upstream_url).await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("{pigs_url}/v1/messages"))
+        .json(&json!({
+            "model": "claude-x-pig",
+            "max_tokens": 1024,
+            "thinking": {"type": "enabled", "budget_tokens": 512},
+            "messages": [{"role": "user", "content": "1+1 等于几"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    // 思考块原样保留（含签名），且排在文本前面
+    assert_eq!(body["content"][0]["type"], "thinking");
+    assert_eq!(body["content"][0]["thinking"], "先想想怎么答");
+    assert_eq!(body["content"][0]["signature"], "sig-1");
+    assert_eq!(body["content"][1]["type"], "text");
+    assert_eq!(body["content"][1]["text"], "答案是 4", "控制标记不许漏");
+    assert_eq!(body["model"], "claude-x-pig");
+    assert_eq!(body["usage"]["input_tokens"], 9);
+    // 上游收到的请求：thinking 配置与 tools 一字不动
+    let reqs = fu.requests.lock().unwrap();
+    assert_eq!(reqs[0].1["thinking"]["budget_tokens"], 512);
+}

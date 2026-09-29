@@ -4,6 +4,7 @@
 //! 直到模型这一轮不再要工具，相位才算产出。跨越这段等待的现场就存在 [`Continuation`] 里。
 
 use crate::lang::Lang;
+use pigs_protocol::Part;
 use crate::Pig;
 use serde_json::{json, Map, Value};
 use std::time::{Duration, Instant};
@@ -23,6 +24,8 @@ pub struct TurnState {
     pub failure_paths: Vec<String>,
     /// 各段可见文本（最终答复 = 按顺序空行拼接）。
     pub visible: Vec<String>,
+    /// 给客户端的内容序列（顺序权威）：文本已去控制标记，其余原生块一律原样。
+    pub parts: Vec<Part>,
     /// 本相位各轮的原始文本（含控制标记，用于路由）。
     pub phase_raw: Vec<String>,
     /// Pre 重规划计数。
@@ -48,6 +51,7 @@ impl TurnState {
             transcript: Vec::new(),
             failure_paths: Vec::new(),
             visible: Vec::new(),
+            parts: Vec::new(),
             phase_raw: Vec::new(),
             pre_replans: 0,
             post_iterations: 0,
@@ -64,6 +68,28 @@ impl TurnState {
         let visible = crate::markers::strip_markers(raw_text);
         if !visible.is_empty() {
             self.visible.push(visible);
+        }
+        // 内容序列：文本去标记后进（控制标记绝不许漏给客户端），其余原生块原样
+        let has_text = self
+            .parts
+            .iter()
+            .any(|part| matches!(part, Part::Text(text) if !text.is_empty()));
+        for part in &output.parts {
+            match part {
+                Part::Text(text) => {
+                    let cleaned = crate::markers::strip_markers(text);
+                    if !cleaned.is_empty() {
+                        // 相位之间用一个空行分隔（与最终答复的拼接一致）
+                        let piece = if has_text {
+                            format!("\n\n{cleaned}")
+                        } else {
+                            cleaned
+                        };
+                        self.parts.push(Part::Text(piece));
+                    }
+                }
+                other => self.parts.push(other.clone()),
+            }
         }
         if let Some(usage) = &output.usage {
             self.usage = Some(match self.usage.take() {
@@ -94,6 +120,7 @@ impl TurnState {
     pub fn complete(self, ended_with: crate::EndedWith) -> crate::TurnResult {
         crate::TurnResult {
             text: self.final_text(),
+            parts: self.parts,
             visible: self.visible,
             ended_with,
             session: self.session,

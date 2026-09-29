@@ -4,7 +4,7 @@
 //! - [`SseTextStream`]：**读**上游 SSE，按字节边界增量提取文本；
 //! - [`StreamEncoder`]：**写**客户端 SSE，边编排边逐段发帧。
 
-use crate::output::ToolCall;
+use crate::output::{Part, ToolCall};
 use crate::route::Protocol;
 use serde_json::{json, Value};
 use uuid::Uuid;
@@ -370,92 +370,223 @@ impl StreamEncoder {
         }
     }
 
-    /// 把工具调用原样发给客户端（协议原生帧）。
+    /// 把内容序列发给客户端：`Text` 走文本块，工具调用与其它原生块**原样**发出去。
     ///
-    /// 工具调用的 `native` 是上游给的原生 JSON，这里只按客户端协议该有的位置摆好，
-    /// 不改参数、不改名字、不改 id。
-    pub fn push_tool_calls(&mut self, calls: &[ToolCall]) -> String {
-        if calls.is_empty() {
+    /// 流式路径下 `Text` 已经在增量阶段发过了，调用方要先把 `Text` 摘掉再传进来。
+    pub fn push_parts(&mut self, parts: &[Part]) -> String {
+        if parts.is_empty() {
             return String::new();
         }
-        // 该相位的文本段到此为止；这一轮是"因工具而停"，上游没给原因时按协议默认记下
+        // 发原生内容前先把正在进行的文本段收尾（Anthropic/Responses 的块要闭合）
         let mut frames = self.end_pig();
-        if self.stop_reason.is_none() {
-            self.stop_reason = Some(match self.protocol {
-                Protocol::OpenAI => "tool_calls".into(),
-                Protocol::Anthropic => "tool_use".into(),
-                // Responses 用 items 表达工具调用，停止原因是空
-                Protocol::Responses => String::new(),
+        for part in parts {
+            frames.push_str(&match part {
+                Part::Text(text) => self.push_text(text),
+                Part::ToolCall(call) => self.push_tool_call(call),
+                Part::Reasoning(text) => self.push_reasoning(text),
+                Part::Native(block) => self.push_native(block),
             });
         }
+        frames
+    }
+
+    /// 一段思考文本（协议原生字段名）。
+    fn push_reasoning(&mut self, text: &str) -> String {
+        if text.is_empty() {
+            return String::new();
+        }
         match self.protocol {
-            // Chat：一帧 delta.tool_calls（每个调用补一个 index）
-            Protocol::OpenAI => {
-                let calls: Vec<Value> = calls
-                    .iter()
-                    .enumerate()
-                    .map(|(index, call)| {
-                        let mut native = call.native.clone();
-                        if let Some(obj) = native.as_object_mut() {
-                            obj.insert("index".into(), json!(index));
-                        }
-                        native
+            // Chat：delta.reasoning_content（各家通用叫法）
+            Protocol::OpenAI => data_frame(json!({
+                "id": self.id,
+                "object": "chat.completion.chunk",
+                "created": self.created,
+                "model": self.model,
+                "choices": [{
+                    "index": 0,
+                    "delta": {"reasoning_content": text},
+                    "finish_reason": Value::Null
+                }]
+            })),
+            Protocol::Anthropic => format!(
+                "{}{}{}{}",
+                event_frame(
+                    "content_block_start",
+                    json!({
+                        "type": "content_block_start",
+                        "index": self.next_index,
+                        "content_block": {"type": "thinking", "thinking": ""}
                     })
-                    .collect();
-                frames.push_str(&data_frame(json!({
-                    "id": self.id,
-                    "object": "chat.completion.chunk",
-                    "created": self.created,
-                    "model": self.model,
-                    "choices": [{"index": 0, "delta": {"tool_calls": calls}, "finish_reason": Value::Null}]
-                })));
-            }
-            // Anthropic：每个调用一个 tool_use 块（start → input_json_delta → stop）
+                ),
+                event_frame(
+                    "content_block_delta",
+                    json!({
+                        "type": "content_block_delta",
+                        "index": self.next_index,
+                        "delta": {"type": "thinking_delta", "thinking": text}
+                    })
+                ),
+                event_frame(
+                    "content_block_delta",
+                    json!({
+                        "type": "content_block_delta",
+                        "index": self.next_index,
+                        "delta": {"type": "signature_delta", "signature": ""}
+                    })
+                ),
+                event_frame(
+                    "content_block_stop",
+                    json!({"type": "content_block_stop", "index": self.next_index})
+                )
+            ),
+            Protocol::Responses => self.response_event(
+                "response.reasoning_summary_text.delta",
+                json!({"delta": text, "output_index": self.next_index, "summary_index": 0}),
+            ),
+        }
+    }
+
+    /// 一个原生内容块 / output item：原样发出去，不解释、不改写。
+    fn push_native(&mut self, block: &Value) -> String {
+        let kind = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        match self.protocol {
             Protocol::Anthropic => {
-                for call in calls {
-                    let index = self.next_index;
-                    self.next_index += 1;
-                    let mut block = call.native.clone();
-                    // 原生块里的 input 已经算好；start 帧按协议要求先给空对象
-                    if let Some(obj) = block.as_object_mut() {
-                        obj.insert("input".into(), json!({}));
-                    }
+                let index = self.next_index;
+                self.next_index += 1;
+                let mut frames = String::new();
+                if kind == "thinking" {
+                    // 思考块按协议的三段式发：start（空 thinking）→ thinking_delta → signature_delta → stop
                     frames.push_str(&event_frame(
                         "content_block_start",
-                        json!({"type": "content_block_start", "index": index, "content_block": block}),
+                        json!({
+                            "type": "content_block_start",
+                            "index": index,
+                            "content_block": {"type": "thinking", "thinking": ""}
+                        }),
                     ));
                     frames.push_str(&event_frame(
                         "content_block_delta",
                         json!({
                             "type": "content_block_delta",
                             "index": index,
-                            "delta": {"type": "input_json_delta", "partial_json": call.arguments_json()}
+                            "delta": {
+                                "type": "thinking_delta",
+                                "thinking": block.get("thinking").cloned().unwrap_or(json!(""))
+                            }
                         }),
                     ));
                     frames.push_str(&event_frame(
+                        "content_block_delta",
+                        json!({
+                            "type": "content_block_delta",
+                            "index": index,
+                            "delta": {
+                                "type": "signature_delta",
+                                "signature": block.get("signature").cloned().unwrap_or(json!(""))
+                            }
+                        }),
+                    ));
+                } else {
+                    frames.push_str(&event_frame(
+                        "content_block_start",
+                        json!({
+                            "type": "content_block_start",
+                            "index": index,
+                            "content_block": block
+                        }),
+                    ));
+                }
+                frames.push_str(&event_frame(
+                    "content_block_stop",
+                    json!({"type": "content_block_stop", "index": index}),
+                ));
+                frames
+            }
+            Protocol::Responses => {
+                let output_index = self.next_index;
+                self.next_index += 1;
+                let mut frames = self.response_event(
+                    "response.output_item.added",
+                    json!({"output_index": output_index, "item": block}),
+                );
+                frames.push_str(&self.response_event(
+                    "response.output_item.done",
+                    json!({"output_index": output_index, "item": block}),
+                ));
+                self.output.push(block.clone());
+                frames
+            }
+            // Chat 没有内容块的概念：原生块无处安放，只能不发（并在文档里登记）
+            Protocol::OpenAI => String::new(),
+        }
+    }
+
+    /// 单个工具调用的原生帧。
+    fn push_tool_call(&mut self, call: &ToolCall) -> String {
+        if self.stop_reason.is_none() {
+            self.stop_reason = Some(match self.protocol {
+                Protocol::OpenAI => "tool_calls".into(),
+                Protocol::Anthropic => "tool_use".into(),
+                Protocol::Responses => String::new(),
+            });
+        }
+        match self.protocol {
+            Protocol::OpenAI => {
+                let mut native = call.native.clone();
+                if let Some(obj) = native.as_object_mut() {
+                    obj.insert("index".into(), json!(self.next_index));
+                }
+                self.next_index += 1;
+                data_frame(json!({
+                    "id": self.id,
+                    "object": "chat.completion.chunk",
+                    "created": self.created,
+                    "model": self.model,
+                    "choices": [{"index": 0, "delta": {"tool_calls": [native]}, "finish_reason": Value::Null}]
+                }))
+            }
+            Protocol::Anthropic => {
+                let index = self.next_index;
+                self.next_index += 1;
+                let mut block = call.native.clone();
+                if let Some(obj) = block.as_object_mut() {
+                    obj.insert("input".into(), json!({}));
+                }
+                format!(
+                    "{}{}{}",
+                    event_frame(
+                        "content_block_start",
+                        json!({"type": "content_block_start", "index": index, "content_block": block}),
+                    ),
+                    event_frame(
+                        "content_block_delta",
+                        json!({
+                            "type": "content_block_delta",
+                            "index": index,
+                            "delta": {"type": "input_json_delta", "partial_json": call.arguments_json()}
+                        }),
+                    ),
+                    event_frame(
                         "content_block_stop",
                         json!({"type": "content_block_stop", "index": index}),
-                    ));
-                }
+                    )
+                )
             }
-            // Responses：每个调用一个 function_call item（added → done）
             Protocol::Responses => {
-                for call in calls {
-                    let output_index = self.next_index;
-                    self.next_index += 1;
-                    frames.push_str(&self.response_event(
-                        "response.output_item.added",
-                        json!({"output_index": output_index, "item": call.native}),
-                    ));
-                    frames.push_str(&self.response_event(
-                        "response.output_item.done",
-                        json!({"output_index": output_index, "item": call.native}),
-                    ));
-                    self.output.push(call.native.clone());
-                }
+                let output_index = self.next_index;
+                self.next_index += 1;
+                let mut frames = self.response_event(
+                    "response.output_item.added",
+                    json!({"output_index": output_index, "item": call.native}),
+                );
+                frames.push_str(&self.response_event(
+                    "response.output_item.done",
+                    json!({"output_index": output_index, "item": call.native}),
+                ));
+                self.output.push(call.native.clone());
+                frames
             }
         }
-        frames
     }
 
     /// 发协议终止帧（成功的完整序列）。
@@ -629,26 +760,24 @@ impl StreamEncoder {
     }
 }
 
-/// 回给客户端的一轮内容：文本 + 工具调用 + 原样透传的停止原因与 usage。
+/// 回给客户端的一轮内容：**按顺序**的内容序列 + 原样透传的停止原因与 usage。
 ///
-/// `model` 是**客户端请求的那个名字**（带 `-pig`），原样回显；
-/// `stop_reason` / `usage` 是上游给的值（缺失才用协议默认）。
+/// `model` 是客户端请求的那个名字（带 `-pig`），原样回显；
+/// `parts` 里 `Text` 走文本块，`Reasoning`/`Native`/`ToolCall` 按协议原生形状发出，一律不改写。
 #[derive(Debug, Clone)]
 pub struct ResponseContent<'a> {
     pub model: &'a str,
-    pub text: &'a str,
-    pub tool_calls: &'a [ToolCall],
+    pub parts: &'a [Part],
     pub stop_reason: Option<&'a str>,
     pub usage: Option<&'a Value>,
 }
 
 impl<'a> ResponseContent<'a> {
-    /// 只有文本的简单构造（测试与纯文本路径用）。
+    /// 只有一段文本的简单构造（测试与纯文本路径用）。
     pub fn text_only(model: &'a str, text: &'a str) -> Self {
         Self {
             model,
-            text,
-            tool_calls: &[],
+            parts: std::slice::from_ref(Box::leak(Box::new(Part::Text(text.to_string())))),
             stop_reason: None,
             usage: None,
         }
@@ -657,28 +786,65 @@ impl<'a> ResponseContent<'a> {
     fn usage_value(&self) -> Value {
         self.usage.cloned().unwrap_or_else(|| json!({}))
     }
+
+    fn texts(&self) -> String {
+        self.parts
+            .iter()
+            .filter_map(|part| match part {
+                Part::Text(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    }
+
+    fn reasonings(&self) -> String {
+        self.parts
+            .iter()
+            .filter_map(|part| match part {
+                Part::Reasoning(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    }
+
+    fn tool_calls(&self) -> Vec<&ToolCall> {
+        self.parts
+            .iter()
+            .filter_map(|part| match part {
+                Part::ToolCall(call) => Some(call),
+                _ => None,
+            })
+            .collect()
+    }
 }
 
 /// 把一轮内容合成为协议正确的**非流式 JSON 响应**（客户端未要求流式时使用）。
 pub fn synthesize_json(protocol: Protocol, content: &ResponseContent) -> Value {
     let usage = content.usage_value();
+    let text = content.texts();
+    let reasoning = content.reasonings();
+    let tool_calls = content.tool_calls();
     match protocol {
         Protocol::OpenAI => {
-            let stop = content.stop_reason.unwrap_or(if content.tool_calls.is_empty() {
+            let stop = content.stop_reason.unwrap_or(if tool_calls.is_empty() {
                 "stop"
             } else {
                 "tool_calls"
             });
             let mut message = json!({"role": "assistant"});
-            // 纯工具调用时 content 为 null（与上游形状一致）
-            message["content"] = if content.text.is_empty() && !content.tool_calls.is_empty() {
+            message["content"] = if text.is_empty() && !tool_calls.is_empty() {
                 Value::Null
             } else {
-                json!(content.text)
+                json!(text)
             };
-            if !content.tool_calls.is_empty() {
-                let calls: Vec<Value> = content
-                    .tool_calls
+            if !reasoning.is_empty() {
+                // 协议原生思考字段：有就带上（名字与上游一致）
+                message["reasoning_content"] = json!(reasoning);
+            }
+            if !tool_calls.is_empty() {
+                let calls: Vec<Value> = tool_calls
                     .iter()
                     .enumerate()
                     .map(|(index, call)| {
@@ -702,13 +868,21 @@ pub fn synthesize_json(protocol: Protocol, content: &ResponseContent) -> Value {
         }
         Protocol::Anthropic => {
             let mut blocks = Vec::new();
-            if !content.text.is_empty() {
-                blocks.push(json!({"type": "text", "text": content.text}));
+            for part in content.parts {
+                match part {
+                    Part::Text(text) => {
+                        if !text.is_empty() {
+                            blocks.push(json!({"type": "text", "text": text}));
+                        }
+                    }
+                    Part::Reasoning(text) => {
+                        blocks.push(json!({"type": "thinking", "thinking": text}));
+                    }
+                    Part::ToolCall(call) => blocks.push(call.native.clone()),
+                    Part::Native(block) => blocks.push(block.clone()),
+                }
             }
-            for call in content.tool_calls {
-                blocks.push(call.native.clone());
-            }
-            let stop = content.stop_reason.unwrap_or(if content.tool_calls.is_empty() {
+            let stop = content.stop_reason.unwrap_or(if tool_calls.is_empty() {
                 "end_turn"
             } else {
                 "tool_use"
@@ -726,16 +900,25 @@ pub fn synthesize_json(protocol: Protocol, content: &ResponseContent) -> Value {
         }
         Protocol::Responses => {
             let mut output = Vec::new();
-            if !content.text.is_empty() {
-                output.push(json!({
-                    "type": "message",
-                    "role": "assistant",
-                    "status": "completed",
-                    "content": [{"type": "output_text", "text": content.text, "annotations": []}]
-                }));
-            }
-            for call in content.tool_calls {
-                output.push(call.native.clone());
+            for part in content.parts {
+                match part {
+                    Part::Text(text) => {
+                        if !text.is_empty() {
+                            output.push(json!({
+                                "type": "message",
+                                "role": "assistant",
+                                "status": "completed",
+                                "content": [{"type": "output_text", "text": text, "annotations": []}]
+                            }));
+                        }
+                    }
+                    Part::Reasoning(text) => output.push(json!({
+                        "type": "reasoning",
+                        "summary": [{"type": "summary_text", "text": text}]
+                    })),
+                    Part::ToolCall(call) => output.push(call.native.clone()),
+                    Part::Native(item) => output.push(item.clone()),
+                }
             }
             let (status, incomplete) = match content.stop_reason {
                 Some(reason) => ("incomplete", json!({"reason": reason})),
@@ -764,8 +947,7 @@ pub fn synthesize_sse(protocol: Protocol, content: &ResponseContent) -> String {
         content.usage.cloned(),
     );
     let mut frames = encoder.start();
-    frames.push_str(&encoder.push_text(content.text));
-    frames.push_str(&encoder.push_tool_calls(content.tool_calls));
+    frames.push_str(&encoder.push_parts(content.parts));
     frames.push_str(&encoder.finish());
     frames
 }
@@ -869,14 +1051,72 @@ mod tests {
         assert_eq!(responses["status"], "completed");
     }
 
+    /// 思考内容必须原样交给客户端：Anthropic 的 thinking 块、Responses 的 reasoning 条目、
+    /// Chat 的 reasoning_content 字段，一个都不许丢。
+    #[test]
+    fn thinking_reaches_the_client() {
+        // Anthropic：thinking 块按顺序排在文本前面，签名一起带走
+        let parts = vec![
+            Part::Native(json!({"type": "thinking", "thinking": "先想", "signature": "sig"})),
+            Part::Text("答案".into()),
+        ];
+        let content = ResponseContent {
+            model: "claude-x-pig",
+            parts: &parts,
+            stop_reason: Some("end_turn"),
+            usage: None,
+        };
+        let body = synthesize_json(Protocol::Anthropic, &content);
+        assert_eq!(body["content"][0]["type"], "thinking");
+        assert_eq!(body["content"][0]["thinking"], "先想");
+        assert_eq!(body["content"][0]["signature"], "sig");
+        assert_eq!(body["content"][1]["text"], "答案");
+
+        let sse = synthesize_sse(Protocol::Anthropic, &content);
+        assert!(sse.contains("thinking_delta"), "流式也要发思考增量");
+        assert!(sse.contains("signature_delta"));
+        let back = crate::output::parse_sse_output(Protocol::Anthropic, &sse);
+        assert!(matches!(&back.parts[0], Part::Native(v) if v["thinking"] == "先想"));
+
+        // Chat：思考走 reasoning_content
+        let parts = vec![
+            Part::Reasoning("想过了".into()),
+            Part::Text("答案".into()),
+        ];
+        let content = ResponseContent {
+            model: "gpt-x-pig",
+            parts: &parts,
+            stop_reason: Some("stop"),
+            usage: None,
+        };
+        let body = synthesize_json(Protocol::OpenAI, &content);
+        assert_eq!(body["choices"][0]["message"]["reasoning_content"], "想过了");
+        assert_eq!(body["choices"][0]["message"]["content"], "答案");
+        let sse = synthesize_sse(Protocol::OpenAI, &content);
+        assert!(sse.contains("reasoning_content"));
+
+        // Responses：reasoning 条目原样透传（含加密内容）
+        let reasoning = json!({"type": "reasoning", "id": "rs_1", "encrypted_content": "blob"});
+        let parts = vec![Part::Native(reasoning.clone()), Part::Text("答案".into())];
+        let content = ResponseContent {
+            model: "r-x-pig",
+            parts: &parts,
+            stop_reason: None,
+            usage: None,
+        };
+        let body = synthesize_json(Protocol::Responses, &content);
+        assert_eq!(body["output"][0], reasoning);
+        let sse = synthesize_sse(Protocol::Responses, &content);
+        assert!(sse.contains("blob"));
+    }
+
     /// 上游给的 stop_reason 与 usage 必须原样透传（不许改写、不许清零）。
     #[test]
     fn synthesize_passes_through_stop_reason_and_usage() {
         let usage = json!({"input_tokens": 11, "output_tokens": 22});
         let content = ResponseContent {
             model: "m-pig",
-            text: "被截断的一半",
-            tool_calls: &[],
+            parts: &[Part::Text("被截断的一半".into())],
             stop_reason: Some("max_tokens"),
             usage: Some(&usage),
         };
@@ -906,8 +1146,7 @@ mod tests {
         }];
         let content = ResponseContent {
             model: "m",
-            text: "",
-            tool_calls: &calls,
+            parts: &[Part::ToolCall(calls[0].clone())],
             stop_reason: Some("tool_calls"),
             usage: None,
         };
@@ -961,7 +1200,7 @@ mod tests {
             encoder.set_finish(Some("tool_calls".into()), None);
             let mut frames = encoder.start();
             frames.push_str(&encoder.push_text("我先看一下"));
-            frames.push_str(&encoder.push_tool_calls(&calls));
+            frames.push_str(&encoder.push_parts(&calls.iter().cloned().map(Part::ToolCall).collect::<Vec<_>>()));
             frames.push_str(&encoder.finish());
 
             let parsed = crate::output::parse_sse_output(protocol, &frames);

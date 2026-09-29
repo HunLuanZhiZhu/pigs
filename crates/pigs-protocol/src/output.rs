@@ -28,6 +28,22 @@ impl ToolCall {
     }
 }
 
+/// 上游返回的一段内容（**按顺序**留给客户端，互不覆盖）。
+///
+/// 编排只关心 `Text` 与 `ToolCall`；其余一律原样透传，不做解释、不做删改
+/// （思考块、推理条目、搜索调用……都属于这一类）。
+#[derive(Debug, Clone, PartialEq)]
+pub enum Part {
+    /// 用户可见文本。
+    Text(String),
+    /// 思考文本（协议原生思考字段，如 `reasoning_content`）。
+    Reasoning(String),
+    /// 工具调用（原生形状）。
+    ToolCall(ToolCall),
+    /// 其它原生内容块 / output item：原样透传。
+    Native(Value),
+}
+
 /// 一轮模型输出（编排所需的最小归一化）。
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ModelOutput {
@@ -35,6 +51,8 @@ pub struct ModelOutput {
     pub text: String,
     /// 本轮要求调用的工具（空 = 这一轮没有工具调用）。
     pub tool_calls: Vec<ToolCall>,
+    /// 给客户端的内容序列（顺序权威；`Text`/`ToolCall` 之外一律原样）。
+    pub parts: Vec<Part>,
     /// 协议原生的停止原因（Chat 的 `finish_reason` / Anthropic 的 `stop_reason`）。
     pub stop_reason: Option<String>,
     /// 协议原生的 usage 对象（原样，不做任何改写）。
@@ -84,14 +102,23 @@ fn parse_chat_json(body: &Value) -> ModelOutput {
         .and_then(|m| m.get("content"))
         .map(join_text_content)
         .unwrap_or_default();
-    let tool_calls = message
+    let tool_calls: Vec<ToolCall> = message
         .and_then(|m| m.get("tool_calls"))
         .and_then(|t| t.as_array())
         .map(|calls| calls.iter().map(chat_tool_call).collect())
         .unwrap_or_default();
+    let mut parts = Vec::new();
+    if let Some(reasoning) = message.and_then(chat_reasoning_text) {
+        parts.push(Part::Reasoning(reasoning));
+    }
+    if !text.is_empty() {
+        parts.push(Part::Text(text.clone()));
+    }
+    parts.extend(tool_calls.iter().cloned().map(Part::ToolCall));
     ModelOutput {
         text,
         tool_calls,
+        parts,
         stop_reason: choice
             .and_then(|c| c.get("finish_reason"))
             .and_then(|r| r.as_str())
@@ -103,16 +130,19 @@ fn parse_chat_json(body: &Value) -> ModelOutput {
 fn parse_anthropic_json(body: &Value) -> ModelOutput {
     let mut text = String::new();
     let mut tool_calls = Vec::new();
+    let mut parts = Vec::new();
     if let Some(blocks) = body.get("content").and_then(|c| c.as_array()) {
         for block in blocks {
             match block.get("type").and_then(|t| t.as_str()) {
                 Some("text") => {
-                    if let Some(t) = block.get("text").and_then(|t| t.as_str()) {
-                        text.push_str(t);
+                    let piece = block.get("text").and_then(|t| t.as_str()).unwrap_or("");
+                    if !piece.is_empty() {
+                        text.push_str(piece);
+                        parts.push(Part::Text(piece.to_string()));
                     }
                 }
-                // 工具调用与 thinking 都是原生块，原样保留（thinking 不进文本）
-                Some("tool_use") => tool_calls.push(ToolCall {
+                Some("tool_use") => {
+                    let call = ToolCall {
                     id: block
                         .get("id")
                         .and_then(|v| v.as_str())
@@ -123,16 +153,21 @@ fn parse_anthropic_json(body: &Value) -> ModelOutput {
                         .and_then(|v| v.as_str())
                         .unwrap_or_default()
                         .to_string(),
-                    arguments: block.get("input").cloned().unwrap_or_else(|| json!({})),
-                    native: block.clone(),
-                }),
-                _ => {}
+                        arguments: block.get("input").cloned().unwrap_or_else(|| json!({})),
+                        native: block.clone(),
+                    };
+                    tool_calls.push(call.clone());
+                    parts.push(Part::ToolCall(call));
+                }
+                // thinking / redacted_thinking / server_tool_use……：原样透传，不解释
+                _ => parts.push(Part::Native(block.clone())),
             }
         }
     }
     ModelOutput {
         text,
         tool_calls,
+        parts,
         stop_reason: body
             .get("stop_reason")
             .and_then(|r| r.as_str())
@@ -144,26 +179,31 @@ fn parse_anthropic_json(body: &Value) -> ModelOutput {
 fn parse_responses_json(body: &Value) -> ModelOutput {
     let mut text = String::new();
     let mut tool_calls = Vec::new();
+    let mut parts = Vec::new();
     if let Some(items) = body.get("output").and_then(|o| o.as_array()) {
         for item in items {
             match item.get("type").and_then(|t| t.as_str()) {
                 Some("message") => {
-                    if let Some(content) = item.get("content").and_then(|c| c.as_array()) {
-                        for part in content {
-                            if let Some(t) = part.get("text").and_then(|t| t.as_str()) {
-                                text.push_str(t);
-                            }
-                        }
+                    let piece = responses_item_text(item);
+                    if !piece.is_empty() {
+                        text.push_str(&piece);
+                        parts.push(Part::Text(piece));
                     }
                 }
-                Some("function_call") => tool_calls.push(responses_tool_call(item)),
-                _ => {}
+                Some("function_call") => {
+                    let call = responses_tool_call(item);
+                    tool_calls.push(call.clone());
+                    parts.push(Part::ToolCall(call));
+                }
+                // reasoning / web_search_call / code_interpreter_call……：原样透传
+                _ => parts.push(Part::Native(item.clone())),
             }
         }
     }
     ModelOutput {
         text,
         tool_calls,
+        parts,
         // Responses 没有 finish_reason；截断原因在 incomplete_details
         stop_reason: body
             .pointer("/incomplete_details/reason")
@@ -184,6 +224,33 @@ fn join_text_content(content: &Value) -> String {
             .join(""),
         _ => String::new(),
     }
+}
+
+/// Chat 的思考文本字段（各家的叫法：`reasoning_content` / `reasoning`）。
+fn chat_reasoning_text(message: &Value) -> Option<String> {
+    ["reasoning_content", "reasoning"]
+        .iter()
+        .find_map(|key| {
+            message
+                .get(*key)
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(String::from)
+        })
+}
+
+/// Responses 的 message item 文本：拼所有 `output_text` 片段的 `text`。
+fn responses_item_text(item: &Value) -> String {
+    item.get("content")
+        .and_then(|c| c.as_array())
+        .map(|parts| {
+            parts
+                .iter()
+                .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+                .collect::<Vec<_>>()
+                .join("")
+        })
+        .unwrap_or_default()
 }
 
 fn chat_tool_call(call: &Value) -> ToolCall {
@@ -235,6 +302,8 @@ struct SseOutputAccumulator {
     output: ModelOutput,
     /// Chat：按 `index` 拼工具调用参数。
     chat_calls: Vec<ToolCall>,
+    /// Chat：累积的思考文本。
+    chat_reasoning: String,
     /// Anthropic：按 content_block 的 index 记账（文本或工具调用）。
     anthropic_blocks: Vec<AnthropicBlock>,
     /// Responses：按 item_id 拼 function_call 参数。
@@ -242,8 +311,14 @@ struct SseOutputAccumulator {
 }
 
 enum AnthropicBlock {
-    Text,
+    /// 文本块（累积 text_delta）。
+    Text { buf: String },
+    /// 思考块（累积 thinking_delta 与 signature_delta）。
+    Thinking { buf: String, signature: String },
+    /// 工具调用块。
     ToolUse,
+    /// 其它块（redacted_thinking / server_tool_use……）：start 帧原样留着。
+    Other { native: Value },
 }
 
 impl SseOutputAccumulator {
@@ -252,6 +327,7 @@ impl SseOutputAccumulator {
             protocol,
             output: ModelOutput::default(),
             chat_calls: Vec::new(),
+            chat_reasoning: String::new(),
             anthropic_blocks: Vec::new(),
             responses_calls: Vec::new(),
         }
@@ -280,6 +356,9 @@ impl SseOutputAccumulator {
         };
         if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {
             self.output.text.push_str(content);
+        }
+        if let Some(reasoning) = chat_reasoning_text(delta) {
+            self.chat_reasoning.push_str(&reasoning);
         }
         if let Some(calls) = delta.get("tool_calls").and_then(|t| t.as_array()) {
             for call in calls {
@@ -325,7 +404,14 @@ impl SseOutputAccumulator {
                 let block = event.get("content_block").cloned().unwrap_or(Value::Null);
                 let kind = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
                 while self.anthropic_blocks.len() <= index {
-                    self.anthropic_blocks.push(AnthropicBlock::Text);
+                    self.anthropic_blocks.push(AnthropicBlock::Text { buf: String::new() });
+                }
+                if kind == "thinking" {
+                    self.anthropic_blocks[index] = AnthropicBlock::Thinking {
+                        buf: String::new(),
+                        signature: String::new(),
+                    };
+                    return;
                 }
                 if kind == "tool_use" {
                     self.anthropic_blocks[index] = AnthropicBlock::ToolUse;
@@ -350,8 +436,11 @@ impl SseOutputAccumulator {
                         arguments,
                         native: block,
                     });
+                } else if kind == "text" {
+                    self.anthropic_blocks[index] = AnthropicBlock::Text { buf: String::new() };
                 } else {
-                    self.anthropic_blocks[index] = AnthropicBlock::Text;
+                    // 未知块（redacted_thinking / server_tool_use……）原样留着
+                    self.anthropic_blocks[index] = AnthropicBlock::Other { native: block };
                 }
             }
             Some("content_block_delta") => {
@@ -361,6 +450,25 @@ impl SseOutputAccumulator {
                     Some("text_delta") => {
                         if let Some(t) = delta.get("text").and_then(|t| t.as_str()) {
                             self.output.text.push_str(t);
+                            self.anthropic_block_mut_text(index, t);
+                        }
+                    }
+                    Some("thinking_delta") => {
+                        if let Some(t) = delta.get("thinking").and_then(|t| t.as_str()) {
+                            self.anthropic_block_mut_thinking(index, |block| {
+                                if let AnthropicBlock::Thinking { buf, .. } = block {
+                                    buf.push_str(t);
+                                }
+                            });
+                        }
+                    }
+                    Some("signature_delta") => {
+                        if let Some(t) = delta.get("signature").and_then(|t| t.as_str()) {
+                            self.anthropic_block_mut_thinking(index, |block| {
+                                if let AnthropicBlock::Thinking { signature, .. } = block {
+                                    signature.push_str(t);
+                                }
+                            });
                         }
                     }
                     Some("input_json_delta") => {
@@ -385,6 +493,24 @@ impl SseOutputAccumulator {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// 把文本追加到 index 的文本块。
+    fn anthropic_block_mut_text(&mut self, index: usize, text: &str) {
+        if let Some(AnthropicBlock::Text { buf }) = self.anthropic_blocks.get_mut(index) {
+            buf.push_str(text);
+        }
+    }
+
+    /// 对 index 的思考块做一次修改。
+    fn anthropic_block_mut_thinking<F: FnOnce(&mut AnthropicBlock)>(
+        &mut self,
+        index: usize,
+        edit: F,
+    ) {
+        if let Some(block @ AnthropicBlock::Thinking { .. }) = self.anthropic_blocks.get_mut(index) {
+            edit(block);
         }
     }
 
@@ -439,6 +565,15 @@ impl SseOutputAccumulator {
                     {
                         self.output.stop_reason = Some(reason.to_string());
                     }
+                    // 最终 output[] 是权威内容序列（含 reasoning 等原生条目）
+                    if let Some(items) = response.get("output").and_then(|o| o.as_array()) {
+                        if !items.is_empty() {
+                            let mut rebuilt = parse_responses_json(&json!({"output": items}));
+                            rebuilt.usage = self.output.usage.clone();
+                            rebuilt.stop_reason = self.output.stop_reason.clone();
+                            self.output = rebuilt;
+                        }
+                    }
                 }
             }
             _ => {}
@@ -457,8 +592,18 @@ impl SseOutputAccumulator {
 
     fn finish(mut self) -> ModelOutput {
         match self.protocol {
-            Protocol::OpenAI if !self.chat_calls.is_empty() => {
-                self.output.tool_calls = self.chat_calls.into_iter().map(finish_chat_call).collect();
+            Protocol::OpenAI => {
+                self.output.tool_calls =
+                    self.chat_calls.into_iter().map(finish_chat_call).collect();
+                let mut parts = Vec::new();
+                if !self.chat_reasoning.is_empty() {
+                    parts.push(Part::Reasoning(self.chat_reasoning.clone()));
+                }
+                if !self.output.text.is_empty() {
+                    parts.push(Part::Text(self.output.text.clone()));
+                }
+                parts.extend(self.output.tool_calls.iter().cloned().map(Part::ToolCall));
+                self.output.parts = parts;
             }
             Protocol::Responses if !self.responses_calls.is_empty() => {
                 self.output.tool_calls = self
@@ -474,7 +619,8 @@ impl SseOutputAccumulator {
                     })
                     .collect();
             }
-            Protocol::Anthropic if !self.output.tool_calls.is_empty() => {
+            Protocol::Anthropic => {
+                // 工具调用的增量参数收尾（写回原生块）
                 for call in &mut self.output.tool_calls {
                     let raw = call.arguments_json();
                     let parsed: Value = serde_json::from_str(&raw).unwrap_or_else(|_| json!({}));
@@ -483,6 +629,34 @@ impl SseOutputAccumulator {
                     }
                     call.arguments = parsed;
                 }
+                // 按 content_block 的顺序生成给客户端的内容序列
+                let mut calls = self.output.tool_calls.iter().cloned();
+                let mut parts = Vec::new();
+                for block in &self.anthropic_blocks {
+                    match block {
+                        AnthropicBlock::Text { buf } => {
+                            if !buf.is_empty() {
+                                parts.push(Part::Text(buf.clone()));
+                            }
+                        }
+                        AnthropicBlock::Thinking { buf, signature } => {
+                            parts.push(Part::Native(json!({
+                                "type": "thinking",
+                                "thinking": buf,
+                                "signature": signature
+                            })))
+                        }
+                        AnthropicBlock::ToolUse => {
+                            if let Some(call) = calls.next() {
+                                parts.push(Part::ToolCall(call));
+                            }
+                        }
+                        AnthropicBlock::Other { native } => {
+                            parts.push(Part::Native(native.clone()))
+                        }
+                    }
+                }
+                self.output.parts = parts;
             }
             _ => {}
         }
@@ -718,6 +892,114 @@ mod tests {
         assert_eq!(out.text, "答案");
         assert!(out.tool_calls.is_empty());
         assert_eq!(out.stop_reason.as_deref(), Some("stop"));
+    }
+
+    /// 思考块必须原样留给客户端（Anthropic 非流式）。
+    #[test]
+    fn anthropic_thinking_blocks_survive_json() {
+        let body = json!({
+            "content": [
+                {"type": "thinking", "thinking": "先想想", "signature": "sig-1"},
+                {"type": "text", "text": "答案"},
+                {"type": "tool_use", "id": "t1", "name": "Bash", "input": {}}
+            ],
+            "stop_reason": "tool_use"
+        });
+        let out = parse_json_output(Protocol::Anthropic, &body);
+        assert_eq!(out.text, "答案", "思考不进可见文本");
+        assert_eq!(out.parts.len(), 3);
+        match &out.parts[0] {
+            Part::Native(block) => {
+                assert_eq!(block["type"], "thinking");
+                assert_eq!(block["thinking"], "先想想");
+                assert_eq!(block["signature"], "sig-1", "签名必须原样保留");
+            }
+            other => panic!("思考块被丢了: {other:?}"),
+        }
+        assert_eq!(out.parts[1], Part::Text("答案".into()));
+        assert!(matches!(&out.parts[2], Part::ToolCall(call) if call.id == "t1"));
+    }
+
+    /// 流式思考：thinking_delta 与 signature_delta 要拼回一个原生思考块。
+    #[test]
+    fn anthropic_thinking_sse_is_reassembled() {
+        let sse = concat!(
+            "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\n",
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"想一想\"}}\n\n",
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"sig\"}}\n\n",
+            "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"结论\"}}\n\n",
+            "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n"
+        );
+        let out = parse_sse_output(Protocol::Anthropic, sse);
+        assert_eq!(out.text, "结论");
+        assert_eq!(out.parts.len(), 2);
+        match &out.parts[0] {
+            Part::Native(block) => {
+                assert_eq!(block["type"], "thinking");
+                assert_eq!(block["thinking"], "想一想");
+                assert_eq!(block["signature"], "sig");
+            }
+            other => panic!("流式思考块丢了: {other:?}"),
+        }
+        assert_eq!(out.parts[1], Part::Text("结论".into()));
+    }
+
+    /// Chat 的思考字段（reasoning_content / reasoning）不能丢。
+    #[test]
+    fn chat_reasoning_is_kept() {
+        let body = json!({"choices": [{
+            "message": {"content": "答案", "reasoning_content": "想过了"},
+            "finish_reason": "stop"
+        }]});
+        let out = parse_json_output(Protocol::OpenAI, &body);
+        assert_eq!(out.text, "答案");
+        assert_eq!(out.parts[0], Part::Reasoning("想过了".into()));
+        assert_eq!(out.parts[1], Part::Text("答案".into()));
+
+        let sse = concat!(
+            "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"先想\"},\"finish_reason\":null}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"答案\"},\"finish_reason\":null}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"
+        );
+        let out = parse_sse_output(Protocol::OpenAI, sse);
+        assert_eq!(out.text, "答案");
+        assert_eq!(out.parts[0], Part::Reasoning("先想".into()));
+        assert_eq!(out.parts[1], Part::Text("答案".into()));
+    }
+
+    /// Responses 的 reasoning 条目（含加密内容）原样透传。
+    #[test]
+    fn responses_reasoning_item_passes_through() {
+        let reasoning = json!({
+            "type": "reasoning", "id": "rs_1",
+            "summary": [{"type": "summary_text", "text": "想了"}],
+            "encrypted_content": "opaque-blob"
+        });
+        let body = json!({"output": [
+            reasoning.clone(),
+            {"type": "message", "content": [{"type": "output_text", "text": "答案"}]}
+        ]});
+        let out = parse_json_output(Protocol::Responses, &body);
+        assert_eq!(out.text, "答案");
+        assert_eq!(out.parts[0], Part::Native(reasoning));
+
+        // 流式：以 response.completed 的 output[] 为准
+        let sse = format!(
+            "data: {}\n\n",
+            json!({"type": "response.completed", "response": {
+                "status": "completed",
+                "usage": {"output_tokens": 3},
+                "output": [
+                    {"type": "reasoning", "id": "rs_1", "encrypted_content": "blob"},
+                    {"type": "message", "content": [{"type": "output_text", "text": "答案"}]}
+                ]
+            }})
+        );
+        let out = parse_sse_output(Protocol::Responses, &sse);
+        assert_eq!(out.text, "答案");
+        assert_eq!(out.usage.unwrap()["output_tokens"], 3);
+        assert!(matches!(&out.parts[0], Part::Native(v) if v["encrypted_content"] == "blob"));
     }
 
     #[test]
