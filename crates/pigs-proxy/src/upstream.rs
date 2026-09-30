@@ -80,7 +80,7 @@ impl Upstream {
     }
 
     /// 拼上游 URL：按协议选 base + 原路径（+ 原查询串）。
-    fn url(&self, path: &str, query: Option<&str>) -> String {
+    pub(crate) fn url(&self, path: &str, query: Option<&str>) -> String {
         let mut url = format!("{}{}", self.base_for(path), path_char(path));
         if let Some(q) = query.filter(|q| !q.is_empty()) {
             url.push('?');

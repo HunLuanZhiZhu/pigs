@@ -697,6 +697,39 @@ fn merge_usage(previous: Option<Value>, next: &Value) -> Value {
 ///
 /// 规则（与 legacy 一致）：从消息末尾往前扫，遇到第一个不是工具结果的条目就停。
 /// 空 = 不是恢复请求。
+pub fn all_tool_result_ids(protocol: Protocol, body: &Value) -> Vec<String> {
+    match protocol {
+        Protocol::OpenAI => all_ids(body.get("messages"), |message| {
+            (message.get("role").and_then(|r| r.as_str()) == Some("tool"))
+                .then(|| message.get("tool_call_id").and_then(|v| v.as_str()))
+                .flatten()
+                .map(|id| vec![id.to_string()])
+        }),
+        Protocol::Anthropic => all_ids(body.get("messages"), |message| {
+            if message.get("role").and_then(|r| r.as_str()) != Some("user") {
+                return None;
+            }
+            let parts = message.get("content")?.as_array()?;
+            let ids: Vec<String> = parts
+                .iter()
+                .filter_map(|part| {
+                    (part.get("type").and_then(|t| t.as_str()) == Some("tool_result"))
+                        .then(|| part.get("tool_use_id").and_then(|v| v.as_str()))
+                        .flatten()
+                        .map(String::from)
+                })
+                .collect();
+            (!ids.is_empty()).then_some(ids)
+        }),
+        Protocol::Responses => all_ids(body.get("input"), |item| {
+            (item.get("type").and_then(|t| t.as_str()) == Some("function_call_output"))
+                .then(|| item.get("call_id").and_then(|v| v.as_str()))
+                .flatten()
+                .map(|id| vec![id.to_string()])
+        }),
+    }
+}
+
 pub fn trailing_tool_result_ids(protocol: Protocol, body: &Value) -> Vec<String> {
     match protocol {
         Protocol::OpenAI => trailing_ids(body.get("messages"), |message| {
@@ -734,10 +767,78 @@ pub fn trailing_tool_result_ids(protocol: Protocol, body: &Value) -> Vec<String>
     }
 }
 
+/// 找到当前 continuation 的工具结果后，返回从该结果开始到客户端请求末尾的原生条目。
+///
+/// 这个 helper 只负责定位“本次恢复新增了哪一段客户端历史”，不会删除、过滤或改写
+/// 工具结果之后的 reminder / 普通 user 消息。
+pub fn continuation_resume_items(
+    protocol: Protocol,
+    body: &Value,
+    pending_ids: &[String],
+) -> Vec<Value> {
+    let wants = |id: &str| pending_ids.iter().any(|pending| pending == id);
+    match protocol {
+        Protocol::OpenAI => {
+            let Some(items) = body.get("messages").and_then(|value| value.as_array()) else {
+                return Vec::new();
+            };
+            let Some(start) = items.iter().position(|message| {
+                message.get("role").and_then(|r| r.as_str()) == Some("tool")
+                    && message
+                        .get("tool_call_id")
+                        .and_then(|value| value.as_str())
+                        .is_some_and(&wants)
+            }) else {
+                return Vec::new();
+            };
+            items[start..].to_vec()
+        }
+        Protocol::Anthropic => {
+            let Some(items) = body.get("messages").and_then(|value| value.as_array()) else {
+                return Vec::new();
+            };
+            let Some(start) = items.iter().position(|message| {
+                if message.get("role").and_then(|r| r.as_str()) != Some("user") {
+                    return false;
+                }
+                message
+                    .get("content")
+                    .and_then(|value| value.as_array())
+                    .is_some_and(|parts| {
+                        parts.iter().any(|part| {
+                            part.get("type").and_then(|t| t.as_str()) == Some("tool_result")
+                                && part
+                                    .get("tool_use_id")
+                                    .and_then(|value| value.as_str())
+                                    .is_some_and(&wants)
+                        })
+                    })
+            }) else {
+                return Vec::new();
+            };
+            items[start..].to_vec()
+        }
+        Protocol::Responses => {
+            let Some(items) = body.get("input").and_then(|value| value.as_array()) else {
+                return Vec::new();
+            };
+            let Some(start) = items.iter().position(|item| {
+                item.get("type").and_then(|t| t.as_str()) == Some("function_call_output")
+                    && item
+                        .get("call_id")
+                        .and_then(|value| value.as_str())
+                        .is_some_and(&wants)
+            }) else {
+                return Vec::new();
+            };
+            items[start..].to_vec()
+        }
+    }
+}
+
 /// 返回客户端这次真正新回填的尾部工具结果条目（保留协议原生 JSON）。
 ///
-/// 这些条目会被追加到服务端保存的当前 pig 对话现场中；不会把客户端整段历史
-/// 当作新的 phase 请求重新解释。
+/// 兼容旧调用；新的 continuation 恢复主链路使用 [`tool_result_items_for_ids`]。
 pub fn trailing_tool_result_items(protocol: Protocol, body: &Value) -> Vec<Value> {
     match protocol {
         Protocol::OpenAI => trailing_items(body.get("messages"), |message| {
@@ -856,6 +957,16 @@ where
     }
     found.reverse();
     found
+}
+
+fn all_ids<F>(container: Option<&Value>, ids_of: F) -> Vec<String>
+where
+    F: Fn(&Value) -> Option<Vec<String>>,
+{
+    let Some(items) = container.and_then(|c| c.as_array()) else {
+        return Vec::new();
+    };
+    items.iter().filter_map(ids_of).flatten().collect()
 }
 
 /// 从尾部连续的工具结果条目收集 id。
@@ -1145,6 +1256,14 @@ mod tests {
             {"role": "user", "content": "继续"}
         ]});
         assert!(trailing_tool_result_ids(Protocol::OpenAI, &body).is_empty());
+        assert_eq!(all_tool_result_ids(Protocol::OpenAI, &body), vec!["call_1"]);
+        assert_eq!(
+            continuation_resume_items(Protocol::OpenAI, &body, &["call_1".into()]),
+            vec![
+                json!({"role": "tool", "tool_call_id": "call_1", "content": "输出"}),
+                json!({"role": "user", "content": "继续"})
+            ]
+        );
 
         // Anthropic：role=user 且 content 全 tool_result
         let body = json!({"messages": [
@@ -1163,6 +1282,14 @@ mod tests {
             ]}
         ]});
         assert!(trailing_tool_result_ids(Protocol::Anthropic, &body).is_empty());
+        assert_eq!(all_tool_result_ids(Protocol::Anthropic, &body), vec!["toolu_1"]);
+        assert_eq!(
+            continuation_resume_items(Protocol::Anthropic, &body, &["toolu_1".into()]),
+            vec![json!({"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "toolu_1", "content": "x"},
+                {"type": "text", "text": "顺带说一句"}
+            ]})]
+        );
 
         // Responses：尾部 function_call_output
         let body = json!({"input": [

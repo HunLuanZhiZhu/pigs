@@ -42,7 +42,7 @@ table{border-collapse:collapse;width:100%}th,td{border:1px solid var(--line);pad
 <h2><code>-pigs</code> 编排</h2>
 <div class="card">
 <p>proxy 先把请求 JSON 中的 model 改成去掉 <code>-pigs</code> 的真实模型名，然后构造 <code>TurnInput</code>。客户端是否流式由原 body 的 <code>stream</code> 布尔值决定。</p>
-<p>若请求尾部含工具结果 id，proxy 会从 <code>ContinuationStore</code> 中取出匹配现场；找不到则返回 409。否则新开一轮编排。每次 Paused 响应只返回当前这轮新产生的工具调用，已消费的历史 ToolCall 不会跟着 continuation 进入下一次响应。</p>
+<p>proxy 会扫描当前请求中的全部工具结果 id，并从 <code>ContinuationStore</code> 中寻找其 pending id 已全部出现的现场；匹配成功即恢复同一只 pig，不要求工具结果处于请求绝对尾部。若存在尾部工具结果却找不到现场则返回 409；否则才按新请求处理。每次 Paused 响应只返回当前这轮新产生的工具调用，已消费的历史 ToolCall 不会跟着 continuation 进入下一次响应。</p>
 <p>非流式编排完成后调用 <code>synthesize_json</code>；流式请求则立即返回 SSE body，后台运行状态机并通过 <code>StreamEncoder</code> 持续发帧。</p>
 </div>
 
@@ -58,6 +58,14 @@ table{border-collapse:collapse;width:100%}th,td{border:1px solid var(--line);pad
 <div class="card">
 <p>编排路径不会把最后一个上游响应直接交给客户端。proxy 构造 <code>ResponseContent</code>，其中 model 使用客户端原始 <code>-pigs</code> 名称，再由 protocol 层生成新的 JSON/SSE 协议壳。</p>
 <p>Completed 使用状态机最终选中的 usage；Paused 明确传 <code>usage: None</code>。停止原因使用状态机记录的最后一轮值。Completed 的 parts 只包含持久文本、thinking/reasoning 和其它原生块，不包含已经执行完成的历史工具调用。</p>
+</div>
+
+<h2>HTTP 诊断抓包</h2>
+<div class="card">
+<p>proxy 内置独立于 tracing 的请求/响应抓包。<code>[logging].detail</code> 支持 <code>off</code> / <code>basic</code> / <code>max</code>，当前内部测试默认 <code>max</code>；目录由 <code>[logging].directory</code> 指定，默认 <code>logs/http</code>。</p>
+<p>同一次 handler 交换使用相同 exchange id，并分别生成 <code>client-request</code> / <code>client-response</code>、loopback 的 <code>internal-request</code> / <code>internal-response</code>、以及 <code>upstream-request</code> / <code>upstream-response</code> 文件。编排请求还会额外生成 <code>orchestration-decision</code> 和 <code>orchestration-outcome</code>。前者记录全部/尾部工具结果 id、当时所有 pending continuation、实际匹配的 pending id 及最终路由判定；其中尾部集合只用于解释 reminder 等客户端包装，不再作为恢复条件。后者记录完成或暂停、continuation id 与工具调用 id。编排子请求经过 loopback，因此真实上游请求体（含相位 prompt）也会单独落盘。</p>
+<p>流式响应会捕获完整 SSE；读到正常 EOF 时文件标记 <code>capture_complete: true</code>，若客户端连接导致响应 body 中途被丢弃则标记 <code>false</code>。压缩响应仅在日志副本中尝试 gzip / deflate / brotli 解压，不改变网络转发。</p>
+<div class="warn"><strong>敏感数据：</strong>authorization、API key、cookie 和内部 loopback token 等头会自动打码，常见敏感 query 参数也会打码；但 max 模式不会改写 body，因此 prompt、工具结果、模型输出仍会以明文保存在本机。</div>
 </div>
 
 <h2>错误状态</h2>

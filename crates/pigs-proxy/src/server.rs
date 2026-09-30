@@ -2,9 +2,10 @@
 //!
 //! -pigs 请求的两种情形：
 //! - 客户端的第一发 → 新开一轮编排；
-//! - 尾部带工具结果（模型上一轮要的工具执行完了）→ 接着被暂停的相位继续。
+//! - 请求中包含当前 pending continuation 所等待的工具结果 → 接着被暂停的相位继续。
 
 use crate::config::Config;
+use crate::diagnostics::{header_pairs, ExchangeLog, HttpDiagnostics};
 use crate::upstream::Upstream;
 use axum::body::Body;
 use axum::extract::{OriginalUri, RawQuery, State};
@@ -18,6 +19,7 @@ use std::sync::{Arc, Mutex};
 
 #[derive(Clone)]
 pub struct AppState {
+    pub diagnostics: Arc<HttpDiagnostics>,
     pub config: Arc<Config>,
     pub upstream: Arc<Upstream>,
     /// 回环内部令牌（进程启动时随机生成）。
@@ -53,6 +55,11 @@ async fn handle(
         .map(|t| t == state.loopback_token.as_str())
         .unwrap_or(false);
 
+    let exchange =
+        state
+            .diagnostics
+            .begin_exchange(internal, method.as_str(), &path, query, &headers, &body);
+
     // 编排分支：POST 协议路径 + model 带 -pigs（回环子请求不走此分支）
     if !internal && method == Method::POST {
         if let Some(protocol) = pigs_protocol::protocol_from_path(&path) {
@@ -67,8 +74,15 @@ async fn handle(
                         // 唯一允许的字段改动：发给上游用真名，回客户端用原名
                         pigs_protocol::set_model(&mut parsed, &real_model);
                         return orchestrate(
-                            &state, &headers, parsed, protocol, &model, &real_model, &path,
+                            &state,
+                            &headers,
+                            parsed,
+                            protocol,
+                            &model,
+                            &real_model,
+                            &path,
                             query,
+                            exchange.clone(),
                         )
                         .await;
                     }
@@ -76,14 +90,18 @@ async fn handle(
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "请求 body 不是合法 JSON");
-                    return error_response(StatusCode::BAD_REQUEST, "请求 body 不是合法 JSON");
+                    return logged_error_response(
+                        &exchange,
+                        StatusCode::BAD_REQUEST,
+                        "请求 body 不是合法 JSON",
+                    );
                 }
             }
         }
     }
 
     // 透传（含回环子请求、非 -pigs 主请求、models 等其他路径）
-    passthrough(&state, method, &path, query, &headers, body).await
+    passthrough(&state, method, &path, query, &headers, body, exchange).await
 }
 
 /// 编排：判断这一发是新开一轮还是恢复被工具调用暂停的相位，然后交给状态机。
@@ -97,6 +115,7 @@ async fn orchestrate(
     real_model: &str,
     path: &str,
     query: Option<&str>,
+    exchange: ExchangeLog,
 ) -> Response<Body> {
     let client_wants_stream = pigs_protocol::has_client_stream(&parsed);
     let base_headers = state.upstream.forward_headers(headers);
@@ -115,40 +134,78 @@ async fn orchestrate(
         client_session: orch::find_client_session(&state.upstream.forward_headers(headers)),
     };
 
-    // 尾部是工具结果 = 客户端执行完了工具，要接着被暂停的那只 pig 继续
-    let result_ids = pigs_protocol::trailing_tool_result_ids(protocol, &parsed);
-    let continuation = if result_ids.is_empty() {
-        None
-    } else {
-        match state
-            .store
-            .lock()
-            .ok()
-            .and_then(|mut store| store.take_match(&result_ids))
-        {
-            Some(continuation) => {
+    // continuation 按请求中出现的全部工具结果匹配；尾部连续结果只保留作诊断，
+    // 用来解释客户端是否在工具结果之后又追加了 reminder / 普通消息。
+    let all_result_ids = pigs_protocol::all_tool_result_ids(protocol, &parsed);
+    let trailing_result_ids = pigs_protocol::trailing_tool_result_ids(protocol, &parsed);
+    let client_session = input
+        .client_session
+        .clone()
+        .unwrap_or_else(|| "<none>".into());
+
+    let mut decision_fields = vec![
+        format!("model: {real_model}"),
+        format!("protocol: {protocol:?}"),
+        format!("client_session: {client_session}"),
+        format!("all_tool_result_ids: {all_result_ids:?}"),
+        format!("trailing_tool_result_ids: {trailing_result_ids:?}"),
+    ];
+
+    let continuation = match state.store.lock() {
+        Ok(mut store) => {
+            let summaries = store.summaries();
+            decision_fields.push(format!("pending_continuations: {}", summaries.len()));
+            for summary in &summaries {
+                decision_fields.push(format!(
+                    "pending: id={} session={} phase={} tool_ids={:?} age_ms={}",
+                    summary.id,
+                    summary.session,
+                    summary.phase.as_str(),
+                    summary.pending,
+                    summary.age_ms
+                ));
+            }
+
+            if let Some(continuation) = store.take_match(&all_result_ids) {
+                let matched = continuation.pending.clone();
+                decision_fields.push(format!("matched_tool_result_ids: {matched:?}"));
+                decision_fields.push(format!("decision: resume {}", continuation.id));
                 tracing::info!(
                     model = %real_model,
                     continuation = %continuation.id,
-                    results = result_ids.len(),
+                    results = matched.len(),
                     "继续被工具调用暂停的相位"
                 );
                 Some(continuation)
-            }
-            None => {
-                // 没有现场可接：不假装成功，也不悄悄重跑一整轮
+            } else if trailing_result_ids.is_empty() {
+                decision_fields.push("decision: start_new_no_matching_tool_results".into());
+                None
+            } else {
+                decision_fields.push("decision: conflict_no_matching_continuation".into());
+                exchange.write_event("orchestration-decision", &decision_fields);
                 tracing::warn!(
                     model = %real_model,
-                    results = ?result_ids,
-                    "尾部带工具结果，但没有匹配的编排现场"
+                    results = ?trailing_result_ids,
+                    "带工具结果，但没有匹配的编排现场"
                 );
-                return error_response(
+                return logged_error_response(
+                    &exchange,
                     StatusCode::CONFLICT,
                     "找不到与这批工具结果对应的编排现场（可能已过期或服务重启过），请重新发起该轮请求",
                 );
             }
         }
+        Err(_) => {
+            decision_fields.push("decision: conflict_continuation_store_unavailable".into());
+            exchange.write_event("orchestration-decision", &decision_fields);
+            return logged_error_response(
+                &exchange,
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "continuation 存储不可用",
+            );
+        }
     };
+    exchange.write_event("orchestration-decision", &decision_fields);
 
     tracing::info!(
         model = %real_model,
@@ -174,6 +231,7 @@ async fn orchestrate(
             continuation,
             protocol,
             client_model.to_string(),
+            exchange,
         );
     }
 
@@ -191,10 +249,16 @@ async fn orchestrate(
     match outcome {
         Ok(outcome) => {
             let content = final_content(client_model, &outcome);
-            log_outcome(&outcome);
-            let mut resp = Response::new(Body::from(
-                pigs_protocol::synthesize_json(protocol, &content).to_string(),
-            ));
+            log_outcome(&outcome, &exchange);
+            let body = pigs_protocol::synthesize_json(protocol, &content).to_string();
+            let response_headers = vec![("content-type".into(), "application/json".into())];
+            exchange.write_response(
+                exchange.client_response_stage(),
+                StatusCode::OK.as_u16(),
+                &response_headers,
+                body.as_bytes(),
+            );
+            let mut resp = Response::new(Body::from(body));
             resp.headers_mut()
                 .insert("content-type", "application/json".parse().unwrap());
             resp
@@ -206,7 +270,7 @@ async fn orchestrate(
             } else {
                 StatusCode::BAD_GATEWAY
             };
-            error_response(status, &format!("编排失败: {e}"))
+            logged_error_response(&exchange, status, &format!("编排失败: {e}"))
         }
     }
 }
@@ -222,6 +286,7 @@ fn orchestrate_streaming(
     continuation: Option<orch::state::Continuation>,
     protocol: pigs_protocol::Protocol,
     client_model: String,
+    exchange: ExchangeLog,
 ) -> Response<Body> {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Result<Bytes, std::io::Error>>();
     let encoder = Arc::new(Mutex::new(pigs_protocol::StreamEncoder::new(
@@ -259,6 +324,7 @@ fn orchestrate_streaming(
         })
     };
 
+    let outcome_exchange = exchange.clone();
     tokio::spawn(async move {
         let rt = orch::Runtime {
             transport,
@@ -273,7 +339,7 @@ fn orchestrate_streaming(
         let frames = match encoder.lock() {
             Ok(mut encoder) => match &outcome {
                 Ok(outcome) => {
-                    log_outcome(outcome);
+                    log_outcome(outcome, &outcome_exchange);
                     let content = final_content(&client_model, outcome);
                     encoder.set_finish(
                         content.stop_reason.map(String::from),
@@ -304,8 +370,30 @@ fn orchestrate_streaming(
         // tx 在此 drop：channel 关闭，客户端流正常收尾
     });
 
-    let stream = futures_util::stream::unfold(rx, |mut rx| async move {
-        rx.recv().await.map(|item| (item, rx))
+    let response_headers = vec![
+        ("content-type".into(), "text/event-stream".into()),
+        ("cache-control".into(), "no-cache".into()),
+    ];
+    let capture = exchange.capture_response(
+        exchange.client_response_stage(),
+        StatusCode::OK.as_u16(),
+        &response_headers,
+    );
+    let stream = futures_util::stream::unfold((rx, capture), |(mut rx, mut capture)| async move {
+        match rx.recv().await {
+            Some(item) => {
+                if let (Some(capture), Ok(bytes)) = (capture.as_mut(), &item) {
+                    capture.push(bytes);
+                }
+                Some((item, (rx, capture)))
+            }
+            None => {
+                if let Some(capture) = capture {
+                    capture.finish();
+                }
+                None
+            }
+        }
     });
     Response::builder()
         .status(StatusCode::OK)
@@ -353,20 +441,49 @@ fn final_content<'a>(
     }
 }
 
-fn log_outcome(outcome: &orch::Outcome) {
+fn log_outcome(outcome: &orch::Outcome, exchange: &ExchangeLog) {
     match outcome {
-        orch::Outcome::Completed(turn) => tracing::info!(
-            ended_with = turn.ended_with.as_str(),
-            pigs = turn.path.len(),
-            session = %turn.session,
-            chars = turn.text.chars().count(),
-            "编排完成"
-        ),
-        orch::Outcome::Paused(paused) => tracing::info!(
-            continuation = %paused.continuation_id,
-            calls = paused.tool_calls.len(),
-            "编排暂停：等待客户端执行工具"
-        ),
+        orch::Outcome::Completed(turn) => {
+            exchange.write_event(
+                "orchestration-outcome",
+                &[
+                    "outcome: completed".into(),
+                    format!("ended_with: {}", turn.ended_with.as_str()),
+                    format!("session: {}", turn.session),
+                    format!("path: {:?}", turn.path),
+                ],
+            );
+            tracing::info!(
+                ended_with = turn.ended_with.as_str(),
+                pigs = turn.path.len(),
+                session = %turn.session,
+                chars = turn.text.chars().count(),
+                "编排完成"
+            );
+        }
+        orch::Outcome::Paused(paused) => {
+            exchange.write_event(
+                "orchestration-outcome",
+                &[
+                    "outcome: paused".into(),
+                    format!("continuation: {}", paused.continuation_id),
+                    format!(
+                        "tool_call_ids: {:?}",
+                        paused
+                            .tool_calls
+                            .iter()
+                            .map(|call| call.id.as_str())
+                            .collect::<Vec<_>>()
+                    ),
+                    format!("stop_reason: {:?}", paused.stop_reason),
+                ],
+            );
+            tracing::info!(
+                continuation = %paused.continuation_id,
+                calls = paused.tool_calls.len(),
+                "编排暂停：等待客户端执行工具"
+            );
+        }
     }
 }
 
@@ -378,17 +495,35 @@ async fn passthrough(
     query: Option<&str>,
     headers: &HeaderMap,
     body: Bytes,
+    exchange: ExchangeLog,
 ) -> Response<Body> {
     let fwd_headers = state.upstream.forward_headers(headers);
     let has_body = method == Method::POST || method == Method::PUT || method == Method::PATCH;
+    let method_name = method.as_str().to_string();
+    let upstream_target = state.upstream.url(path, query);
+    exchange.write_upstream_request(
+        &method_name,
+        &upstream_target,
+        None,
+        &fwd_headers,
+        if has_body { &body } else { &[] },
+    );
 
     match state
         .upstream
-        .send(method, path, query, fwd_headers, has_body.then(|| body.clone()))
+        .send(
+            method,
+            path,
+            query,
+            fwd_headers,
+            has_body.then(|| body.clone()),
+        )
         .await
     {
         Ok((status, resp_headers, resp)) => {
+            let upstream_headers = header_pairs(&resp_headers);
             let mut builder = Response::builder().status(status);
+            let mut client_headers = Vec::new();
             for (name, value) in resp_headers.iter() {
                 let lower = name.as_str().to_lowercase();
                 // 只跳过逐跳头；content-encoding 必须跟着 body 走（血泪教训）
@@ -402,27 +537,80 @@ async fn passthrough(
                     axum::http::HeaderName::from_bytes(name.as_ref()),
                     axum::http::HeaderValue::from_bytes(value.as_bytes()),
                 ) {
+                    client_headers.push((
+                        name.as_str().to_string(),
+                        value.to_str().unwrap_or("<non-utf8>").to_string(),
+                    ));
                     builder = builder.header(n, v);
                 }
             }
-            let stream = resp.bytes_stream().map(|r| {
-                r.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
-            });
+            let upstream_capture =
+                exchange.capture_response("upstream-response", status.as_u16(), &upstream_headers);
+            let client_capture = exchange.capture_response(
+                exchange.client_response_stage(),
+                status.as_u16(),
+                &client_headers,
+            );
+            let stream = futures_util::stream::unfold(
+                (resp.bytes_stream(), upstream_capture, client_capture),
+                |(mut stream, mut upstream_capture, mut client_capture)| async move {
+                    match stream.next().await {
+                        Some(Ok(bytes)) => {
+                            if let Some(capture) = upstream_capture.as_mut() {
+                                capture.push(&bytes);
+                            }
+                            if let Some(capture) = client_capture.as_mut() {
+                                capture.push(&bytes);
+                            }
+                            Some((Ok(bytes), (stream, upstream_capture, client_capture)))
+                        }
+                        Some(Err(error)) => Some((
+                            Err(std::io::Error::new(std::io::ErrorKind::Other, error)),
+                            (stream, upstream_capture, client_capture),
+                        )),
+                        None => {
+                            if let Some(capture) = upstream_capture {
+                                capture.finish();
+                            }
+                            if let Some(capture) = client_capture {
+                                capture.finish();
+                            }
+                            None
+                        }
+                    }
+                },
+            );
             builder.body(Body::from_stream(stream)).unwrap()
         }
         Err(e) => {
             tracing::warn!(error = %e, "上游请求失败");
-            error_response(StatusCode::BAD_GATEWAY, &format!("上游请求失败: {e}"))
+            exchange.write_response("upstream-error", 0, &[], e.to_string().as_bytes());
+            logged_error_response(
+                &exchange,
+                StatusCode::BAD_GATEWAY,
+                &format!("上游请求失败: {e}"),
+            )
         }
     }
 }
 
-fn error_response(status: StatusCode, message: &str) -> Response<Body> {
-    let body = serde_json::json!({"error": {"type": "pigs_error", "message": message}});
+fn logged_error_response(
+    exchange: &ExchangeLog,
+    status: StatusCode,
+    message: &str,
+) -> Response<Body> {
+    let body = serde_json::json!({"error": {"type": "pigs_error", "message": message}}).to_string();
+    let headers = vec![("content-type".into(), "application/json".into())];
+    exchange.write_response(
+        exchange.client_response_stage(),
+        status.as_u16(),
+        &headers,
+        body.as_bytes(),
+    );
     Response::builder()
         .status(status)
         .header("content-type", "application/json")
-        .body(Body::from(body.to_string()))
+        .body(Body::from(body))
         .unwrap()
 }
 

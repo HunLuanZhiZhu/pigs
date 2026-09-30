@@ -215,11 +215,11 @@ impl Orchestrator {
             phase = continuation.state.phase.as_str(),
             "恢复相位（工具结果已回填）"
         );
-        // 客户端只负责送回本轮新的工具结果。阶段提示、模型此前的工具调用等
-        // 都由服务端 continuation 保存，不能从恢复请求重新构造阶段语义。
-        continuation.state.phase_transcript.extend(
-            proto::trailing_tool_result_items(input.protocol, &input.body),
-        );
+        // continuation 只负责判断“这次请求是不是上一轮工具调用的继续”。
+        // 一旦确认恢复，就保留客户端从匹配工具结果开始追加的后续消息原样，不擅自过滤 reminder/user。
+        let resume_items =
+            proto::continuation_resume_items(input.protocol, &input.body, &continuation.pending);
+        continuation.state.phase_transcript.extend(resume_items);
         Self::drive(input, rt, continuation.state).await
     }
 
@@ -240,16 +240,29 @@ impl Orchestrator {
                 proto::append_to_last_user_text(&mut body, input.protocol, &instruction)?;
             }
             Pig::Post => {
-                for text in &state.transcript {
-                    proto::push_assistant_message(&mut body, input.protocol, text)?;
-                }
-                proto::push_user_message(
-                    &mut body,
-                    input.protocol,
-                    &prompts::post_instruction(state.lang),
-                )?;
+                return Err(Error::Budget(
+                    "Post 必须继承 Executor 的完整上下文，不能从 root_body 重建".into(),
+                ));
             }
         }
+        Ok(body)
+    }
+
+    /// 把 Executor 完整会话现场物化为 Post 的基础请求，并只在末尾追加一条评审 user 消息。
+    ///
+    /// 这样 Post 的前缀就是 Executor 最后一轮请求的完整前缀，再接 Executor 最终输出；
+    /// 不从 root_body 重建，也不压缩工具调用/工具结果，尽量保持上游前缀缓存命中。
+    fn build_post_base_from_executor(input: &TurnInput, state: &TurnState) -> Result<serde_json::Value> {
+        let mut body = state
+            .phase_base_body
+            .clone()
+            .ok_or_else(|| Error::Budget("Executor 缺少 phase_base_body，无法进入 Post".into()))?;
+        proto::append_transcript_items(&mut body, input.protocol, &state.phase_transcript)?;
+        proto::push_user_message(
+            &mut body,
+            input.protocol,
+            &prompts::post_instruction(state.lang),
+        )?;
         Ok(body)
     }
 
@@ -363,11 +376,14 @@ impl Orchestrator {
                 },
                 // ---------------- Executor：执行 ----------------
                 Pig::Executor => {
-                    // 不解析标记：Executor 之后总是进 Post 验收
-                    state.transcript.push(strip_markers(&raw));
+                    // 不解析标记：Executor 之后总是进 Post 验收。
+                    // Post 不再从 root_body + 摘要重建，而是完整继承 Executor 当前会话现场，
+                    // 仅在其末尾追加一条新的评审 user 消息。
+                    let post_base = Self::build_post_base_from_executor(&ctx.input, &state)?;
                     state.phase_raw.clear();
                     state.phase = Pig::Post;
-                    state.reset_phase_conversation();
+                    state.phase_base_body = Some(post_base);
+                    state.phase_transcript.clear();
                 }
                 // ---------------- Post：验收 / 路由 ----------------
                 Pig::Post => match detect_marker(&raw) {
@@ -383,8 +399,7 @@ impl Orchestrator {
                             )));
                         }
                         let text = strip_markers(&raw);
-                        state.failure_paths.push(text.clone());
-                        state.transcript.push(text);
+                        state.failure_paths.push(text);
                         state.pre_replans += 1;
                         state.pre_output.clear();
                         state.post_iterations = 0;
@@ -399,7 +414,6 @@ impl Orchestrator {
                                 "Post 无标记重试次数超过 {MAX_POST_ITERATIONS} 次"
                             )));
                         }
-                        state.transcript.push(strip_markers(&raw));
                         state.post_iterations += 1;
                         state.phase_raw.clear();
                     }

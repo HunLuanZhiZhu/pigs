@@ -1,4 +1,4 @@
-//! 配置：只有部署位置需要配置。模板即实际配置（include_str! 指向仓库根 config.toml）。
+//! 配置：部署位置 + HTTP 诊断日志。模板即实际配置（include_str! 指向仓库根 config.toml）。
 
 use serde::{Deserialize, Serialize};
 
@@ -12,8 +12,61 @@ pub struct Config {
     /// 留空 = 透传客户端 key；填了则覆盖。
     #[serde(default)]
     pub key: String,
+    /// HTTP 诊断日志。内部测试阶段默认 max。
+    #[serde(default)]
+    pub logging: LoggingConfig,
     /// 三个协议各一个上游地址：base + 客户端原样路径 = 上游 URL。
     pub upstream: Upstreams,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LogDetail {
+    Off,
+    Basic,
+    Max,
+}
+
+impl Default for LogDetail {
+    fn default() -> Self {
+        Self::Max
+    }
+}
+
+impl std::str::FromStr for LogDetail {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "off" => Ok(Self::Off),
+            "basic" => Ok(Self::Basic),
+            "max" => Ok(Self::Max),
+            other => anyhow::bail!("未知日志详细程度 {other:?}；可选 off / basic / max"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoggingConfig {
+    /// off = 不生成 HTTP 明文抓包；basic = 只记元数据；max = 元数据 + 完整 body。
+    #[serde(default)]
+    pub detail: LogDetail,
+    /// HTTP 抓包文件目录。
+    #[serde(default = "default_http_log_dir")]
+    pub directory: String,
+}
+
+impl Default for LoggingConfig {
+    fn default() -> Self {
+        Self {
+            detail: LogDetail::Max,
+            directory: default_http_log_dir(),
+        }
+    }
+}
+
+fn default_http_log_dir() -> String {
+    "logs/http".into()
 }
 
 /// 三协议各自的上游前缀。
@@ -52,5 +105,35 @@ impl Config {
     /// 默认配置（首次运行生成用）。
     pub fn example() -> &'static str {
         EXAMPLE_CONFIG
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn logging_defaults_to_max_when_section_is_absent() {
+        let config: Config = toml::from_str(
+            r#"
+listen = "127.0.0.1:3927"
+key = ""
+[upstream]
+openai = "http://a"
+responses = "http://b"
+anthropic = "http://c"
+"#,
+        )
+        .unwrap();
+        assert_eq!(config.logging.detail, LogDetail::Max);
+        assert_eq!(config.logging.directory, "logs/http");
+    }
+
+    #[test]
+    fn logging_detail_parses_all_supported_values() {
+        assert_eq!("off".parse::<LogDetail>().unwrap(), LogDetail::Off);
+        assert_eq!("basic".parse::<LogDetail>().unwrap(), LogDetail::Basic);
+        assert_eq!("max".parse::<LogDetail>().unwrap(), LogDetail::Max);
+        assert!("verbose".parse::<LogDetail>().is_err());
     }
 }

@@ -4,6 +4,7 @@
 //! 上游可以是 mini-proxy（多拿会话头/映射/重试）或任意直连 API，本 crate 不关心。
 
 pub mod config;
+pub mod diagnostics;
 
 /// 配置模板（首次生成 / --example 导出用）。
 pub fn config_template() -> &'static str {
@@ -16,7 +17,7 @@ use axum::serve as axum_serve;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 
-pub use config::{Config, Upstreams};
+pub use config::{Config, LogDetail, LoggingConfig, Upstreams};
 
 /// 启动服务（阻塞直到进程退出）。
 pub async fn serve(config: Config) -> anyhow::Result<()> {
@@ -56,6 +57,10 @@ fn build(config: Config, addr: std::net::SocketAddr) -> axum::Router {
         config.upstream.openai, config.upstream.responses, config.upstream.anthropic
     );
     println!("  -pigs 编排：Pre → Executor → Post");
+    println!(
+        "  HTTP 诊断日志：{:?} → {}",
+        config.logging.detail, config.logging.directory
+    );
     println!("═══════════════════════════════════════════");
     server::router(build_state(config, addr))
 }
@@ -68,6 +73,7 @@ pub fn build_state(config: Config, addr: std::net::SocketAddr) -> server::AppSta
     };
     let self_url = format!("http://{}:{}", self_host, addr.port());
     server::AppState {
+        diagnostics: Arc::new(diagnostics::HttpDiagnostics::new(&config.logging)),
         config: Arc::new(config.clone()),
         upstream: Arc::new(upstream::Upstream::new(&config.upstream, &config.key)),
         loopback_token: Arc::new(uuid::Uuid::now_v7().to_string()),

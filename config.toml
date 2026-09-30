@@ -1,7 +1,13 @@
-# pigs 配置 —— 只有部署位置需要配置（提示词、-pigs 规则、相位全部在代码里）
+# pigs 配置 —— 部署位置 + 诊断日志；提示词、-pigs 规则、相位仍全部在代码里
 listen = "127.0.0.1:3927"
 # 留空 = 透传客户端的 key；填了则覆盖
 key = ""
+
+# HTTP 诊断日志：off / basic / max。
+# 内部测试阶段默认 max：每个请求/响应分别写入明文文件；鉴权头自动打码。
+[logging]
+detail = "max"
+directory = "logs/http"
 
 # 三个协议各一个上游地址：base + 客户端原样路径 = 上游 URL。
 # chat / responses 的路径不带 /v1（版本段属于 base）；

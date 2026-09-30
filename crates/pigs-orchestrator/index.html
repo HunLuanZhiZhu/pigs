@@ -12,16 +12,18 @@ code{background:#eef1f6;border-radius:4px;padding:1px 6px;font-family:Consolas,m
 <h1>pigs-orchestrator</h1>
 <p class="muted">当前实现：维护 Pre → Executor → Post 状态机，把父请求克隆成多个协议原生子请求，并处理工具暂停/恢复、相位文本、usage 和停止原因。</p>
 
+<div class="card"><p><strong>调试提示：</strong>orchestrator 本身仍通过事件/状态工作；每一轮实际发出的 phase 请求与上游响应由 proxy 的 HTTP 诊断抓包记录。<code>max</code> 模式下可直接查看 loopback / upstream 明文文件确认相位 prompt、工具调用与 reasoning 的真实协议形状。</p></div>
+
 <h2>状态机</h2>
 <div class="card"><table>
 <tr><th>相位</th><th>模型输出</th><th>下一步</th></tr>
 <tr><td>Pre</td><td>末尾控制标记 <code>PIGEND</code></td><td>简单路径完成，不进入 Executor/Post。</td></tr>
 <tr><td>Pre</td><td><code>PIGFAIL</code></td><td>记录失败路径并重新 Pre；重规划预算常量为 2。</td></tr>
 <tr><td>Pre</td><td>无控制标记</td><td>保存为 <code>pre_output</code>，进入 Executor。</td></tr>
-<tr><td>Executor</td><td>任意正常输出</td><td>不按 PIG 标记路由，产物加入 transcript，进入 Post。</td></tr>
+<tr><td>Executor</td><td>任意正常输出</td><td>不按 PIG 标记路由；完整物化 Executor 会话现场，并在末尾追加 Post 的 user 指令后进入 Post。</td></tr>
 <tr><td>Post</td><td><code>PIGEND</code></td><td>正常完成。</td></tr>
 <tr><td>Post</td><td><code>PIGFAIL</code></td><td>记录失败路径，回 Pre 重规划。</td></tr>
-<tr><td>Post</td><td>无控制标记</td><td>产物加入 transcript，继续 Post；Post 迭代预算常量为 3。</td></tr>
+<tr><td>Post</td><td>无控制标记</td><td>继续在同一 Post 对话现场追加模型输出；Post 迭代预算常量为 3。</td></tr>
 </table>
 <p>预算耗尽返回 <code>Error::Budget</code>。非流式 proxy 会把这种错误映射为 HTTP 422。</p>
 </div>
@@ -31,9 +33,10 @@ code{background:#eef1f6;border-radius:4px;padding:1px 6px;font-family:Consolas,m
 <p>orchestrator 为每个 pig 建立一次基础请求，而不是每次工具恢复都重新解释客户端整段请求。</p>
 <p>组装顺序是：</p>
 <ol>
-<li>进入新 pig 时，从本轮最初的请求 body 构造基础请求；</li>
-<li>只在这一步注入一次相位提示词：Pre/Executor 追加到当前任务 user 文本，Post 追加此前产物与一次 Post user 指令；</li>
-<li>同一 pig 内若发生工具调用，模型的原生 assistant/tool-call 记录保存在 <code>phase_transcript</code>；客户端回填的尾部工具结果也追加到这里；</li>
+<li>Pre / Executor 进入时，从本轮最初的请求 body 构造基础请求；</li>
+<li>Pre / Executor 只在这一步把相位提示追加到当前任务 user 文本；</li>
+<li>Executor 完成时，不从最初请求重建 Post。系统会把 Executor 的基础请求与完整 <code>phase_transcript</code> 物化成连续上下文，再只追加一条 Post user 指令；因此 Post 的消息前缀与 Executor 最后一发请求保持一致，并继续带上 Executor 最终 assistant 输出；</li>
+<li>同一 pig 内若发生工具调用，模型的原生 assistant/tool-call 记录保存在 <code>phase_transcript</code>；客户端回填时，用 pending id 定位本次恢复起点，然后把从匹配工具结果开始的客户端新增消息原样接回，包括后续 reminder / 普通 user 消息；</li>
 <li>恢复时复用同一个基础请求，再把 <code>phase_transcript</code> 接在后面，不新增相位 user 指令；</li>
 <li>序列化 JSON，形成 <code>SubRequest</code>。</li>
 </ol>
@@ -60,8 +63,8 @@ code{background:#eef1f6;border-radius:4px;padding:1px 6px;font-family:Consolas,m
 proxy 匹配 ContinuationStore
   ↓
 resume 同一相位</pre>
-<p><code>ContinuationStore</code> 当前默认容量 64，TTL 30 分钟，纯内存保存。匹配规则是某个 continuation 的全部 pending id 都出现在请求尾部工具结果 id 集合中；匹配后即从 store 取出，避免重复恢复。</p>
-<p><code>ToolCall</code> 是一次性的暂停信号：Paused 响应只携带本轮新产生的调用；continuation 中的最终输出 <code>TurnState.parts</code> 不保存这些 ToolCall。与此同时，当前 pig 的原生 assistant/tool-call 记录会进入内部 <code>phase_transcript</code>，用于下一轮上游对话续接。客户端回填结果后，只把新的尾部工具结果追加到该 transcript；后续 Paused 和最终 Completed 都不会向客户端重放已经消费的历史调用。</p>
+<p><code>ContinuationStore</code> 当前默认容量 64，TTL 30 分钟，纯内存保存。匹配规则是某个 continuation 的全部 pending id 都出现在当前请求的工具结果集合中；不要求这些结果位于请求绝对尾部。若长历史同时命中多条遗留现场，优先取最新一条；匹配后即从 store 取出，避免重复恢复。</p>
+<p><code>ToolCall</code> 是一次性的暂停信号：Paused 响应只携带本轮新产生的调用；continuation 中的最终输出 <code>TurnState.parts</code> 不保存这些 ToolCall。与此同时，当前 pig 的原生 assistant/tool-call 记录会进入内部 <code>phase_transcript</code>，用于下一轮上游对话续接。客户端回填时，pending id 只用于确认 continuation 与定位本次新增历史的起点；从匹配工具结果开始的后续客户端消息原样追加。后续 Paused 和最终 Completed 都不会向客户端重放已经消费的历史调用。</p>
 </div>
 
 <h2>会话头与 content-type</h2>

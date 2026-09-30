@@ -11,8 +11,9 @@ pub mod sse;
 pub mod surgery;
 
 pub use output::{
-    model_output_transcript_items, parse_json_output, parse_sse_output,
-    trailing_tool_result_ids, trailing_tool_result_items, ModelOutput, Part, ToolCall,
+    all_tool_result_ids, continuation_resume_items, model_output_transcript_items,
+    parse_json_output, parse_sse_output, trailing_tool_result_ids, trailing_tool_result_items,
+    ModelOutput, Part, ToolCall,
 };
 pub use response::{
     extract_response_text, extract_sse_text, synthesize_json, synthesize_sse, LiveEvent,

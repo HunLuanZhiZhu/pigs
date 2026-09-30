@@ -17,6 +17,8 @@ async fn main() -> Result<()> {
         println!("  pigs                        运行服务（读 ./config.toml，缺省自动生成并启动）");
         println!("  pigs --listen 127.0.0.1:3927     覆盖监听地址");
         println!("  pigs --base-url http://…         覆盖上游地址（mini-proxy 或任意上游 API）");
+        println!("  pigs --log-detail off|basic|max  覆盖 HTTP 诊断日志详细程度");
+        println!("  pigs --log-dir PATH              覆盖 HTTP 诊断日志目录");
         println!("  pigs --example              导出配置模板到 config.example.toml");
         println!("  pigs -h | --help            显示此帮助\n");
         println!("model 带 -pigs 后缀的请求走 Pre→Executor→Post 编排，其余原样透传。");
@@ -50,6 +52,12 @@ async fn main() -> Result<()> {
     }
     if let Some(base_url) = pick("--base-url") {
         config.upstream = pigs_proxy::Upstreams::same(&base_url);
+    }
+    if let Some(detail) = pick("--log-detail") {
+        config.logging.detail = detail.parse()?;
+    }
+    if let Some(directory) = pick("--log-dir") {
+        config.logging.directory = directory;
     }
     if config.upstream.openai.is_empty()
         || config.upstream.responses.is_empty()

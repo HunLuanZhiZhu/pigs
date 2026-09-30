@@ -182,6 +182,10 @@ async fn spawn_pigs(upstream_url: &str) -> (tokio::task::JoinHandle<()>, String)
     let config = Config {
         listen: "127.0.0.1:0".into(),
         key: String::new(),
+        logging: pigs_proxy::LoggingConfig {
+            detail: pigs_proxy::LogDetail::Off,
+            ..Default::default()
+        },
         upstream: Upstreams::same(upstream_url),
     };
     let listener = pigs_proxy::bind_listener(&config.listen).await.unwrap();
@@ -443,13 +447,18 @@ async fn pig_flow_full_orchestration_via_loopback() {
         } else if i == 1 {
             assert!(content.contains("分析：需要X"));
         } else {
-            // Post：原问题保留 + 草稿作为 assistant 消息 + 验收指令是新的一条 user 消息
+            // Post：完整继承 Executor 请求前缀，再追加 Executor 最终输出与一条评审 user。
             let msgs = body["messages"].as_array().unwrap();
-            assert_eq!(msgs.len(), 4);
-            assert_eq!(msgs[1]["content"], "帮我完成任务Z");
-            assert_eq!(msgs[2]["role"], "assistant");
-            assert_eq!(msgs[2]["content"], "执行结果……");
-            assert_eq!(msgs[3]["role"], "user");
+            let exec_msgs = reqs[1].1["messages"].as_array().unwrap();
+            assert_eq!(msgs.len(), exec_msgs.len() + 2);
+            assert_eq!(
+                &msgs[..exec_msgs.len()],
+                exec_msgs.as_slice(),
+                "Post 必须保持 Executor 的完整消息前缀"
+            );
+            assert_eq!(msgs[exec_msgs.len()]["role"], "assistant");
+            assert_eq!(msgs[exec_msgs.len()]["content"], "执行结果……");
+            assert_eq!(msgs[exec_msgs.len() + 1]["role"], "user");
             assert!(content.contains("验收"));
         }
     }
@@ -622,6 +631,196 @@ async fn pig_streaming_is_progressive_not_buffered() {
     let reqs = fu.requests.lock().unwrap();
     assert_eq!(reqs.len(), 3);
     assert!(reqs.iter().all(|(_p, body, _h)| body["stream"] == true));
+}
+
+/// max 模式：一次普通流式透传会分别记录客户端请求、上游请求、上游响应、客户端响应。
+#[tokio::test]
+async fn max_http_diagnostics_write_separate_plaintext_exchange_files() {
+    let (_up, upstream_url, fu) = spawn_fake_upstream().await;
+    fu.responses
+        .lock()
+        .unwrap()
+        .push(openai_sse_response("诊断流"));
+
+    let dir = std::env::temp_dir().join(format!("pigs-http-integration-{}", uuid::Uuid::new_v4()));
+    let config = Config {
+        listen: "127.0.0.1:0".into(),
+        key: String::new(),
+        logging: pigs_proxy::LoggingConfig {
+            detail: pigs_proxy::LogDetail::Max,
+            directory: dir.to_string_lossy().into_owned(),
+        },
+        upstream: Upstreams::same(&upstream_url),
+    };
+    let listener = pigs_proxy::bind_listener(&config.listen).await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let state = build_state(config, addr);
+    let app = pigs_proxy::server::router(state);
+    let task = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let response = reqwest::Client::new()
+        .post(format!("http://{addr}/chat/completions"))
+        .header("authorization", "Bearer top-secret")
+        .json(&openai_body("gpt-x", true))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let response_text = response.text().await.unwrap();
+    assert!(response_text.contains("诊断流"));
+
+    let mut files: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    files.sort();
+    assert_eq!(files.len(), 4, "一次普通透传应生成请求/响应四个抓包文件");
+
+    let read_stage = |suffix: &str| -> String {
+        let path = files
+            .iter()
+            .find(|path| path.file_name().unwrap().to_string_lossy().contains(suffix))
+            .unwrap_or_else(|| panic!("缺少 {suffix}: {files:?}"));
+        std::fs::read_to_string(path).unwrap()
+    };
+    let client_request = read_stage("client-request");
+    let upstream_request = read_stage("upstream-request");
+    let upstream_response = read_stage("upstream-response");
+    let client_response = read_stage("client-response");
+
+    assert!(client_request.contains("\"model\":\"gpt-x\""));
+    assert!(client_request.contains("authorization: <redacted>"));
+    assert!(!client_request.contains("top-secret"));
+    assert!(upstream_request.contains("\"model\":\"gpt-x\""));
+    assert!(upstream_response.contains("诊断流"));
+    assert!(client_response.contains("诊断流"));
+    assert!(upstream_response.contains("capture_complete: true"));
+    assert!(client_response.contains("capture_complete: true"));
+
+    task.abort();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// 诊断回归：有 pending continuation 时，如果下一发普通请求没有工具结果，
+/// 日志必须把请求原文、pending 现场和新开判定原因记下来。
+#[tokio::test]
+async fn diagnostics_explain_pending_turn_started_new_round() {
+    let (_up, upstream_url, fu) = spawn_fake_upstream().await;
+    {
+        let mut q = fu.responses.lock().unwrap();
+        q.push(openai_tool_call_response("call_wait"));
+        q.push(openai_text_response("新轮直接结束\nPIGEND"));
+    }
+    let dir = std::env::temp_dir().join(format!("pigs-http-decision-{}", uuid::Uuid::new_v4()));
+    let config = Config {
+        listen: "127.0.0.1:0".into(),
+        key: String::new(),
+        logging: pigs_proxy::LoggingConfig {
+            detail: pigs_proxy::LogDetail::Max,
+            directory: dir.to_string_lossy().into_owned(),
+        },
+        upstream: Upstreams::same(&upstream_url),
+    };
+    let listener = pigs_proxy::bind_listener(&config.listen).await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let state = build_state(config, addr);
+    let app = pigs_proxy::server::router(state);
+    let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap(); });
+    let client = reqwest::Client::new();
+
+    let first = client.post(format!("http://{addr}/chat/completions"))
+        .json(&openai_body("gpt-x-pigs", false)).send().await.unwrap();
+    assert_eq!(first.status(), 200);
+    let first_json: Value = first.json().await.unwrap();
+    assert_eq!(first_json["choices"][0]["message"]["tool_calls"][0]["id"], "call_wait");
+
+    let second = client.post(format!("http://{addr}/chat/completions"))
+        .json(&openai_body("gpt-x-pigs", false)).send().await.unwrap();
+    assert_eq!(second.status(), 200);
+    let _ = second.text().await.unwrap();
+
+    let files: Vec<_> = std::fs::read_dir(&dir).unwrap()
+        .map(|entry| entry.unwrap().path()).collect();
+    let decisions: Vec<String> = files.iter()
+        .filter(|p| p.file_name().unwrap().to_string_lossy().contains("orchestration-decision"))
+        .map(|p| std::fs::read_to_string(p).unwrap()).collect();
+    let decision = decisions.iter()
+        .find(|text| text.contains("pending_continuations: 1"))
+        .expect("第二发应看到 pending continuation");
+    assert!(decision.contains("decision: start_new_no_matching_tool_results"));
+    assert!(decision.contains("all_tool_result_ids: []"));
+    assert!(decision.contains("trailing_tool_result_ids: []"));
+    assert!(decision.contains("tool_ids=[\"call_wait\"]"));
+
+    let outcomes: Vec<String> = files.iter()
+        .filter(|p| p.file_name().unwrap().to_string_lossy().contains("orchestration-outcome"))
+        .map(|p| std::fs::read_to_string(p).unwrap()).collect();
+    assert!(outcomes.iter().any(|text| text.contains("outcome: paused") && text.contains("call_wait")));
+
+    task.abort();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// 回归：工具结果后即使追加普通 user reminder，也必须恢复原 continuation；
+/// continuation 判定不能借机删除或改写客户端后续消息。
+#[tokio::test]
+async fn tool_result_followed_by_user_reminder_still_resumes() {
+    let (_up, upstream_url, fu) = spawn_fake_upstream().await;
+    {
+        let mut q = fu.responses.lock().unwrap();
+        q.push(openai_tool_call_response("call_wait"));
+        q.push(openai_text_response("答案是 4\nPIGEND"));
+    }
+    let (_pigs, pigs_url) = spawn_pigs(&upstream_url).await;
+    let client = reqwest::Client::new();
+
+    let first = client
+        .post(format!("{pigs_url}/chat/completions"))
+        .json(&openai_body("gpt-x-pigs", false))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(first.status(), 200);
+    let first_json: Value = first.json().await.unwrap();
+    assert_eq!(
+        first_json["choices"][0]["message"]["tool_calls"][0]["id"],
+        "call_wait"
+    );
+
+    let mut resume = openai_body("gpt-x-pigs", false);
+    append_openai_tool_result(&mut resume, "call_wait");
+    resume["messages"].as_array_mut().unwrap().push(json!({
+        "role": "user",
+        "content": "<system-reminder>TodoWrite reminder</system-reminder>"
+    }));
+
+    let second = client
+        .post(format!("{pigs_url}/chat/completions"))
+        .json(&resume)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(second.status(), 200);
+    let second_json: Value = second.json().await.unwrap();
+    assert_eq!(second_json["choices"][0]["message"]["content"], "答案是 4");
+
+    let reqs = fu.requests.lock().unwrap();
+    assert_eq!(reqs.len(), 2, "第二发应恢复同一只 Pre，而不是新开一轮");
+    let sent = &reqs[1].1;
+    let roles: Vec<&str> = sent["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|message| message["role"].as_str().unwrap())
+        .collect();
+    assert_eq!(roles, vec!["system", "user", "assistant", "tool", "user"]);
+    assert_eq!(sent["messages"][3]["tool_call_id"], "call_wait");
+    assert_eq!(
+        sent["messages"][4]["content"],
+        "<system-reminder>TodoWrite reminder</system-reminder>"
+    );
 }
 
 /// 回归：客户端带 `accept-encoding` 且上游**真的压缩**了响应时，编排必须照样能读。
@@ -867,6 +1066,18 @@ async fn executor_resume_keeps_one_phase_prompt_upstream() {
             "同一 Executor pig 的阶段说明不能重复注入"
         );
     }
+
+    let post = &reqs[4].1;
+    let exec_messages = exec_resume2["messages"].as_array().unwrap();
+    let post_messages = post["messages"].as_array().unwrap();
+    assert_eq!(
+        &post_messages[..exec_messages.len()],
+        exec_messages.as_slice(),
+        "真实上游 Post 请求必须保留 Executor 最后一发的完整消息前缀"
+    );
+    assert_eq!(post_messages[exec_messages.len()]["role"], "assistant");
+    assert_eq!(post_messages[exec_messages.len()]["content"], "草稿完成");
+    assert_eq!(post_messages[exec_messages.len() + 1]["role"], "user");
 }
 
 /// 尾部带工具结果却没有对应现场 → 明确报错，不悄悄重跑一整轮。
@@ -1029,6 +1240,10 @@ async fn spawn_pigs_with_bases(upstream_url: &str) -> (tokio::task::JoinHandle<(
     let config = Config {
         listen: "127.0.0.1:0".into(),
         key: String::new(),
+        logging: pigs_proxy::LoggingConfig {
+            detail: pigs_proxy::LogDetail::Off,
+            ..Default::default()
+        },
         upstream: Upstreams {
             openai: format!("{upstream_url}/oa"),
             responses: format!("{upstream_url}/rs"),

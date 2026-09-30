@@ -13,9 +13,9 @@ code{background:#eef1f6;border-radius:4px;padding:1px 6px;font-family:Consolas,m
 
 <h2>启动流程</h2>
 <div class="card"><ol>
-<li>解析 <code>-h/--help</code>、<code>--example</code>、<code>--listen</code>、<code>--base-url</code>。</li>
+<li>解析 <code>-h/--help</code>、<code>--example</code>、<code>--listen</code>、<code>--base-url</code>、<code>--log-detail</code>、<code>--log-dir</code>。</li>
 <li>若 <code>config.toml</code> 不存在，直接把内嵌模板写到当前目录，再继续启动。</li>
-<li><code>--listen</code> 临时覆盖监听地址；<code>--base-url</code> 临时把三个协议 upstream 都设成同一地址。</li>
+<li><code>--listen</code> 临时覆盖监听地址；<code>--base-url</code> 临时把三个协议 upstream 都设成同一地址；<code>--log-detail</code> / <code>--log-dir</code> 覆盖 HTTP 抓包配置。</li>
 <li>校验 <code>upstream.openai</code>、<code>upstream.responses</code>、<code>upstream.anthropic</code> 都非空。</li>
 <li>初始化控制台 + 按天滚动文件日志，然后启动 proxy。</li>
 </ol></div>
@@ -26,13 +26,16 @@ code{background:#eef1f6;border-radius:4px;padding:1px 6px;font-family:Consolas,m
 <tr><td><code>pigs</code></td><td>读取 <code>./config.toml</code>；缺失时生成默认文件并继续启动。</td></tr>
 <tr><td><code>pigs --listen 127.0.0.1:4000</code></td><td>仅本次运行覆盖监听地址。</td></tr>
 <tr><td><code>pigs --base-url http://…</code></td><td>仅本次运行把三协议 upstream base 统一覆盖成该地址。</td></tr>
+<tr><td><code>pigs --log-detail off|basic|max</code></td><td>覆盖 HTTP 诊断抓包详细程度。</td></tr>
+<tr><td><code>pigs --log-dir PATH</code></td><td>覆盖 HTTP 抓包文件目录。</td></tr>
 <tr><td><code>pigs --example</code></td><td>把根 <code>config.toml</code> 的内嵌模板写成 <code>config.example.toml</code>，然后退出。</td></tr>
 <tr><td><code>pigs -h / --help</code></td><td>打印简短帮助并退出；当前不会附加整份配置模板。</td></tr>
 </table></div>
 
 <h2>日志</h2>
 <div class="card">
-<p><code>logging.rs</code> 同时输出到控制台和文件。文件使用 tracing-appender 的 daily rolling，目录是 <code>logs/</code>，前缀是 <code>pigs.log</code>；实际文件名会带日期。日志级别由 <code>RUST_LOG</code> 控制，默认 <code>info</code>。</p>
+<p><code>logging.rs</code> 同时输出 tracing 日志到控制台和文件。文件使用 tracing-appender 的 daily rolling，目录是 <code>logs/</code>，前缀是 <code>pigs.log</code>；实际文件名会带日期。日志级别由 <code>RUST_LOG</code> 控制，默认 <code>info</code>。</p>
+<p>另外，proxy 的 HTTP 诊断抓包由 <code>[logging]</code> 配置控制。当前测试阶段默认 <code>detail = "max"</code>，目录默认 <code>logs/http</code>：每个请求/响应各写一个文件，并记录完整 JSON/SSE body；<code>basic</code> 只写元数据，<code>off</code> 关闭。敏感鉴权头会打码，但 body 不做语义脱敏。</p>
 </div>
 
 <h2>职责边界</h2>

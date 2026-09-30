@@ -20,10 +20,10 @@ pigs 是一个 Rust 前置代理。普通请求走透传；只有同时满足以
 
 - 客户端模型名 `<name>-pigs` 改成 `<name>` 发给上游；回客户端时使用客户端原始模型名。
 - Pre / Executor：只在进入该 pig 时，把相位指令追加到当前任务 user 文本；同一 pig 内的工具暂停/恢复不会再次注入相位指令。
-- Post：只在进入 Post 时，把此前产物逐条追加为 assistant 消息，再追加一次 Post 的 user 指令；Post 内继续执行时复用该基础现场。
+- Post：不从最初请求重新构造。Executor 完成后，把 Executor 的基础请求与完整 `phase_transcript` 物化成连续对话，再只追加一条 Post 的 user 指令；因此 Post 以前一发 Executor 请求为完整消息前缀，并额外包含 Executor 最终 assistant 输出。Post 内继续执行时复用这一基础现场。
 - 其它字段，例如 `tools`、`tool_choice`、`stream`、`temperature`、`max_tokens`、`thinking`、`reasoning`、`response_format`、`stream_options`、`parallel_tool_calls` 等，当前主链路不主动删除或改写。
 
-历史中的工具调用、工具结果、图片和其它非文本块继续保留。每个 pig 持有自己的基础请求与相位内原生对话记录：相位提示只在 pig 开始时注入一次，之后模型输出、工具调用和工具结果按原生顺序追加。
+历史中的工具调用、工具结果、图片和其它非文本块继续保留。每个 pig 持有自己的基础请求与相位内原生对话记录：相位提示只在 pig 开始时注入一次，之后模型输出、工具调用和工具结果按原生顺序追加。Executor → Post 是特例：Post 直接继承 Executor 已形成的完整协议上下文，以保持长前缀稳定、减少重复读取和前缀缓存损失。
 
 `pigs-protocol` 中仍保留 `set_stream`、`strip_tools` 等通用函数，但当前编排主链路不会调用它们。
 
@@ -34,7 +34,7 @@ pigs 是一个 Rust 前置代理。普通请求走透传；只有同时满足以
 - 当前 pig 相位暂停；
 - 工具调用按三协议各自的原生形状交给客户端执行；ToolCall 只属于当前 Paused 响应，不进入持久 TurnState；
 - `ContinuationStore` 在进程内存保存现场，默认最多 64 条，TTL 30 分钟；
-- 客户端把工具结果接回历史后再次请求，pigs 从请求尾部提取工具结果 id；
+- 客户端把工具结果接回历史后再次请求，pigs 会在整份请求中查找当前 pending continuation 所等待的工具结果 id；结果后即使还有 reminder / 普通 user 消息，也仍可恢复；
 - 若 id 与某个 continuation 的全部 pending 调用匹配，则取出该现场并继续同一只 pig；
 - 同一 pig 可以经历任意多轮“工具调用 → 客户端执行 → 工具结果回填”；每次暂停只返回本轮新产生的工具调用，不重放已经消费过的历史调用；
 - 工具调用被结果匹配并恢复后即视为已消费；最终 Completed 响应不得再次包含这些历史 ToolCall；
@@ -152,11 +152,27 @@ Post：
 
 - `listen`
 - 可选 `key`
+- `[logging].detail`：`off` / `basic` / `max`，当前测试阶段默认 `max`
+- `[logging].directory`：HTTP 抓包目录，默认 `logs/http`
 - `[upstream].openai`
 - `[upstream].responses`
 - `[upstream].anthropic`
 
-`--base-url` 会临时把三个协议 base 都设置成同一个地址。
+`--base-url` 会临时把三个协议 base 都设置成同一个地址；`--log-detail` / `--log-dir` 可覆盖 HTTP 诊断日志配置。
+
+## HTTP 诊断抓包
+
+普通 tracing 日志仍输出控制台和 `logs/pigs.log.<日期>`，级别由 `RUST_LOG` 控制。除此之外，proxy 还有独立的 HTTP 抓包日志：
+
+- `off`：不生成抓包文件；
+- `basic`：每个请求/响应单独生成文件，只记录交换编号、方向、方法/状态、目标、头和 body 字节数；
+- `max`：在 basic 基础上额外记录完整 body。当前内部测试阶段缺省即为 `max`；
+- 文件名使用同一 exchange id 关联一组事件，例如 `client-request` / `client-response`、内部 loopback 的 `internal-request` / `internal-response`、以及 `upstream-request` / `upstream-response`；编排请求还会额外生成 `orchestration-decision` 与 `orchestration-outcome`；
+- 流式响应会完整捕获实际经过 proxy 的 SSE；正常读到流末尾写 `capture_complete: true`，若连接/Body 在中途被丢弃则写 `false`；
+- gzip / deflate / brotli 响应在写日志时尽量解压成明文，不改变实际转发字节；
+- `authorization`、`x-api-key`、cookie、内部 loopback token 等敏感头会自动打码，query 中常见 key/token/secret/auth/password 参数也会打码；
+- `orchestration-decision` 会记录客户端会话、请求中全部工具结果 id、尾部连续工具结果 id、当时所有 pending continuation（id / phase / pending tool ids / age）、实际命中的工具结果以及最终路由判定；尾部集合只用于诊断，不再决定是否恢复；`orchestration-outcome` 会记录完成或暂停、continuation id 和本轮 tool call ids；
+- **请求/响应 body 不做语义脱敏**，因此 `max` 日志可能包含用户 prompt、工具结果和模型输出，只适合受控测试环境。
 
 crate 职责：
 

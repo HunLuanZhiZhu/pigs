@@ -12,12 +12,14 @@ code{background:#eef1f6;border-radius:4px;padding:1px 6px;font-family:Consolas,m
 <h1>pigs-protocol</h1>
 <p class="muted">当前实现不是“纯 serde 结构体字典”，而是一组基于 <code>serde_json::Value</code> 的协议工具：路径判定、请求体手术、JSON/SSE 输出解析、增量流解析和客户端响应合成。</p>
 
+<div class="card"><p><strong>调试提示：</strong>protocol 负责解析/合成，但不自行写抓包。proxy 的 HTTP 诊断 <code>max</code> 模式会把解析前的原始 JSON/SSE 请求与响应分别落盘，可用于比对协议层是否丢字段或改写形状。</p></div>
+
 <h2>模块职责</h2>
 <div class="card"><table>
 <tr><th>模块</th><th>当前职责</th></tr>
 <tr><td><code>route.rs</code></td><td>三协议路径判定、<code>-pigs</code> 后缀判断与剥离。</td></tr>
 <tr><td><code>surgery.rs</code></td><td>读取/改 model、识别 stream、在阶段开始时追加提示、追加相位内原生对话条目等 JSON 修改。</td></tr>
-<tr><td><code>output.rs</code></td><td>把三协议 JSON/SSE 上游输出解析为统一 <code>ModelOutput</code>、<code>Part</code>、<code>ToolCall</code>，并提取尾部工具结果 id。</td></tr>
+<tr><td><code>output.rs</code></td><td>把三协议 JSON/SSE 上游输出解析为统一 <code>ModelOutput</code>、<code>Part</code>、<code>ToolCall</code>，扫描请求中的工具结果 id，并用 pending id 定位 continuation 的恢复起点；起点之后的客户端消息保持原样。</td></tr>
 <tr><td><code>response.rs</code></td><td>SSE 增量解析、实时事件处理、<code>StreamEncoder</code>、非流式 JSON/SSE 响应合成。</td></tr>
 <tr><td><code>sse.rs</code></td><td>SSE content-type 等基础判断。</td></tr>
 </table></div>

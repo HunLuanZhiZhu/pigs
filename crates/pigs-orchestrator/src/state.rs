@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 pub struct TurnState {
     /// 当前相位。
     pub phase: Pig,
-    /// 本轮最初的客户端请求 body。阶段请求始终从这里构造，不拿恢复请求重建阶段语义。
+    /// 本轮最初的客户端请求 body。Pre / Executor 从这里构造；Post 直接继承 Executor 完整上下文。
     pub root_body: Value,
     /// 当前 pig 第一次进入时构造好的基础请求（已注入一次阶段提示）。
     pub phase_base_body: Option<Value>,
@@ -24,8 +24,6 @@ pub struct TurnState {
     pub path: Vec<Pig>,
     /// Pre 的分析（Executor 指令要用）。
     pub pre_output: String,
-    /// 需要接回对话的相位产物（Post 用；逐条追加，不合并）。
-    pub transcript: Vec<String>,
     /// 历次失败路径（Pre 重规划用）。
     pub failure_paths: Vec<String>,
     /// 各段可见文本（最终答复 = 按顺序空行拼接）。
@@ -57,7 +55,6 @@ impl TurnState {
             phase_transcript: Vec::new(),
             path: Vec::new(),
             pre_output: String::new(),
-            transcript: Vec::new(),
             failure_paths: Vec::new(),
             visible: Vec::new(),
             parts: Vec::new(),
@@ -71,7 +68,7 @@ impl TurnState {
         }
     }
 
-    /// 清掉当前 pig 的临时对话现场。进入新 pig 或 Pre 重规划时调用。
+    /// 清掉当前 pig 的临时对话现场。进入 Pre / Executor 新阶段或 Pre 重规划时调用。
     pub fn reset_phase_conversation(&mut self) {
         self.phase_base_body = None;
         self.phase_transcript.clear();
@@ -178,9 +175,19 @@ pub struct Continuation {
     pub created: Instant,
 }
 
-/// 内存 continuation 存储：容量与 TTL 有界，按"尾部工具结果 id"匹配。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContinuationSummary {
+    pub id: String,
+    pub session: String,
+    pub phase: Pig,
+    pub pending: Vec<String>,
+    pub age_ms: u128,
+}
+
+/// 内存 continuation 存储：容量与 TTL 有界，按客户端请求中出现的工具结果 id 匹配。
 ///
-/// 匹配规则：某条 continuation 的**全部** pending id 都出现在请求的尾部工具结果里，就算它的恢复请求。
+/// 匹配规则：某条 continuation 的**全部** pending id 都出现在当前请求的工具结果里，
+/// 就算它的恢复请求。若历史长对话同时命中多条遗留现场，优先取最新的一条。
 #[derive(Debug)]
 pub struct ContinuationStore {
     entries: Vec<Continuation>,
@@ -219,10 +226,10 @@ impl ContinuationStore {
         id
     }
 
-    /// 按尾部工具结果 id 找并**取出**匹配的 continuation（取出即独占，避免重复恢复）。
+    /// 按请求中出现的工具结果 id 找并**取出**匹配的 continuation（取出即独占）。
     pub fn take_match(&mut self, result_ids: &[String]) -> Option<Continuation> {
         self.evict_expired();
-        let index = self.entries.iter().position(|entry| {
+        let index = self.entries.iter().rposition(|entry| {
             !entry.pending.is_empty()
                 && entry
                     .pending
@@ -234,6 +241,21 @@ impl ContinuationStore {
 
     pub fn len(&self) -> usize {
         self.entries.len()
+    }
+
+    /// 诊断用快照：不会消费 continuation；先清理已过期项再返回当前等待现场。
+    pub fn summaries(&mut self) -> Vec<ContinuationSummary> {
+        self.evict_expired();
+        self.entries
+            .iter()
+            .map(|entry| ContinuationSummary {
+                id: entry.id.clone(),
+                session: entry.state.session.clone(),
+                phase: entry.state.phase,
+                pending: entry.pending.clone(),
+                age_ms: entry.created.elapsed().as_millis(),
+            })
+            .collect()
     }
 
     fn evict_expired(&mut self) {
@@ -322,6 +344,29 @@ mod tests {
         assert_eq!(taken.id, id);
         assert_eq!(taken.state.phase, Pig::Executor);
         assert!(store.take_match(&["call_1".into(), "call_2".into()]).is_none());
+    }
+
+    #[test]
+    fn store_prefers_newest_matching_continuation() {
+        let mut store = ContinuationStore::new(4, Duration::from_secs(60));
+        let older = store.insert(Continuation {
+            id: String::new(),
+            pending: vec!["old".into()],
+            state: state(),
+            created: Instant::now(),
+        });
+        let newer = store.insert(Continuation {
+            id: String::new(),
+            pending: vec!["new".into()],
+            state: state(),
+            created: Instant::now(),
+        });
+
+        let taken = store
+            .take_match(&["old".into(), "new".into()])
+            .expect("长历史同时包含旧/新结果时应命中最新现场");
+        assert_eq!(taken.id, newer);
+        assert_ne!(taken.id, older);
     }
 
     #[test]

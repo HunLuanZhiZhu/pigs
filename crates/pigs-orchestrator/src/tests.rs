@@ -564,6 +564,18 @@ async fn executor_tool_resumes_keep_one_phase_prompt() {
             "Executor 阶段说明在同一 pig 中必须只有一份"
         );
     }
+
+    let post: serde_json::Value = serde_json::from_slice(&reqs[4].body).unwrap();
+    let exec_messages = exec_resume2["messages"].as_array().unwrap();
+    let post_messages = post["messages"].as_array().unwrap();
+    assert_eq!(
+        &post_messages[..exec_messages.len()],
+        exec_messages.as_slice(),
+        "Post 必须保留 Executor 最后一发请求的完整消息前缀"
+    );
+    assert_eq!(post_messages[exec_messages.len()]["role"], "assistant");
+    assert_eq!(post_messages[exec_messages.len()]["content"], "草稿完成");
+    assert_eq!(post_messages[exec_messages.len() + 1]["role"], "user");
 }
 
 #[tokio::test]
@@ -593,20 +605,25 @@ async fn post_pigfail_returns_to_pre_with_failure_paths() {
     // 第二次 Pre 的指令里带上了失败路径
     let pre2: serde_json::Value = serde_json::from_slice(&reqs[3].body).unwrap();
     assert!(last_message_content(&pre2).contains("走偏了"));
-    // 第二次 Post：产物**逐条**接回（不合并），指令是新的一条 user
+    // 第二次 Post：直接继承第二次 Executor 的完整上下文，只在末尾追加评审 user。
+    let exec2: serde_json::Value = serde_json::from_slice(&reqs[4].body).unwrap();
     let post2: serde_json::Value = serde_json::from_slice(&reqs[5].body).unwrap();
+    assert_eq!(roles(&post2), vec!["system", "user", "assistant", "user"]);
     assert_eq!(
-        roles(&post2),
-        vec!["system", "user", "assistant", "assistant", "assistant", "user"],
-        "逐条追加：草稿一 / 走偏了 / 草稿二 各占一条"
+        &post2["messages"].as_array().unwrap()[..exec2["messages"].as_array().unwrap().len()],
+        exec2["messages"].as_array().unwrap().as_slice(),
+        "Post 的消息前缀必须逐条等于当前 Executor 最后一发请求"
     );
-    assert_eq!(post2["messages"][2]["content"], "草稿一");
-    assert_eq!(post2["messages"][3]["content"], "走偏了");
-    assert_eq!(post2["messages"][4]["content"], "草稿二");
-    assert_eq!(
-        post2["messages"][1]["content"], "帮我完成任务Z",
-        "原问题不许被覆盖"
+    assert_eq!(post2["messages"][2]["content"], "草稿二");
+    assert!(
+        post2["messages"][1]["content"]
+            .as_str()
+            .unwrap()
+            .contains("计划二（这次记住失败路径）"),
+        "Executor 阶段注入的 Pre 计划必须随完整前缀进入 Post"
     );
+    assert!(!post2.to_string().contains("草稿一"));
+    assert!(!post2.to_string().contains("走偏了"));
 }
 
 #[tokio::test]
