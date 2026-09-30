@@ -19,7 +19,7 @@ async fn main() -> Result<()> {
         println!("  pigs --base-url http://…         覆盖上游地址（mini-proxy 或任意上游 API）");
         println!("  pigs --example              导出配置模板到 config.example.toml");
         println!("  pigs -h | --help            显示此帮助\n");
-        println!("model 带 -pig 后缀的请求走 Pre→Executor→Post 编排，其余原样透传。");
+        println!("model 带 -pigs 后缀的请求走 Pre→Executor→Post 编排，其余原样透传。");
         return Ok(());
     }
 

@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
-description = "三协议公共词汇层：路径路由、-pig 规则、JSON/SSE 响应文本提取、最终答复合成"
+description = "三协议公共词汇层：路径路由、-pigs 规则、JSON/SSE 响应文本提取、最终答复合成"
 
 [dependencies]
 serde = { workspace = true }

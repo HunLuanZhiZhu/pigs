@@ -1,203 +1,101 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="UTF-8">
-<title>pigs-orchestrator —— 编排引擎</title>
+<html lang="zh-CN"><head><meta charset="UTF-8"><title>pigs-orchestrator —— 编排状态机</title>
 <style>
-  :root { --ink:#1a2332; --sub:#5a6b80; --line:#dde5ee; --blue:#2563eb; --blue-bg:#eff4ff;
-          --green:#059669; --green-bg:#ecfdf5; --amber:#b45309; --amber-bg:#fffbeb;
-          --red:#dc2626; --red-bg:#fef2f2; --card:#fff; --bg:#f6f8fb; }
-  * { box-sizing:border-box; margin:0; padding:0; }
-  body { font-family:"Microsoft YaHei","PingFang SC",sans-serif; color:var(--ink); background:var(--bg); line-height:1.75; padding:40px 16px; }
-  .wrap { max-width:920px; margin:0 auto; }
-  .crumb { font-size:13px; margin-bottom:14px; } .crumb a { color:var(--blue); text-decoration:none; }
-  h1 { font-size:28px; margin-bottom:4px; }
-  .tagline { color:var(--sub); margin-bottom:26px; }
-  h2 { font-size:20px; margin:30px 0 10px; padding-left:12px; border-left:4px solid var(--blue); }
-  h3 { font-size:16px; margin:16px 0 6px; }
-  p, li { font-size:15px; }
-  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:20px 24px; margin:14px 0; }
-  .muted { color:var(--sub); }
-  table { border-collapse:collapse; width:100%; margin:12px 0; background:#fff; }
-  th, td { border:1px solid var(--line); padding:8px 12px; font-size:14px; text-align:left; vertical-align:top; }
-  th { background:var(--blue-bg); color:var(--blue); }
-  code { background:#eef1f6; border-radius:4px; padding:1px 6px; font-size:13px; font-family:Consolas,monospace; color:#c2410c; }
-  pre { background:#1e293b; color:#e2e8f0; border-radius:10px; padding:14px 18px; font-size:13px; overflow-x:auto; margin:10px 0; line-height:1.6; }
-  .phase { display:flex; gap:10px; margin:14px 0; }
-  .ph { flex:1; border:2px solid var(--blue); border-radius:10px; padding:12px 14px; background:var(--blue-bg); }
-  .ph b { color:var(--blue); }
-  .ph small { color:var(--sub); display:block; margin-top:4px; }
-  .tip { border-left:4px solid var(--green); background:var(--green-bg); padding:12px 16px; border-radius:0 8px 8px 0; margin:12px 0; }
-  .warn { border-left:4px solid var(--red); background:var(--red-bg); padding:12px 16px; border-radius:0 8px 8px 0; margin:12px 0; }
-  .note { border-left:4px solid var(--amber); background:var(--amber-bg); padding:12px 16px; border-radius:0 8px 8px 0; margin:12px 0; }
-</style>
-</head>
-<body>
-<div class="wrap">
-
+:root{--ink:#1a2332;--sub:#5a6b80;--line:#dde5ee;--blue:#2563eb;--blue-bg:#eff4ff;--green:#059669;--green-bg:#ecfdf5;--amber:#b45309;--amber-bg:#fffbeb;--red:#dc2626;--red-bg:#fef2f2;--bg:#f6f8fb}
+*{box-sizing:border-box}body{font-family:"Microsoft YaHei","PingFang SC",sans-serif;color:var(--ink);background:var(--bg);line-height:1.75;padding:40px 16px;margin:0}.wrap{max-width:960px;margin:auto}
+h1{margin:0}h2{font-size:20px;margin:30px 0 10px;padding-left:12px;border-left:4px solid var(--blue)}h3{font-size:16px;margin-top:22px}p,li{font-size:15px}.muted{color:var(--sub)}
+.card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:20px 24px;margin:14px 0}table{border-collapse:collapse;width:100%}th,td{border:1px solid var(--line);padding:8px 12px;text-align:left;vertical-align:top}th{background:var(--blue-bg);color:var(--blue)}
+code{background:#eef1f6;border-radius:4px;padding:1px 6px;font-family:Consolas,monospace;color:#c2410c}pre{background:#1e293b;color:#e2e8f0;border-radius:10px;padding:14px 18px;overflow:auto}
+.tip{border-left:4px solid var(--green);background:var(--green-bg);padding:12px 16px}.warn{border-left:4px solid var(--red);background:var(--red-bg);padding:12px 16px}.note{border-left:4px solid var(--amber);background:var(--amber-bg);padding:12px 16px}.crumb a{color:var(--blue);text-decoration:none}
+</style></head><body><div class="wrap">
 <p class="crumb"><a href="../../index.html">← 返回总览</a></p>
 <h1>pigs-orchestrator</h1>
-<p class="tagline">秘书处：把一个 <code>-pig</code> 请求拆成多次与模型的往来，最后合成一个答复。<strong>本项目的灵魂。</strong></p>
+<p class="muted">当前实现：维护 Pre → Executor → Post 状态机，把父请求克隆成多个协议原生子请求，并处理工具暂停/恢复、相位文本、usage 和停止原因。</p>
 
-<h2>它在干嘛？（ELI5）</h2>
-<div class="card">
-<p>普通请求是"一问一答"。带 <code>-pig</code> 的请求，客人要的不是一问一答，而是<strong>一道工序</strong>：
-先替我把材料理一遍，再正式干，干完再按格式收拾好。秘书处就是干这个的——
-它把<strong>一件事拆成三步</strong>，每一步都跟模型打个来回，最后把结果拼成一份答复交回前台。
-它自己<strong>不认识任何模型厂商</strong>：所有"跟模型打交道"都通过写好的子请求单子，交前台（proxy）去发。</p>
-</div>
-
-<h2>三相位管线</h2>
-<div class="card">
-<div class="phase">
-  <div class="ph"><b>① Pre（备料）</b><small>在正式问题之前，先让模型/规则做一次准备：理清输入、补上下文、生成执行提示</small></div>
-  <div class="ph"><b>② Executor（执行）</b><small>正式干活：带着 Pre 的产物，把剥掉 -pig 后的原始请求发给模型，拿到正式回答</small></div>
-  <div class="ph"><b>③ Post（收拾）</b><small>把执行结果按约定格式加工/校验/补注，合成最终答复</small></div>
-</div>
-<p>每个相位 = <strong>组装一个协议原生的子请求 + 处理它的响应</strong>。相位是固定骨架，<strong>提示词是模板</strong>（<code>include_str!</code> 嵌入，语言各一份），相位里模型看到什么、输出怎么用，全部由代码 + 模板决定，<strong>不进配置文件</strong>。</p>
-<p><strong>最终答复 = 三只 pig 的可见文本按顺序用空行拼接</strong>（Pre 的分析 + Executor 的执行 + Post 的评审），不是只取最后一只。
-简单问题（Pre 直接判断并作答、末尾带 PIGEND）则整轮只有 Pre 一段。这是 legacy HTTP 运行时（<code>pigs-api/src/http_runtime.rs</code>）的语义，照搬。</p>
-</div>
-
-<h2>状态机：控制标记 + 预算</h2>
-<div class="card">
-<p>相位靠模型输出<strong>最后一行</strong>的控制标记来路由（标记必须单独成行，且前面得有实质内容，防止模型光吐一个标记）：</p>
-<table>
-  <tr><th>当前相位</th><th>输出末行</th><th>下一步</th></tr>
-  <tr><td>Pre</td><td><code>PIGEND</code></td><td>整轮结束（简单路径，只此一段文本）</td></tr>
-  <tr><td>Pre</td><td><code>PIGFAIL</code></td><td>记录失败路径 → 回 Pre 重规划（预算 2 次）</td></tr>
-  <tr><td>Pre</td><td>无标记</td><td>把分析作为 <code>{pre_output}</code> 注入 → Executor</td></tr>
-  <tr><td>Executor</td><td>（不解析）</td><td>总是进 Post 验收</td></tr>
-  <tr><td>Post</td><td><code>PIGEND</code></td><td>整轮结束（正常路径）</td></tr>
-  <tr><td>Post</td><td><code>PIGFAIL</code></td><td>清空产物 → 回 Pre 重规划（预算 2 次）</td></tr>
-  <tr><td>Post</td><td>无标记</td><td>提示词要求它"继续执行任务" → <strong>再走一次 Post</strong>（预算 3 次）</td></tr>
+<h2>状态机</h2>
+<div class="card"><table>
+<tr><th>相位</th><th>模型输出</th><th>下一步</th></tr>
+<tr><td>Pre</td><td>末尾控制标记 <code>PIGEND</code></td><td>简单路径完成，不进入 Executor/Post。</td></tr>
+<tr><td>Pre</td><td><code>PIGFAIL</code></td><td>记录失败路径并重新 Pre；重规划预算常量为 2。</td></tr>
+<tr><td>Pre</td><td>无控制标记</td><td>保存为 <code>pre_output</code>，进入 Executor。</td></tr>
+<tr><td>Executor</td><td>任意正常输出</td><td>不按 PIG 标记路由，产物加入 transcript，进入 Post。</td></tr>
+<tr><td>Post</td><td><code>PIGEND</code></td><td>正常完成。</td></tr>
+<tr><td>Post</td><td><code>PIGFAIL</code></td><td>记录失败路径，回 Pre 重规划。</td></tr>
+<tr><td>Post</td><td>无控制标记</td><td>产物加入 transcript，继续 Post；Post 迭代预算常量为 3。</td></tr>
 </table>
-<p><strong>预算耗尽 = 本轮失败</strong>：直接报错上抛（proxy 返回 422），绝不假装成功、不拿半成品当答复。
-重规划预算与 Post 重试预算都是<strong>代码里的常量</strong>（编排语义的一部分，不进配置）。</p>
-<p class="muted">注：实现以 legacy 实际在跑的 <code>pigs-api/src/orchestration.rs</code> + <code>http_runtime.rs</code> 为准
-（另一个较老的 <code>phased_runtime.rs</code> 是 Post↔Executor 回环、预算耗尽返回文本，那是 agent CLI 时代的形态，没有采用）。</p>
+<p>预算耗尽返回 <code>Error::Budget</code>。非流式 proxy 会把这种错误映射为 HTTP 422。</p>
 </div>
 
-<h2>工具调用：一只 pig 可以来回好几次</h2>
+<h2>子请求如何组装</h2>
 <div class="card">
-<p><strong>一只 pig 是一段对话区间，不是一次请求。</strong>它结束的条件是"模型这一轮不再要工具"：</p>
-<pre>模型：我要调用 Bash      → 相位暂停，调用原样交给客户端（原生 tool_calls / tool_use / function_call）
-客户端：执行 Bash         → 结果写进它自己的历史，再发一发请求
-pigs：按 tool_call id 匹配到现场 → 接着同一只 pig 继续 → 模型：还要再看一眼文件
-  …（如此往复任意次）…
-模型：不再要工具，给出这一相的产出 → 这才做 PIGEND/PIGFAIL 路由</pre>
-<p>跨这段等待的现场（相位、产物、失败路径、预算计数、已产生的可见文本、usage）存在内存
-<code>ContinuationStore</code> 里（容量 64 / TTL 30 分钟，按 id 匹配取出即独占）。
-客户端<b>不需要知道 continuation 的存在</b>：它照常把工具结果接回自己的历史再发请求即可。</p>
-<p class="muted">尾部带工具结果却匹配不到现场（服务重启过、现场过期）→ 明确返回 409，不悄悄重跑一整轮。</p>
+<p>每次调用 pig 时，orchestrator 从 <code>TurnInput.body</code> 克隆一份 JSON，而不是构建一套 typed request。</p>
+<p>组装顺序是：</p>
+<ol>
+<li>把当前 transcript 中的产物逐条作为 assistant 消息追加；</li>
+<li>生成当前相位提示词；Executor 提示词会包含 Pre 的 <code>pre_output</code>，失败路径等上下文也由模板注入；</li>
+<li>调用 <code>append_instruction</code> 把指令加在请求尾部：末项是 user 时追加到其文本，否则新建 user 消息；</li>
+<li>序列化 JSON，形成 <code>SubRequest</code>。</li>
+</ol>
+<p>因此旧文档里“多段产物合并成一条 assistant 消息”的说法已经不符合当前代码：当前 transcript 是逐条 push，随后逐条追加。</p>
 </div>
 
-<h2>流式：边到边拼接（动态）</h2>
+<h2>模型名与其它 body 字段</h2>
 <div class="card">
-<p>客户端带 <code>stream:true</code> 时，<strong>子请求也带 <code>stream:true</code></strong>——上游的增量一个字一个字到达，编排层边收边处理：</p>
-<pre>上游 SSE 增量 ──▶ MarkerFilter ──▶ 安全可见文本 ──▶ 客户端 SSE 帧
-                     ▲
-                     └─ 只压住两种尾巴：可能正在长成标记的最后一行（"PIG" → "PIGEND"，
-                        连它前面的换行一起留着），以及悬在末尾还没等到下一行内容的换行。
-                        其余文本一拿到就放行 —— 逐字流式，不是攒够一整行才动。</pre>
-<p>这套 <code>MarkerFilter</code> 的安全性来自"凡是还能拼成控制标记的部分都被压住"：已经发出去的字符，
-事后不可能再与后面的字符拼成标记，所以<strong>标记绝不会漏给客户端</strong>。相位之间由 SSE 编码器补一个空行。
-编排跑完时，客户端实时收到的内容与"最终答复"逐字一致（测试里就是这么对比的）。</p>
-<p class="muted">注：legacy 的 <code>MarkerLineBuffer</code> 是"整行放行"——某只 pig 只输出一行时，
-这行要等到流结束才吐出去（简单问题看起来就像没流式）。这里改成只延迟"可能成标记"的尾巴，
-输出内容完全一致，只是更早到达；各种切片方式（含标记被切成任意片段）都有测试盯着。</p>
-<p>客户端<strong>没</strong>要流式时，子请求也不流式：一次性拿 JSON 全文、解析文本、最后合成一个 JSON 响应——两条路径共用同一套标记判定与拼接逻辑。</p>
-<p><strong>思考（thinking / reasoning）也边想边流：</strong>实时通道传的是<em>带类型的增量</em>（文本 / 思考 / 思考签名），
-文本照旧过控制标记过滤，思考原样转发。Anthropic 的思考块有开关生命周期（开块 → thinking_delta → signature_delta → 关块），
-由 SSE 编码器管；收尾时只补"没法边到边流"的完整块（工具调用、redacted_thinking 等），<strong>不会重复发</strong>。</p>
-<p class="muted">例外：Responses 协议的思考是以完整条目（含 encrypted_content）在收尾时按原生 item 发出的，不做增量流。</p>
-<div class="note"><strong>为什么子请求要去掉 <code>accept-encoding</code>：</strong>客户端可能带 <code>gzip</code>，原样转给上游后回来的就是压缩体，
-编排层按 JSON / SSE 解析会直接失败（真实踩过：<code>expected value at line 1 column 1</code>）。子请求一律不带该头，强制上游回明文。</div>
+<p>去掉 <code>-pigs</code> 的 model 修改发生在 proxy 进入 orchestrator 之前。orchestrator 本身不会调用 <code>set_stream</code> 或 <code>strip_tools</code>；客户端原有的 <code>stream</code>、<code>tools</code>、<code>tool_choice</code>、thinking/reasoning 等字段随克隆 body 保留。</p>
+<p>由于 body 经过 <code>serde_json::Value</code> 解析再序列化，只能承诺 JSON 语义字段保留，不能承诺原始字节、空白或对象键顺序完全一致。</p>
 </div>
 
-<h2>一次编排的生命周期</h2>
-<div class="card flow">
-  <span class="box">客户端：model = "claude-opus-5<b style="color:#c2410c">-pig</b>"</span>
-  <span class="arrow">▼ 1. proxy 交进来（已剥后缀 → 真名 claude-opus-5）</span>
-  <span class="box hl">orchestrator 生成会话 ID（或继承客户端自带值）</span>
-  <span class="arrow">▼ 2. Pre：组装子请求①（提示词模板 + 原始消息）</span>
-  <span class="box">loopback → proxy 透传通道 → 上游</span>
-  <span class="arrow">▼ 3. 拿到响应①，喂给 Executor 的组装</span>
-  <span class="box">子请求② → 上游 → 响应②</span>
-  <span class="arrow">▼ 4. Post：按模板加工，合成最终答复</span>
-  <span class="box">交回 proxy → 客户端</span>
-</div>
-<p class="muted">每一步的产物都不是"只给下一步看"：Pre 的分析、Executor 的执行、Post 的评审会按顺序拼成一份答复，
-客户端要流式的话，这些文本在产生的当下就推过去了（见下面的"流式：边到边拼接"）。</p>
-
-<h2>四个关键设计</h2>
-
-<h3>① 会话头贯穿（prompt cache 不断）</h3>
+<h2>工具调用与 continuation</h2>
 <div class="card">
-<p>一次编排会向上游发 <strong>好几个请求</strong>。如果每个请求的会话标识不一致，上游的 prompt cache 亲和就断了（每个子请求都被当新会话）。
-所以：编排开始时生成<strong>一个稳定的 <code>x-opencode-session</code></strong>（或客户端已带就继承），塞进本次编排的<strong>每一个子请求</strong>。
-下游的 mini-proxy 看到客户端（这里就是 pigs）已经带了会话头，就原样透传不覆盖——两边的设计正好咬合。</p>
+<p>一只 pig 可以包含多轮工具往返。模型输出只要还有工具调用，当前相位就不会做 PIGEND/PIGFAIL 路由，而是先暂停：</p>
+<pre>模型请求工具
+  ↓
+保存 TurnState + pending tool ids
+  ↓
+返回 Paused，客户端执行工具
+  ↓
+客户端把 tool result 放回历史再次请求
+  ↓
+proxy 匹配 ContinuationStore
+  ↓
+resume 同一相位</pre>
+<p><code>ContinuationStore</code> 当前默认容量 64，TTL 30 分钟，纯内存保存。匹配规则是某个 continuation 的全部 pending id 都出现在请求尾部工具结果 id 集合中；匹配后即从 store 取出，避免重复恢复。</p>
 </div>
 
-<h3>② loopback 回环（不另造 HTTP 轮子）</h3>
+<h2>会话头与 content-type</h2>
 <div class="card">
-<p>子请求不从 orchestrator 直接发往上游，而是<strong>回环到本机 proxy 的透传通道</strong>再出去。好处：头的处理、流式转发、
-错误返回这些"搬运"细节只写一份；坏处是要防递归——回环请求带<strong>随机内部令牌</strong>，handler 验证令牌后跳过 <code>-pig</code> 分流，
-发往上游前删掉令牌。监听非回环地址时要把回环目标换算成可连地址（legacy 已有实现，照搬）。</p>
+<p>状态机为一轮编排持有稳定的 session：若客户端已有 <code>x-opencode-session</code> 则继承，否则生成 UUID v7。</p>
+<p>每个子请求发送前，如果 headers 中没有 <code>content-type</code>，会补 <code>application/json</code>；如果没有 <code>x-opencode-session</code>，会补当前 session。</p>
+<p><strong>当前不会删除 <code>accept-encoding</code></strong>。旧 HTML 中“编排子请求一律去掉 accept-encoding”的说明已经过时。压缩响应由 proxy loopback 链路中的默认 reqwest 客户端负责自动解压后再交给 JSON/SSE 解析。</p>
 </div>
 
-<h3>③ 对失败的态度：不重试，如实上抛</h3>
+<h2>loopback 传输</h2>
 <div class="card">
-<p>任何子请求失败（连接不上、上游报错），编排<strong>立刻停止</strong>，把错误如实交回 proxy 返回客户端。
-<strong>绝不自动重拨</strong>——重试是传输层的事（mini-proxy 或下游 Agent），编排层重试不仅职责越界，
-还会在相位之间造成状态不一致（Pre 成功了、Executor 重试五次，成本和语义都乱）。</p>
+<p>orchestrator 只依赖抽象 <code>Transport</code>，不依赖 axum。实际服务中注入的是 proxy 里的 <code>LoopbackTransport</code>：它把 <code>SubRequest</code> POST 回本机 proxy，再由 passthrough 通道发向真实上游。</p>
+<div class="warn">loopback 内部令牌 <code>x-pigs-loopback</code> 是 proxy transport 加的。当前 upstream header 过滤未删除它，所以它目前会继续到真实上游；这里记录的是现状，不代表目标设计。</div>
 </div>
 
-<h3>④ 纯函数化：不认识 axum</h3>
+<h2>流式</h2>
 <div class="card">
-<p>orchestrator 的公开接口大致是"给一个协议请求，还你一个可迭代执行的编排计划"。
-它<strong>不依赖 HTTP 框架</strong>（没有 axum/tower），网络交互全部通过一个窄接口（发子请求、收响应）注入。
-这样整条编排管线可以拿固定输入做<strong>离线单元测试</strong>，不用起服务器。</p>
-</div>
-
-<h2>红线</h2>
-<div class="warn">
+<p>当父请求 body 的 <code>stream</code> 为 true 时，orchestrator 使用 transport 的 streaming 路径。上游 SSE 被增量解析并通过 <code>ProgressSink</code> 产生事件。</p>
 <ul>
-  <li><strong>不做工具执行</strong>：没有 bash/file/MCP——编排只通过协议消息与模型交互（这是本次手术砍掉 agent 循环的核心）；</li>
-  <li><strong>工具调用：暂停交棒，不自己执行</strong>——<code>tools</code> 原样透传给上游；模型要工具时，相位<b>暂停</b>，
-  调用原样交给客户端执行；客户端带工具结果回来时按 tool_call id 匹配到现场，<b>接着同一只 pig 继续</b>
-  （见下节"工具调用：一只 pig 可以来回好几次"）。</li>
-  <li><strong>不做重试</strong>（见③）；</li>
-  <li><strong>不知道上游是谁</strong>：mini-proxy 还是直连 API，与它无关；</li>
-  <li><strong>不认识 axum</strong>：HTTP 只通过窄接口注入；</li>
-  <li><strong>不读配置文件</strong>：提示词、相位定义都是代码与嵌入模板，部署参数不经过它。</li>
+<li>文本增量经过 <code>MarkerFilter</code>，只抑制可能形成尾部控制标记的字符，避免 <code>PIGEND</code>/<code>PIGFAIL</code> 泄出；</li>
+<li>thinking、reasoning summary、signature 等使用带类型事件传给 proxy 的 <code>StreamEncoder</code>；</li>
+<li>一轮结束时，无法实时还原的原生块由收尾逻辑补发。</li>
 </ul>
+<p>非流式时则整轮读取上游 JSON/SSE 输出，解析成统一的 <code>ModelOutput</code>。</p>
 </div>
 
-<h2>从 legacy 收编什么</h2>
-<div class="note">
-<table>
-  <tr><th>legacy 文件</th><th>拿什么</th></tr>
-  <tr><td><code>crates/pigs-api/src/orchestration.rs</code></td><td><strong>状态机本体</strong>（标记路由、重规划/Post 重试预算、预算耗尽即失败）——逐条对齐</td></tr>
-  <tr><td><code>crates/pigs-api/src/http_runtime.rs</code></td><td><code>MarkerLineBuffer</code>（流式增量去标记，本项目改为"只延迟可能成标记的尾巴"）与相位循环骨架</td></tr>
-  <tr><td><code>crates/pigs-api/src/protocol.rs</code></td><td>相位间的 body 手术：指令追加在 user 文本后（<code>\n\n---\n\n</code> 分隔）、产物作为 assistant 消息接回、Post 追加新的 user 消息</td></tr>
-  <tr><td><code>crates/pigs-api/src/output.rs</code></td><td><code>StreamingEncoder</code>（客户端 SSE 帧序列：三协议各自的块开/关/终止帧）</td></tr>
-  <tr><td><code>crates/pigs-prompts/prompts/*.txt</code></td><td>Pre/Executor/Post 模板原文（中英双语，逐字节相同），改由 <code>include_str!</code> 嵌入</td></tr>
-  <tr><td><code>crates/pigs-proxy/src/loopback.rs</code></td><td>回环传输与内部令牌机制</td></tr>
-</table>
-<p><strong>三只 pig 怎么看见彼此的产物</strong>（与 legacy 完全一致）：
-Pre 的分析填进 Executor 指令模板的 <code>{pre_output}</code>；Executor 的草稿和历次评审报告则作为
-<strong>assistant 消息接回对话</strong>，Post 的验收指令是<strong>新追加的一条 user 消息</strong>——
-模型看到的是"我自己刚写的稿子请验收"，而不是"用户塞来的一段材料"。用户原话（含图片等非文本内容）全程不被覆盖。</p>
-<p><strong>多段产物会合成一条 assistant 消息</strong>（用空行连接）：Post 重试/重规划时草稿与历次评审会挨在一起，
-而 Bedrock / Vertex 这类网关对"连续两条 assistant"直接 400（<code>roles must alternate…</code>；直连 A 社官方 API 则自己会合并）。
-正常路径只有 Executor 一段草稿，产物本来就只有一条，发出去的东西与 legacy 逐字节相同。</p>
+<h2>最终内容与 usage</h2>
+<div class="card">
+<p><code>TurnState</code> 会把各轮去除控制标记后的可见文本按顺序保留；最终 <code>TurnResult.text</code> 用两个换行连接这些片段。<code>parts</code> 同时保存文本和解析出的非文本块，供 protocol 层合成最终响应。</p>
+<p><code>stop_reason</code> 每一轮都会覆盖，最终保留最后一轮解析到的值。</p>
+<p><strong>usage 不累计。</strong>当前实现比较 <code>usage.input_tokens</code>，保留该值最大的那一轮完整 usage 对象；平局保留旧对象。OpenAI Chat 若只提供 <code>prompt_tokens</code> 而没有 <code>input_tokens</code>，比较值按 0 处理。</p>
+<div class="note">工具暂停时，状态现场本身仍包含已记录的 usage；但 proxy 的 Paused 响应明确使用 <code>usage: None</code>，所以客户端不会收到“截至暂停点的累计 usage”。</div>
 </div>
 
-<div class="tip"><strong>验收标准：</strong>给一个固定的 <code>-pig</code> 请求 + 一个"假装上游"的固定响应序列，
-编排输出的子请求序列（顺序、model 名、注入的提示词、会话头、<code>stream</code> 标志）与预期逐字节一致；
-上游中途报错时编排立刻上抛、不发后续相位；流式路径下，客户端收到的 SSE 回读出的文本必须与最终答复完全相同、且不含任何控制标记。</div>
-
+<h2>错误处理</h2>
+<div class="card">
+<p>transport 或解析错误会立即终止当前编排，不在 orchestrator 内自动重试。是否采用额外重试策略属于其它层的职责。</p>
 </div>
-</body>
-</html>
+</div></body></html>

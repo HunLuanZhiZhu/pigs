@@ -1,67 +1,42 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="UTF-8">
-<title>pigs —— 可执行入口</title>
+<html lang="zh-CN"><head><meta charset="UTF-8"><title>pigs —— 可执行入口</title>
 <style>
-  :root { --ink:#1a2332; --sub:#5a6b80; --line:#dde5ee; --blue:#2563eb; --blue-bg:#eff4ff;
-          --green:#059669; --green-bg:#ecfdf5; --red:#dc2626; --red-bg:#fef2f2; --card:#fff; --bg:#f6f8fb; }
-  * { box-sizing:border-box; margin:0; padding:0; }
-  body { font-family:"Microsoft YaHei","PingFang SC",sans-serif; color:var(--ink); background:var(--bg); line-height:1.75; padding:40px 16px; }
-  .wrap { max-width:860px; margin:0 auto; }
-  .crumb { font-size:13px; margin-bottom:14px; } .crumb a { color:var(--blue); text-decoration:none; }
-  h1 { font-size:28px; margin-bottom:4px; }
-  .tagline { color:var(--sub); margin-bottom:26px; }
-  h2 { font-size:20px; margin:30px 0 10px; padding-left:12px; border-left:4px solid var(--blue); }
-  p, li { font-size:15px; }
-  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:20px 24px; margin:14px 0; }
-  code { background:#eef1f6; border-radius:4px; padding:1px 6px; font-size:13px; font-family:Consolas,monospace; color:#c2410c; }
-  pre { background:#1e293b; color:#e2e8f0; border-radius:10px; padding:14px 18px; font-size:13px; overflow-x:auto; margin:10px 0; line-height:1.6; }
-  .tip { border-left:4px solid var(--green); background:var(--green-bg); padding:12px 16px; border-radius:0 8px 8px 0; margin:12px 0; }
-  .warn { border-left:4px solid var(--red); background:var(--red-bg); padding:12px 16px; border-radius:0 8px 8px 0; margin:12px 0; }
-</style>
-</head>
-<body>
-<div class="wrap">
-
+:root{--ink:#1a2332;--sub:#5a6b80;--line:#dde5ee;--blue:#2563eb;--blue-bg:#eff4ff;--green:#059669;--green-bg:#ecfdf5;--red:#dc2626;--red-bg:#fef2f2;--bg:#f6f8fb}
+*{box-sizing:border-box}body{font-family:"Microsoft YaHei","PingFang SC",sans-serif;color:var(--ink);background:var(--bg);line-height:1.75;padding:40px 16px;margin:0}.wrap{max-width:880px;margin:auto}
+h1{margin:0}h2{font-size:20px;margin:30px 0 10px;padding-left:12px;border-left:4px solid var(--blue)}p,li{font-size:15px}.muted{color:var(--sub)}
+.card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:20px 24px;margin:14px 0}table{border-collapse:collapse;width:100%}th,td{border:1px solid var(--line);padding:8px 12px;text-align:left;vertical-align:top}th{background:var(--blue-bg);color:var(--blue)}
+code{background:#eef1f6;border-radius:4px;padding:1px 6px;font-family:Consolas,monospace;color:#c2410c}.tip{border-left:4px solid var(--green);background:var(--green-bg);padding:12px 16px}.warn{border-left:4px solid var(--red);background:var(--red-bg);padding:12px 16px}.crumb a{color:var(--blue);text-decoration:none}
+</style></head><body><div class="wrap">
 <p class="crumb"><a href="../../index.html">← 返回总览</a></p>
 <h1>pigs（可执行入口）</h1>
-<p class="tagline">电源开关。目标体量：<strong>不到一百行，且永不增长</strong>。</p>
+<p class="muted">当前实现：解析命令行、加载/生成配置、初始化日志，然后调用 <code>pigs_proxy::serve(config)</code>。</p>
 
-<h2>它干嘛的？（ELI5）</h2>
+<h2>启动流程</h2>
+<div class="card"><ol>
+<li>解析 <code>-h/--help</code>、<code>--example</code>、<code>--listen</code>、<code>--base-url</code>。</li>
+<li>若 <code>config.toml</code> 不存在，直接把内嵌模板写到当前目录，再继续启动。</li>
+<li><code>--listen</code> 临时覆盖监听地址；<code>--base-url</code> 临时把三个协议 upstream 都设成同一地址。</li>
+<li>校验 <code>upstream.openai</code>、<code>upstream.responses</code>、<code>upstream.anthropic</code> 都非空。</li>
+<li>初始化控制台 + 按天滚动文件日志，然后启动 proxy。</li>
+</ol></div>
+
+<h2>命令行</h2>
+<div class="card"><table>
+<tr><th>命令</th><th>当前行为</th></tr>
+<tr><td><code>pigs</code></td><td>读取 <code>./config.toml</code>；缺失时生成默认文件并继续启动。</td></tr>
+<tr><td><code>pigs --listen 127.0.0.1:4000</code></td><td>仅本次运行覆盖监听地址。</td></tr>
+<tr><td><code>pigs --base-url http://…</code></td><td>仅本次运行把三协议 upstream base 统一覆盖成该地址。</td></tr>
+<tr><td><code>pigs --example</code></td><td>把根 <code>config.toml</code> 的内嵌模板写成 <code>config.example.toml</code>，然后退出。</td></tr>
+<tr><td><code>pigs -h / --help</code></td><td>打印简短帮助并退出；当前不会附加整份配置模板。</td></tr>
+</table></div>
+
+<h2>日志</h2>
 <div class="card">
-<p>整栋楼的电闸。有人按下开关（运行 <code>pigs.exe</code>），它做四件事然后退场：</p>
-<ol>
-  <li>看一眼命令行参数（要改端口/地址吗？要导出配置模板吗？）；</li>
-  <li>找 <code>config.toml</code>：没有就生成一份默认的并直接启动（passthrough 不用填 key，开箱即用）；</li>
-  <li>把日志打开（固定写 <code>logs/pigs.log</code>）；</li>
-  <li>喊一声"前台开业"——调用 <code>pigs_proxy::serve(config)</code>，然后自己一直堵在那一行，直到进程被杀。</li>
-</ol>
+<p><code>logging.rs</code> 同时输出到控制台和文件。文件使用 tracing-appender 的 daily rolling，目录是 <code>logs/</code>，前缀是 <code>pigs.log</code>；实际文件名会带日期。日志级别由 <code>RUST_LOG</code> 控制，默认 <code>info</code>。</p>
 </div>
 
-<h2>计划内容</h2>
-<div class="card">
-<table>
-  <tr><th style="width:240px">命令行</th><th>作用</th></tr>
-  <tr><td><code>pigs</code></td><td>读 config.toml 启动（无配置则生成默认配置并启动）</td></tr>
-  <tr><td><code>pigs --listen 127.0.0.1:4000</code></td><td>临时覆盖监听地址（不改文件）</td></tr>
-  <tr><td><code>pigs --base-url http://…</code></td><td>临时覆盖上游地址</td></tr>
-  <tr><td><code>pigs --example</code></td><td>把内嵌配置模板导出到 config.example.toml（覆盖旧文件）</td></tr>
-  <tr><td><code>pigs -h / --help</code></td><td>帮助（附配置模板全文）</td></tr>
-</table>
-<pre>[package] pigs  (bin)
-├─ 读参数 → 读配置 → 日志 → pigs_proxy::serve()
-└─ 结束，共约 60–90 行</pre>
-</div>
+<h2>职责边界</h2>
+<div class="warn"><p>这个 crate 当前不实现协议解析、<code>-pigs</code> 路由、编排或重试；这些逻辑分别在 <code>pigs-proxy</code>、<code>pigs-orchestrator</code> 与 <code>pigs-protocol</code>。</p></div>
 
-<h2>红线</h2>
-<div class="warn">
-<p><strong>任何业务逻辑都不许出现在这个 crate 里</strong>：没有路由、没有协议、没有编排、没有重试。
-它出现第一处 <code>if model.contains("-pig")</code> 就是架构事故——那行代码的家在 <code>pigs-proxy</code> 或 <code>pigs-protocol</code>。</p>
-</div>
-
-<div class="tip"><strong>验收标准：</strong>删掉这个 crate，其余三个照常编译、照常跑测试。它只是插头。</div>
-
-</div>
-</body>
-</html>
+<div class="tip"><strong>配置来源：</strong><code>pigs-proxy::config_template()</code> 最终来自根 <code>config.toml</code> 的 <code>include_str!</code>；因此根配置文件同时是默认模板。</div>
+</div></body></html>

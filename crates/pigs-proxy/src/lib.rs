@@ -1,6 +1,6 @@
 //! pigs-proxy —— HTTP 入口与传输壳。
 //!
-//! 单端口接住三种协议；model 带 `-pig` 走编排，否则原样透传到上游。
+//! 单端口接住三种协议；model 带 `-pigs` 走编排，否则原样透传到上游。
 //! 上游可以是 mini-proxy（多拿会话头/映射/重试）或任意直连 API，本 crate 不关心。
 
 pub mod config;
@@ -55,7 +55,7 @@ fn build(config: Config, addr: std::net::SocketAddr) -> axum::Router {
         "  上游：chat={} responses={} anthropic={}",
         config.upstream.openai, config.upstream.responses, config.upstream.anthropic
     );
-    println!("  -pig 编排：Pre → Executor → Post");
+    println!("  -pigs 编排：Pre → Executor → Post");
     println!("═══════════════════════════════════════════");
     server::router(build_state(config, addr))
 }

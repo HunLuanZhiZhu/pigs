@@ -27,7 +27,7 @@ use transport::{LiveSink, SubRequest, SubResponse, Transport, TransportError};
 /// 会话头名：编排产生的稳定会话标识，所有子请求共用（mini-proxy 见已带就不覆盖）。
 pub const SESSION_HEADER: &str = "x-opencode-session";
 
-/// 回环内部令牌头（proxy 验证后跳过 -pig 分流，防递归）。
+/// 回环内部令牌头（proxy 验证后跳过 -pigs 分流，防递归）。
 pub const LOOPBACK_TOKEN_HEADER: &str = "x-pigs-loopback";
 
 /// 预算常量（legacy 默认值；刻意不进配置——它们是编排语义的一部分）。

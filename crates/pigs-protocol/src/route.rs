@@ -1,4 +1,4 @@
-//! 裸路径 → 协议判定，与 `-pig` 后缀规则（全仓库唯一定义处）。
+//! 裸路径 → 协议判定，与 `-pigs` 后缀规则（全仓库唯一定义处）。
 
 /// 支持的三种协议。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,16 +36,16 @@ pub fn protocol_from_path(path: &str) -> Option<Protocol> {
     }
 }
 
-/// model 名是否携带 `-pig` 后缀。
-pub fn has_pig(model: &str) -> bool {
-    model.ends_with("-pig")
+/// model 名是否携带 `-pigs` 后缀。
+pub fn has_pigs(model: &str) -> bool {
+    model.ends_with("-pigs")
 }
 
-/// 剥掉 `-pig` 后缀，返回真正的上游 model 名；无后缀返回 None。
+/// 剥掉 `-pigs` 后缀，返回真正的上游 model 名；无后缀返回 None。
 ///
-/// 例：`"claude-opus-5-pig"` → `Some("claude-opus-5")`；`"claude-opus-5"` → `None`。
-pub fn strip_pig_suffix(model: &str) -> Option<String> {
-    model.strip_suffix("-pig").map(|s| s.to_string())
+/// 例：`"claude-opus-5-pigs"` → `Some("claude-opus-5")`；`"claude-opus-5"` → `None`。
+pub fn strip_pigs_suffix(model: &str) -> Option<String> {
+    model.strip_suffix("-pigs").map(|s| s.to_string())
 }
 
 #[cfg(test)]
@@ -69,13 +69,15 @@ mod tests {
     }
 
     #[test]
-    fn pig_suffix_rules() {
-        assert!(has_pig("claude-opus-5-pig"));
-        assert!(!has_pig("claude-opus-5"));
-        assert_eq!(strip_pig_suffix("claude-opus-5-pig").as_deref(), Some("claude-opus-5"));
-        assert_eq!(strip_pig_suffix("deepseek-v4.1-flash-pig").as_deref(), Some("deepseek-v4.1-flash"));
-        assert_eq!(strip_pig_suffix("claude-opus-5"), None);
-        // 本身叫 -pig 的裸名不算
-        assert_eq!(strip_pig_suffix("-pig").as_deref(), Some(""));
+    fn pigs_suffix_rules() {
+        assert!(has_pigs("claude-opus-5-pigs"));
+        assert!(!has_pigs("claude-opus-5-pig"));
+        assert!(!has_pigs("claude-opus-5"));
+        assert_eq!(strip_pigs_suffix("claude-opus-5-pigs").as_deref(), Some("claude-opus-5"));
+        assert_eq!(strip_pigs_suffix("claude-opus-5-pig"), None);
+        assert_eq!(strip_pigs_suffix("deepseek-v4.1-flash-pigs").as_deref(), Some("deepseek-v4.1-flash"));
+        assert_eq!(strip_pigs_suffix("claude-opus-5"), None);
+        // 只有后缀本身时，剥离结果为空模型名
+        assert_eq!(strip_pigs_suffix("-pigs").as_deref(), Some(""));
     }
 }

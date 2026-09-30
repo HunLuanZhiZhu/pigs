@@ -1,125 +1,67 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="UTF-8">
-<title>pigs-proxy —— 前台与传输壳</title>
+<html lang="zh-CN"><head><meta charset="UTF-8"><title>pigs-proxy —— HTTP 入口与传输</title>
 <style>
-  :root { --ink:#1a2332; --sub:#5a6b80; --line:#dde5ee; --blue:#2563eb; --blue-bg:#eff4ff;
-          --green:#059669; --green-bg:#ecfdf5; --red:#dc2626; --red-bg:#fef2f2; --card:#fff; --bg:#f6f8fb; }
-  * { box-sizing:border-box; margin:0; padding:0; }
-  body { font-family:"Microsoft YaHei","PingFang SC",sans-serif; color:var(--ink); background:var(--bg); line-height:1.75; padding:40px 16px; }
-  .wrap { max-width:920px; margin:0 auto; }
-  .crumb { font-size:13px; margin-bottom:14px; } .crumb a { color:var(--blue); text-decoration:none; }
-  h1 { font-size:28px; margin-bottom:4px; }
-  .tagline { color:var(--sub); margin-bottom:26px; }
-  h2 { font-size:20px; margin:30px 0 10px; padding-left:12px; border-left:4px solid var(--blue); }
-  h3 { font-size:16px; margin:16px 0 6px; }
-  p, li { font-size:15px; }
-  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:20px 24px; margin:14px 0; }
-  .muted { color:var(--sub); }
-  table { border-collapse:collapse; width:100%; margin:12px 0; background:#fff; }
-  th, td { border:1px solid var(--line); padding:8px 12px; font-size:14px; text-align:left; vertical-align:top; }
-  th { background:var(--blue-bg); color:var(--blue); }
-  code { background:#eef1f6; border-radius:4px; padding:1px 6px; font-size:13px; font-family:Consolas,monospace; color:#c2410c; }
-  pre { background:#1e293b; color:#e2e8f0; border-radius:10px; padding:14px 18px; font-size:13px; overflow-x:auto; margin:10px 0; line-height:1.6; }
-  .flow { text-align:center; }
-  .box { display:inline-block; border:2px solid var(--ink); border-radius:10px; padding:7px 18px; margin:4px; background:#fff; font-weight:bold; font-size:14px; }
-  .box.hl { border-color:var(--blue); background:var(--blue-bg); color:var(--blue); }
-  .arrow { display:block; color:var(--sub); margin:2px 0; }
-  .tip { border-left:4px solid var(--green); background:var(--green-bg); padding:12px 16px; border-radius:0 8px 8px 0; margin:12px 0; }
-  .warn { border-left:4px solid var(--red); background:var(--red-bg); padding:12px 16px; border-radius:0 8px 8px 0; margin:12px 0; }
-</style>
-</head>
-<body>
-<div class="wrap">
-
+:root{--ink:#1a2332;--sub:#5a6b80;--line:#dde5ee;--blue:#2563eb;--blue-bg:#eff4ff;--green:#059669;--green-bg:#ecfdf5;--amber:#b45309;--amber-bg:#fffbeb;--red:#dc2626;--red-bg:#fef2f2;--bg:#f6f8fb}
+*{box-sizing:border-box}body{font-family:"Microsoft YaHei","PingFang SC",sans-serif;color:var(--ink);background:var(--bg);line-height:1.75;padding:40px 16px;margin:0}.wrap{max-width:940px;margin:auto}
+h1{margin:0}h2{font-size:20px;margin:30px 0 10px;padding-left:12px;border-left:4px solid var(--blue)}p,li{font-size:15px}.muted{color:var(--sub)}.card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:20px 24px;margin:14px 0}
+table{border-collapse:collapse;width:100%}th,td{border:1px solid var(--line);padding:8px 12px;text-align:left;vertical-align:top}th{background:var(--blue-bg);color:var(--blue)}code{background:#eef1f6;border-radius:4px;padding:1px 6px;font-family:Consolas,monospace;color:#c2410c}
+.tip{border-left:4px solid var(--green);background:var(--green-bg);padding:12px 16px}.warn{border-left:4px solid var(--red);background:var(--red-bg);padding:12px 16px}.note{border-left:4px solid var(--amber);background:var(--amber-bg);padding:12px 16px}.crumb a{color:var(--blue);text-decoration:none}
+</style></head><body><div class="wrap">
 <p class="crumb"><a href="../../index.html">← 返回总览</a></p>
 <h1>pigs-proxy</h1>
-<p class="tagline">前台本台：一个端口接住所有请求，按 <code>-pig</code> 分流，剩下的全是"搬运"。</p>
+<p class="muted">当前实现：一个 axum fallback 接住所有方法和路径，负责分流、上游转发、loopback 以及把编排结果编码给客户端。</p>
 
-<h2>它是干嘛的？（ELI5）</h2>
+<h2>入口分流</h2>
+<div class="card"><table>
+<tr><th>输入</th><th>当前处理</th></tr>
+<tr><td>带合法 <code>x-pigs-loopback</code> 的内部请求</td><td>跳过编排判断，直接走 passthrough，避免递归。</td></tr>
+<tr><td><code>POST</code> + 三协议路径</td><td>先尝试解析 JSON。非法 JSON 返回 400；合法后读取 model，带 <code>-pigs</code> 则编排，不带则继续透传原始 body。</td></tr>
+<tr><td>其它请求</td><td>直接 passthrough。</td></tr>
+</table></div>
+
+<h2>上游地址</h2>
 <div class="card">
-<p>前台坐在窗口，只做三件事：<strong>收件、看标签、送件</strong>。
-收件——任何客户端发来的 HTTP 请求都接住；看标签——model 名字带不带 <code>-pig</code>；
-送件——不带标签的原封不动送去上游，带标签的转手给秘书处（orchestrator）。
-前台<strong>不理解条子的内容、不决定条子的命运、从不重试</strong>——理解是字典（protocol）和秘书处（orchestrator）的事。</p>
+<p>配置不是单一 <code>base_url</code>，而是三个协议 base：<code>upstream.openai</code>、<code>upstream.responses</code>、<code>upstream.anthropic</code>。未识别路径落到 OpenAI base。</p>
+<p>上游 URL 的计算是“按协议选 base + 客户端原路径 + 原 query”。不会把客户端路径替换成固定协议后缀。</p>
 </div>
 
-<h2>路由表</h2>
+<h2>请求头</h2>
 <div class="card">
-<table>
-  <tr><th>路径</th><th>协议</th><th>说明</th></tr>
-  <tr><td><code>POST /chat/completions</code></td><td>OpenAI Chat</td><td rowspan="3">三种协议共用一个监听端口，按裸路径自动区分</td></tr>
-  <tr><td><code>POST /v1/messages</code></td><td>Anthropic Messages</td></tr>
-  <tr><td><code>POST /responses</code></td><td>OpenAI Responses</td></tr>
-  <tr><td><code>GET /v1/models</code></td><td>—</td><td>未识别路径：原样透传给上游（不做本地模型列表）</td></tr>
-  <tr><td>其它任意路径</td><td>—</td><td>同上，全部落进 fallback 透传；只有"POST + 三协议路径 + model 带 -pig"才进编排</td></tr>
-</table>
+<p><code>Upstream::forward_headers</code> 会过滤 <code>host</code>、<code>content-length</code>、<code>connection</code>、<code>transfer-encoding</code>。其它端到端头默认保留。</p>
+<p>当配置 <code>key</code> 非空时，客户端的 <code>authorization</code> 与 <code>x-api-key</code> 会被移除，再写入：</p>
+<ul><li><code>authorization: Bearer &lt;key&gt;</code></li><li><code>x-api-key: &lt;key&gt;</code></li></ul>
+<p>因此“所有请求头原样透传”不是当前实现。</p>
 </div>
 
-<h2>一次透传的完整流程（无 -pig）</h2>
-<div class="card flow">
-  <span class="box">客户端请求</span>
-  <span class="arrow">▼ 1. 收下 body、headers</span>
-  <span class="box hl">pigs-proxy</span>
-  <span class="arrow">▼ 2. 读出 model，查后缀 → 没有 -pig</span>
-  <span class="box">原样转发：base_url + 原路径</span>
-  <span class="arrow">▼ 3. 上游响应（JSON 或 SSE 流）原样回传</span>
-  <span class="box">客户端收到</span>
-</div>
-<p class="muted" style="text-align:center">"原样"的意思：方法、路径、查询串、body、端到端头（鉴权等）一个字节不改。proxy 对请求内容是"文盲"，这是刻意设计。</p>
-
-<h2>必须带上的修复：content-encoding（血泪教训）</h2>
-<div class="warn">
-<p><strong>legacy 版的真实事故</strong>：透传时把客户端的"我可以收压缩包裹"（<code>accept-encoding: gzip</code>）原样转给了上游，
-上游真的回了压缩包裹，但 legacy 在回传时<strong>把"此件已压缩"的标签（<code>content-encoding</code> 头）撕掉了</strong>。
-客户端拿到一团 gzip 字节，以为是明文，<code>JSON.parse</code> 直接炸出 <strong>"Failed to parse JSON"</strong>。</p>
-<p>mini-proxy 已修（标签跟着包裹走）。<strong>重建 pigs-proxy 时必须带上这条修复</strong>：响应头只跳过
-<code>content-length / connection / transfer-encoding</code> 三个逐跳头，<code>content-encoding</code> 必须随 body 转发。
-（legacy 出事位置：<code>legacy/crates/pigs-proxy/src/upstream.rs:272</code>）</p>
-</div>
-
-<h2>有 -pig 时：与秘书处的握手</h2>
+<h2>普通 passthrough 与压缩</h2>
 <div class="card">
-<ul>
-  <li>proxy 把解析好的请求交给 <code>pigs-orchestrator</code>，拿到"一串子请求 + 合成逻辑"；</li>
-  <li>子请求通过 <strong>loopback（本机回环）</strong>再进 proxy 自己的透传通道发往上游——为什么绕一圈？
-  因为透传通道里所有"搬运"细节（头处理、流式、错误返回）已经写好了，秘书处直接复用，不另造轮子；</li>
-  <li>回环请求带一个<strong>随机内部令牌</strong>，handler 验证后跳过 <code>-pig</code> 分流（否则无限递归），发往上游前删掉令牌（不泄露）；</li>
-  <li>客户端要流式（<code>stream:true</code>）时<strong>边编排边推帧</strong>：先把协议起始帧发出去（连接立刻变成流），
-  之后每只 pig 的安全文本一到就转成协议 SSE 帧推给客户端，跑完再补终止序列；中途出错发<em>流内错误帧</em>（HTTP 状态此时已定，改不了了）。
-  客户端没要流式时才等编排跑完一次性给 JSON；</li>
-  <li>子请求的 body 是编排层拼的（只改 model 名 + 尾部追加指令），proxy 只管照单发出去；
-  回客户端的 <code>model</code> 是<b>客户端请求的那个名字</b>（带 <code>-pig</code>）。</li>
-  <li>模型要工具 → 编排暂停，proxy 把调用作为<b>终止帧</b>发给客户端（三协议各自的原生形状）；
-  客户端执行完带工具结果再发一发，proxy 按 tool_call id 取出现场，交给编排层接着同一只 pig 继续。</li>
-</ul>
+<p>passthrough 保留上游状态码并把响应 body 作为字节流回传。响应头跳过 <code>connection</code>、<code>transfer-encoding</code>、<code>content-length</code>，但保留 <code>content-encoding</code>。</p>
+<p>面向真实上游的 reqwest 客户端显式关闭 gzip / brotli / deflate 自动解压，目的是让压缩 body 与编码头保持一致。</p>
 </div>
 
-<h2>配置加载</h2>
+<h2><code>-pigs</code> 编排</h2>
 <div class="card">
-<p>3 行 toml（<code>listen</code> / <code>base_url</code> / 可选 <code>key</code>）。首次运行没有配置文件 → 生成默认配置并直接启动（passthrough 无需填 key）。
-模板用 <code>include_str!("../config.toml")</code> 嵌入二进制（mini-proxy 同款做法），支持 <code>--example</code> 导出。</p>
+<p>proxy 先把请求 JSON 中的 model 改成去掉 <code>-pigs</code> 的真实模型名，然后构造 <code>TurnInput</code>。客户端是否流式由原 body 的 <code>stream</code> 布尔值决定。</p>
+<p>若请求尾部含工具结果 id，proxy 会从 <code>ContinuationStore</code> 中取出匹配现场；找不到则返回 409。否则新开一轮编排。</p>
+<p>非流式编排完成后调用 <code>synthesize_json</code>；流式请求则立即返回 SSE body，后台运行状态机并通过 <code>StreamEncoder</code> 持续发帧。</p>
 </div>
 
-<h2>刻意不做（与 legacy pigs-proxy 的差异清单）</h2>
-<div class="warn">
-<table>
-  <tr><th>删掉的功能</th><th>为什么</th></tr>
-  <tr><td><code>retry.rs</code> 整套同渠道重试</td><td>双层重试会把上游抖动放大成请求风暴（10000×N 次）；健壮性归下游 Agent 或 mini-proxy</td></tr>
-  <tr><td><code>model_map</code> / models 列表 / 多供应商选择 / 未注册兜底</td><td>分流只看 <code>-pig</code> 字符串规则，上游只有一个 <code>base_url</code></td></tr>
-  <tr><td>thinking_effort 注入</td><td>归 mini-proxy（或下游 Agent 自己带）</td></tr>
-  <tr><td>x-opencode-session 补头与 <code>is_opencode</code></td><td>归 mini-proxy；编排的会话头由 orchestrator 生成并透传</td></tr>
-  <tr><td><code>[provider.aux]</code> 未识别路径透传</td><td>暂不需要，要时再加</td></tr>
-</table>
+<h2>loopback</h2>
+<div class="card">
+<p>编排子请求不是直接从 orchestrator 发真实上游，而是由 <code>LoopbackTransport</code> POST 回本服务，再复用 passthrough 通道。</p>
+<p>loopback 请求会额外加随机 <code>x-pigs-loopback</code>。本机 handler 只用它判断“这是内部请求”。</p>
+<div class="warn"><strong>当前实现细节：</strong>真实上游转发时的 header 过滤列表不包含 <code>x-pigs-loopback</code>，所以该内部头目前会继续被发送到上游。旧文档中“上游前删除、不泄露”的说法与代码不一致。</div>
+<p>loopback 使用默认 reqwest 客户端读取本机 proxy 返回，因此可以自动解压本机返回的压缩响应，供编排层解析 JSON/SSE。</p>
 </div>
 
-<h2>从 legacy 收编什么</h2>
-<div class="tip">
-<p><code>server.rs</code>（路由骨架，669→瘦身）、<code>upstream.rs</code>（透传+SSE 预读，带 content-encoding 修复）、
-<code>log.rs</code>（双输出日志）、<code>loopback.rs</code>（回环+令牌，改放 orchestrator 还是留这里待定——按依赖方向定）。</p>
+<h2>编排响应</h2>
+<div class="card">
+<p>编排路径不会把最后一个上游响应直接交给客户端。proxy 构造 <code>ResponseContent</code>，其中 model 使用客户端原始 <code>-pigs</code> 名称，再由 protocol 层生成新的 JSON/SSE 协议壳。</p>
+<p>Completed 使用状态机最终选中的 usage；Paused 明确传 <code>usage: None</code>。停止原因使用状态机记录的最后一轮值。</p>
 </div>
 
+<h2>错误状态</h2>
+<div class="note">
+<p>非法协议 JSON 返回 400；工具结果找不到 continuation 返回 409；预算耗尽的非流式编排返回 422；其它非流式编排错误通常返回 502。流式响应一旦已经开始，后续错误只能编码在 SSE 流内。</p>
 </div>
-</body>
-</html>
+</div></body></html>

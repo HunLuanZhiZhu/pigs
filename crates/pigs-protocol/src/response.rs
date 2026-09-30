@@ -925,7 +925,7 @@ impl StreamEncoder {
 
 /// 回给客户端的一轮内容：**按顺序**的内容序列 + 原样透传的停止原因与 usage。
 ///
-/// `model` 是客户端请求的那个名字（带 `-pig`），原样回显；
+/// `model` 是客户端请求的那个名字（带 `-pigs`），原样回显；
 /// `parts` 里 `Text` 走文本块，`Reasoning`/`Native`/`ToolCall` 按协议原生形状发出，一律不改写。
 #[derive(Debug, Clone)]
 pub struct ResponseContent<'a> {
@@ -1267,7 +1267,7 @@ mod tests {
             Part::Text("答案".into()),
         ];
         let content = ResponseContent {
-            model: "claude-x-pig",
+            model: "claude-x-pigs",
             parts: &parts,
             stop_reason: Some("end_turn"),
             usage: None,
@@ -1290,7 +1290,7 @@ mod tests {
             Part::Text("答案".into()),
         ];
         let content = ResponseContent {
-            model: "gpt-x-pig",
+            model: "gpt-x-pigs",
             parts: &parts,
             stop_reason: Some("stop"),
             usage: None,
@@ -1305,7 +1305,7 @@ mod tests {
         let reasoning = json!({"type": "reasoning", "id": "rs_1", "encrypted_content": "blob"});
         let parts = vec![Part::Native(reasoning.clone()), Part::Text("答案".into())];
         let content = ResponseContent {
-            model: "r-x-pig",
+            model: "r-x-pigs",
             parts: &parts,
             stop_reason: None,
             usage: None,
@@ -1321,7 +1321,7 @@ mod tests {
     fn synthesize_passes_through_stop_reason_and_usage() {
         let usage = json!({"input_tokens": 11, "output_tokens": 22});
         let content = ResponseContent {
-            model: "m-pig",
+            model: "m-pigs",
             parts: &[Part::Text("被截断的一半".into())],
             stop_reason: Some("max_tokens"),
             usage: Some(&usage),
@@ -1329,7 +1329,7 @@ mod tests {
         let anthropic = synthesize_json(Protocol::Anthropic, &content);
         assert_eq!(anthropic["stop_reason"], "max_tokens");
         assert_eq!(anthropic["usage"], usage);
-        assert_eq!(anthropic["model"], "m-pig");
+        assert_eq!(anthropic["model"], "m-pigs");
 
         let openai = synthesize_json(Protocol::OpenAI, &content);
         assert_eq!(openai["choices"][0]["finish_reason"], "max_tokens");
@@ -1402,7 +1402,7 @@ mod tests {
                 arguments: Value::String("{\"command\":\"ls\"}".into()),
                 native,
             }];
-            let mut encoder = StreamEncoder::new(protocol, "gpt-x-pig");
+            let mut encoder = StreamEncoder::new(protocol, "gpt-x-pigs");
             encoder.set_finish(Some("tool_calls".into()), None);
             let mut frames = encoder.start();
             frames.push_str(&encoder.push_text("我先看一下"));
@@ -1481,7 +1481,7 @@ mod tests {
     fn anthropic_stream_usage_shapes_are_official_valid() {
         // ① message_start.usage：input_tokens / output_tokens 必填数值
         //   （message_start 时刻上游 usage 未到，合法零值占位，legacy format.rs:125 同款）
-        let mut encoder = StreamEncoder::new(Protocol::Anthropic, "claude-x-pig".to_string());
+        let mut encoder = StreamEncoder::new(Protocol::Anthropic, "claude-x-pigs".to_string());
         let start = encoder.start();
         let start_json = frame_data(&start, "message_start");
         let usage = &start_json["message"]["usage"];
@@ -1491,7 +1491,7 @@ mod tests {
         );
 
         // ② 上游没给 usage：收尾 message_delta.usage 也必须形状合法（output_tokens 数值必填）
-        let mut encoder = StreamEncoder::new(Protocol::Anthropic, "claude-x-pig".to_string());
+        let mut encoder = StreamEncoder::new(Protocol::Anthropic, "claude-x-pigs".to_string());
         let _ = encoder.start();
         encoder.set_finish(Some("end_turn".to_string()), None);
         let finish = encoder.finish();
@@ -1504,7 +1504,7 @@ mod tests {
         assert!(finish.contains("message_stop"));
 
         // ③ 上游给了真值：原样透传，一个字段都不改
-        let mut encoder = StreamEncoder::new(Protocol::Anthropic, "claude-x-pig".to_string());
+        let mut encoder = StreamEncoder::new(Protocol::Anthropic, "claude-x-pigs".to_string());
         let _ = encoder.start();
         encoder.set_finish(
             Some("end_turn".to_string()),

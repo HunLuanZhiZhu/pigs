@@ -1,6 +1,6 @@
 //! 集成测试：真实 HTTP 链路 —— 假上游（wiremock 风格的手写 axum）+ 真实 pigs 服务。
 //!
-//! 覆盖：无 -pig 透传、content-encoding 完整透传（血泪教训回归）、-pig 全链路编排
+//! 覆盖：无 -pigs 透传、content-encoding 完整透传（血泪教训回归）、-pigs 全链路编排
 //! （经 loopback 回环）、Pre 简单路径短路、流式合成。
 
 use axum::body::Bytes;
@@ -392,7 +392,7 @@ async fn pig_flow_full_orchestration_via_loopback() {
         .post(format!("{pigs_url}/chat/completions"))
         .header("authorization", "Bearer client-key")
         .header("accept-encoding", "gzip, deflate, br")
-        .json(&openai_body("gpt-x-pig", false))
+        .json(&openai_body("gpt-x-pigs", false))
         .send()
         .await
         .unwrap();
@@ -405,8 +405,8 @@ async fn pig_flow_full_orchestration_via_loopback() {
         "分析：需要X\n\n执行结果……\n\n验收通过"
     );
     assert_eq!(final_json["choices"][0]["finish_reason"], "stop");
-    // 回客户端的是**它请求的那个名字**（带 -pig）
-    assert_eq!(final_json["model"], "gpt-x-pig");
+    // 回客户端的是**它请求的那个名字**（带 -pigs）
+    assert_eq!(final_json["model"], "gpt-x-pigs");
 
     // 上游收到 3 次子请求：只许改 model 名，其余字段原样
     let reqs = fu.requests.lock().unwrap();
@@ -449,7 +449,7 @@ async fn pig_flow_full_orchestration_via_loopback() {
         .post(format!("{pigs_url}/v1/messages"))
         .header("x-opencode-session", "client-session-1")
         .json(&json!({
-            "model": "claude-x-pig",
+            "model": "claude-x-pigs",
             "messages": [{"role": "user", "content": "简单问题"}]
         }))
         .send()
@@ -473,7 +473,7 @@ async fn pig_simple_path_answers_from_pre() {
     let client = reqwest::Client::new();
     let resp = client
         .post(format!("{pigs_url}/chat/completions"))
-        .json(&openai_body("gpt-x-pig", false))
+        .json(&openai_body("gpt-x-pigs", false))
         .send()
         .await
         .unwrap();
@@ -493,7 +493,7 @@ async fn pig_streaming_client_gets_sse() {
     let client = reqwest::Client::new();
     let resp = client
         .post(format!("{pigs_url}/chat/completions"))
-        .json(&openai_body("gpt-x-pig", true))
+        .json(&openai_body("gpt-x-pigs", true))
         .send()
         .await
         .unwrap();
@@ -521,7 +521,7 @@ async fn pig_streaming_end_to_end_streams_phases_without_markers() {
     let resp = client
         .post(format!("{pigs_url}/chat/completions"))
         .header("accept-encoding", "gzip, deflate, br")
-        .json(&openai_body("gpt-x-pig", true))
+        .json(&openai_body("gpt-x-pigs", true))
         .send()
         .await
         .unwrap();
@@ -572,7 +572,7 @@ async fn pig_streaming_is_progressive_not_buffered() {
     let started = std::time::Instant::now();
     let resp = reqwest::Client::new()
         .post(format!("{pigs_url}/chat/completions"))
-        .json(&openai_body("gpt-x-pig", true))
+        .json(&openai_body("gpt-x-pigs", true))
         .send()
         .await
         .unwrap();
@@ -624,7 +624,7 @@ async fn compressed_upstream_response_is_decompressed_locally() {
     let resp = reqwest::Client::new()
         .post(format!("{pigs_url}/chat/completions"))
         .header("accept-encoding", "gzip, deflate, br")
-        .json(&openai_body("gpt-x-pig", false))
+        .json(&openai_body("gpt-x-pigs", false))
         .send()
         .await
         .unwrap();
@@ -653,7 +653,7 @@ PIGEND"));
     // 第一发：模型要工具 → 客户端必须拿到原生的 tool_calls
     let resp = client
         .post(format!("{pigs_url}/chat/completions"))
-        .json(&openai_body("gpt-x-pig", false))
+        .json(&openai_body("gpt-x-pigs", false))
         .send()
         .await
         .unwrap();
@@ -665,10 +665,10 @@ PIGEND"));
     // 参数原样（没有转义/二次编码）
     assert_eq!(call["function"]["arguments"], "{\"command\":\"ls\"}");
     assert_eq!(body["choices"][0]["finish_reason"], "tool_calls");
-    assert_eq!(body["model"], "gpt-x-pig", "回客户端的是它请求的名字");
+    assert_eq!(body["model"], "gpt-x-pigs", "回客户端的是它请求的名字");
 
     // 第二发：客户端把工具结果接回历史后再发（真实 agent 就是这么干的）
-    let mut resume = openai_body("gpt-x-pig", false);
+    let mut resume = openai_body("gpt-x-pigs", false);
     resume["messages"].as_array_mut().unwrap().push(json!({
         "role": "assistant", "content": null,
         "tool_calls": [{"id": "call_1", "type": "function",
@@ -708,7 +708,7 @@ PIGEND"));
 async fn orphan_tool_result_gets_conflict() {
     let (_up, upstream_url, _fu) = spawn_fake_upstream().await;
     let (_pigs, pigs_url) = spawn_pigs(&upstream_url).await;
-    let mut body = openai_body("gpt-x-pig", false);
+    let mut body = openai_body("gpt-x-pigs", false);
     body["messages"].as_array_mut().unwrap().push(json!({
         "role": "tool", "tool_call_id": "never-seen", "content": "x"
     }));
@@ -745,7 +745,7 @@ PIGEND"}
     let resp = reqwest::Client::new()
         .post(format!("{pigs_url}/v1/messages"))
         .json(&json!({
-            "model": "claude-x-pig",
+            "model": "claude-x-pigs",
             "max_tokens": 1024,
             "thinking": {"type": "enabled", "budget_tokens": 512},
             "messages": [{"role": "user", "content": "1+1 等于几"}]
@@ -761,7 +761,7 @@ PIGEND"}
     assert_eq!(body["content"][0]["signature"], "sig-1");
     assert_eq!(body["content"][1]["type"], "text");
     assert_eq!(body["content"][1]["text"], "答案是 4", "控制标记不许漏");
-    assert_eq!(body["model"], "claude-x-pig");
+    assert_eq!(body["model"], "claude-x-pigs");
     assert_eq!(body["usage"]["input_tokens"], 9);
     // 上游收到的请求：thinking 配置与 tools 一字不动
     let reqs = fu.requests.lock().unwrap();
@@ -782,7 +782,7 @@ async fn anthropic_thinking_streams_live_without_duplication() {
     let resp = reqwest::Client::new()
         .post(format!("{pigs_url}/v1/messages"))
         .json(&json!({
-            "model": "claude-x-pig",
+            "model": "claude-x-pigs",
             "max_tokens": 512,
             "stream": true,
             "thinking": {"type": "enabled", "budget_tokens": 256},
@@ -823,7 +823,7 @@ async fn responses_reasoning_streams_live_and_item_arrives_at_end() {
     let resp = reqwest::Client::new()
         .post(format!("{pigs_url}/responses"))
         .json(&json!({
-            "model": "r-x-pig",
+            "model": "r-x-pigs",
             "stream": true,
             "reasoning": {"effort": "high", "summary": "auto"},
             "input": [{"role": "user", "content": [{"type": "input_text", "text": "1+1 等于几"}]}]
@@ -884,7 +884,7 @@ async fn spawn_pigs_with_bases(upstream_url: &str) -> (tokio::task::JoinHandle<(
 #[tokio::test]
 async fn per_protocol_bases_route_by_protocol_and_path_stays_verbatim() {
     let (_up, upstream_url, fu) = spawn_fake_upstream().await;
-    // 假上游按 FIFO 回放：①anthropic 透传 ②models ③-pig 的 Pre 子请求（PIGEND 一发结束）
+    // 假上游按 FIFO 回放：①anthropic 透传 ②models ③-pigs 的 Pre 子请求（PIGEND 一发结束）
     fu.responses.lock().unwrap().push(openai_text_response("上游原样回"));
     fu.responses.lock().unwrap().push(openai_text_response("上游原样回"));
     fu.responses.lock().unwrap().push(openai_text_response("直接回答\nPIGEND"));
@@ -892,7 +892,7 @@ async fn per_protocol_bases_route_by_protocol_and_path_stays_verbatim() {
 
     let client = reqwest::Client::new();
 
-    // ① Anthropic 路径（model 不带 -pig → 透传）：上游必须看到 /an/v1/messages
+    // ① Anthropic 路径（model 不带 -pigs → 透传）：上游必须看到 /an/v1/messages
     let resp = client
         .post(format!("{pigs_url}/v1/messages"))
         .json(&json!({
@@ -912,10 +912,10 @@ async fn per_protocol_bases_route_by_protocol_and_path_stays_verbatim() {
         .unwrap();
     assert_eq!(resp.status(), 200);
 
-    // ③ -pig 编排（chat）：子请求经回环也必须按协议落 /oa/chat/completions
+    // ③ -pigs 编排（chat）：子请求经回环也必须按协议落 /oa/chat/completions
     let resp = client
         .post(format!("{pigs_url}/chat/completions"))
-        .json(&openai_body("gpt-x-pig", false))
+        .json(&openai_body("gpt-x-pigs", false))
         .send()
         .await
         .unwrap();
@@ -935,7 +935,7 @@ async fn per_protocol_bases_route_by_protocol_and_path_stays_verbatim() {
     );
     assert!(
         paths.contains(&"/oa/chat/completions"),
-        "-pig 的回环子请求也要按协议选 base：{paths:?}"
+        "-pigs 的回环子请求也要按协议选 base：{paths:?}"
     );
     assert!(
         !paths.iter().any(|p| p.contains("/v1/v1/")),

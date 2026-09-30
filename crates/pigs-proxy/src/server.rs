@@ -1,6 +1,6 @@
 //! axum 服务：fallback 接住所有路径与方法，按需分流。
 //!
-//! -pig 请求的两种情形：
+//! -pigs 请求的两种情形：
 //! - 客户端的第一发 → 新开一轮编排；
 //! - 尾部带工具结果（模型上一轮要的工具执行完了）→ 接着被暂停的相位继续。
 
@@ -34,7 +34,7 @@ pub fn router(state: AppState) -> Router {
 
 /// 单一入口：所有路径、所有方法。
 /// - 回环子请求（带内部令牌）→ 直接透传（防递归）；
-/// - POST 三协议路径 + model 带 `-pig` → 编排（新开或恢复）；
+/// - POST 三协议路径 + model 带 `-pigs` → 编排（新开或恢复）；
 /// - 其余一切 → 原样透传。
 async fn handle(
     State(state): State<AppState>,
@@ -53,7 +53,7 @@ async fn handle(
         .map(|t| t == state.loopback_token.as_str())
         .unwrap_or(false);
 
-    // 编排分支：POST 协议路径 + model 带 -pig（回环子请求不走此分支）
+    // 编排分支：POST 协议路径 + model 带 -pigs（回环子请求不走此分支）
     if !internal && method == Method::POST {
         if let Some(protocol) = pigs_protocol::protocol_from_path(&path) {
             match serde_json::from_slice::<Value>(&body) {
@@ -63,7 +63,7 @@ async fn handle(
                         .and_then(|m| m.as_str())
                         .unwrap_or("")
                         .to_string();
-                    if let Some(real_model) = pigs_protocol::strip_pig_suffix(&model) {
+                    if let Some(real_model) = pigs_protocol::strip_pigs_suffix(&model) {
                         // 唯一允许的字段改动：发给上游用真名，回客户端用原名
                         pigs_protocol::set_model(&mut parsed, &real_model);
                         return orchestrate(
@@ -72,7 +72,7 @@ async fn handle(
                         )
                         .await;
                     }
-                    // 无 -pig → 落到下面的透传
+                    // 无 -pigs → 落到下面的透传
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "请求 body 不是合法 JSON");
@@ -82,7 +82,7 @@ async fn handle(
         }
     }
 
-    // 透传（含回环子请求、非 -pig 主请求、models 等其他路径）
+    // 透传（含回环子请求、非 -pigs 主请求、models 等其他路径）
     passthrough(&state, method, &path, query, &headers, body).await
 }
 

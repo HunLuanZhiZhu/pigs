@@ -395,8 +395,8 @@ mod tests {
 
     #[test]
     fn model_stream_tools_ops() {
-        let mut body = json!({"model": "x-pig", "stream": true, "tools": [1]});
-        assert_eq!(get_model(&body), Some("x-pig"));
+        let mut body = json!({"model": "x-pigs", "stream": true, "tools": [1]});
+        assert_eq!(get_model(&body), Some("x-pigs"));
         set_model(&mut body, "x");
         set_stream(&mut body, false);
         strip_tools(&mut body);

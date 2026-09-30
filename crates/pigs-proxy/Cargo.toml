@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
-description = "HTTP 入口与传输壳：三协议路由、-pig 分流、透传、SSE 回传"
+description = "HTTP 入口与传输壳：三协议路由、-pigs 分流、透传、SSE 回传"
 
 [dependencies]
 pigs-protocol = { workspace = true }

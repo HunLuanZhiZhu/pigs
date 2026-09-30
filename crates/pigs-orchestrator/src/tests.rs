@@ -580,7 +580,7 @@ async fn streaming_turn_pushes_filtered_deltas_as_they_arrive() {
     let frames: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
     let encoder = Arc::new(Mutex::new(proto::StreamEncoder::new(
         proto::Protocol::OpenAI,
-        "gpt-x-pig",
+        "gpt-x-pigs",
     )));
     frames.lock().unwrap().push_str(&encoder.lock().unwrap().start());
     let events: Arc<Mutex<Vec<PigEvent>>> = Arc::new(Mutex::new(vec![]));
@@ -655,7 +655,7 @@ async fn live_thinking_is_streamed_before_text() {
     let frames: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
     let encoder = Arc::new(Mutex::new(proto::StreamEncoder::new(
         proto::Protocol::Anthropic,
-        "claude-x-pig",
+        "claude-x-pigs",
     )));
     frames.lock().unwrap().push_str(&encoder.lock().unwrap().start());
     let events: Arc<Mutex<Vec<PigEvent>>> = Arc::new(Mutex::new(vec![]));
@@ -732,7 +732,7 @@ async fn streaming_tool_pause_emits_text_then_native_calls() {
     let frames: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
     let encoder = Arc::new(Mutex::new(proto::StreamEncoder::new(
         proto::Protocol::OpenAI,
-        "gpt-x-pig",
+        "gpt-x-pigs",
     )));
     let sink: ProgressSink = {
         let frames = Arc::clone(&frames);

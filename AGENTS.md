@@ -1,59 +1,179 @@
 # AGENTS.md
 
-## 最高准则（不可协商，优先级高于本文件其它一切内容）
+## 当前实现契约
 
-**pigs 相对上游只允许做两处改动：① 模型名称；② 提示词的后缀拼接。**
+本文档描述 **pigs 当前代码实际行为**。在代码尚未修改前，不把“目标设计”或“legacy 行为”写成“已经实现”。
 
-1. **模型名称**：客户端请求的 `-pig` 模型名 → 换成上游真名发给上游；**回给客户端时用客户端原本请求的那个名字**（带 `-pig`）。
-2. **提示词后缀拼接**：在客户端原始请求的**尾部追加**相位提示词——Pre/Executor 追加到最后一条 user 消息的尾部；
-   Post 追加产物消息 + 新的 user 指令。**必须追加在尾部**，这样才能保住上游 prompt cache 的前缀命中（缓存率 = 成本）。
+pigs 是一个 Rust 前置代理。普通请求走透传；只有同时满足以下条件时才进入 Pre → Executor → Post 编排：
 
-**除此之外，父请求的任何部分都不得改动、不得删除、不得新增**，包括但不限于：
+1. HTTP 方法是 `POST`；
+2. 路径能识别为 OpenAI Chat、OpenAI Responses 或 Anthropic Messages；
+3. 请求 JSON 的 `model` 以 `-pigs` 结尾。
 
-- **body 的字段一个都不许动**：`tools`、`tool_choice`、`stream`、`temperature`、`max_tokens`、`thinking`、`reasoning`、
-  `response_format`、`stream_options`、`parallel_tool_calls`、`n`…… 原样透传；
-- **历史消息原样保留**：包含 assistant 的工具调用、`role: "tool"` 消息、Anthropic 的 `tool_use`/`tool_result` 块、
-  图片等非文本块——既不许删，也不许"合并""改写"；
-- **path 与 query string、HTTP 方法**原样带到上游；
-- **请求头一个都不许删、不许加**：鉴权、`anthropic-beta`、`accept-encoding`、`user-agent`…… 全部原样；
-- **响应侧同样不许加工**：上游给什么就回什么——不许改 model 名、不许把 `usage` 清零、不许丢弃工具调用
-  （`tool_calls`/`tool_use`/`function_call`）、不许改写 `finish_reason`/`stop_reason`、不许丢非文本块。
+注意：`POST` 到已识别协议路径时，proxy 会先解析 JSON 才能读取 model。因此这类请求即使最终不带 `-pigs`，若 JSON 本身非法也会直接返回 400，而不是进入普通透传。
 
-**判定方法**：任何一处改动，先自问"这是**模型名**，还是**提示词后缀**？"——答不上来就不许做。
+## 编排请求体
 
-**推论（不是选项，是准则的一部分）**：工具的完整链路必须原样可用——`tools` 透传给上游；上游回的工具调用**原样交给客户端**执行；
-客户端带工具结果回来时，**接着同一只 pig（相位）继续**，而不是重开一轮。一只 pig 是一段对话区间，
-结束条件是"模型这一轮不再要工具"，中间可以包含任意多次"要工具 → 客户端执行 → 结果回填"的往返。
+进入编排后，父请求 body 会先解析为 `serde_json::Value`，后续子请求重新序列化。因此编排子请求在语义上保留字段，但**不承诺与客户端原始 JSON 字节级一致**。
 
-## 参考实现
+当前编排对子请求 body 的业务修改如下：
 
-`legacy/`（旧工程）是**参考实现**。它相对上游只覆盖 model/stream 与用户文本后缀、并为 Post 接回产物消息，
-同时完整保留了 tools、`path_and_query`、真实 usage、客户端 model 名回显、以及工具调用的 continuation 机制。
-新实现凡与之不符之处，一律以 legacy 为准逐条审计。
+- 客户端模型名 `<name>-pigs` 改成 `<name>` 发给上游；回客户端时使用客户端原始模型名。
+- Pre / Executor：把相位指令追加在请求尾部。末项是 user 时，追加到最后一条 user 文本；否则新增 user 消息。
+- Post：把此前产物逐条追加为 assistant 消息，再追加 Post 的 user 指令。
+- 其它字段，例如 `tools`、`tool_choice`、`stream`、`temperature`、`max_tokens`、`thinking`、`reasoning`、`response_format`、`stream_options`、`parallel_tool_calls` 等，当前主链路不主动删除或改写。
 
-## 当前代码与此准则的差距（逐条待裁决，裁决后修正代码）
+历史中的工具调用、工具结果、图片和其它非文本块继续保留。相位提示词只在尾部追加，目的是尽量保持上游提示词前缀缓存。
 
-| # | 事项 | 状态 |
-|---|---|---|
-| 1 | `tools` / `tool_choice` 透传，不再删除；上游回的工具调用原样交给客户端；客户端带结果回来接着同一只 pig 继续（`state::Continuation`） | ✅ 已改 |
-| 2 | 回客户端的 `model` 用客户端请求的原名（带 `-pig`），发给上游用真名 | ✅ 已改 |
-| 3 | `usage` 跨相位累加后原样回传（上游没给才是空对象），不再清零 | ✅ 已改 |
-| 4 | `accept-encoding` 头原样透传，改为**本机解压**（reqwest 开 `gzip/brotli/deflate`；透传客户端 `.gzip(false)...` 保持逐字节） | ✅ 已改 |
-| 5 | 完全不写 `stream` 字段 | ✅ 已改 |
-| 6 | 客户端没带 `x-opencode-session` 时注入一个（补头归 mini-proxy 才是终态） | ⏸ 按裁决暂缓 |
-| 7 | `path` + `query` 一起带进子请求 | ✅ 已改 |
-| 8 | 工具调用原样回吐（三协议，JSON 与 SSE 都覆盖） | ✅ 已改 |
-| 9 | `finish_reason` / `stop_reason` 透传上游的真实值（以最后一轮为准） | ✅ 已改 |
-| 10 | 相位产物**逐条**追加，不再合并成一条 assistant 消息 | ✅ 已改 |
+`pigs-protocol` 中仍保留 `set_stream`、`strip_tools` 等通用函数，但当前编排主链路不会调用它们。
 
-## 遗留细节（已登记，未改）
+## 工具调用与 continuation
 
-- **解压的副作用**：reqwest 在请求没带 `Accept-Encoding` 时会补一个 `gzip`（它的默认行为，为本地解压服务）。
-  客户端带了该头时不影响；客户端没带时这是相对父请求的一处**库级添加**。
-- 尾部工具结果匹配不到现场时返回 **409**（与 legacy 的 `UnknownContinuation` 一致），不悄悄重跑一整轮。
-- 工具暂停时回给客户端的 `usage` 是"到目前为止累加值"（legacy 同款），最终答复给的是全量累加值。
+`tools` / `tool_choice` 会继续发给上游。上游返回工具调用后：
+
+- 当前 pig 相位暂停；
+- 工具调用按三协议各自的原生形状交给客户端执行；
+- `ContinuationStore` 在进程内存保存现场，默认最多 64 条，TTL 30 分钟；
+- 客户端把工具结果接回历史后再次请求，pigs 从请求尾部提取工具结果 id；
+- 若 id 与某个 continuation 的全部 pending 调用匹配，则取出该现场并继续同一只 pig；
+- 同一 pig 可以经历任意多轮“工具调用 → 客户端执行 → 工具结果回填”；
+- 有工具结果但找不到匹配现场时返回 HTTP 409，不重新跑整轮；
+- 服务重启后 continuation 不恢复。
+
+## 路径、方法与 query
+
+普通透传请求保留客户端 HTTP 方法、原路径与 query string。
+
+编排只会由客户端 `POST` 请求触发。编排子请求经本机 loopback 发送，并统一使用 `POST`；path 与 query string 沿用父请求。
+
+上游 base 按协议选择：
+
+- OpenAI Chat → `upstream.openai`
+- OpenAI Responses → `upstream.responses`
+- Anthropic Messages → `upstream.anthropic`
+- 未识别路径 → `upstream.openai`
+
+最终上游 URL = 对应 base + 客户端原路径 + 原 query string。
+
+## 请求头的当前行为
+
+当前实现并不是“所有请求头逐字不动”。存在明确的传输层处理：
+
+- 转发时跳过 `host`、`content-length`、`connection`、`transfer-encoding`；
+- 其它端到端头默认保留，例如 `accept-encoding`、`anthropic-version`、`user-agent`；
+- 若 `config.toml` 的 `key` 非空，会忽略客户端原有 `authorization` / `x-api-key`，改为同时写入 `authorization: Bearer <key>` 和 `x-api-key: <key>`；
+- 编排子请求若缺少 `content-type`，会补 `content-type: application/json`；
+- 编排开始时，若客户端没有 `x-opencode-session`，orchestrator 会生成 UUID v7，并在本次编排所有子请求中补上；若客户端已带则继承；
+- loopback 子请求额外加入随机 `x-pigs-loopback`，用于让本机 handler 跳过 `-pigs` 再分流；
+- **当前代码没有在进入真实上游前过滤 `x-pigs-loopback`，所以该内部头会继续被转发到上游。**
+- loopback 使用默认 reqwest 客户端，具备自动压缩协商/解压行为；当客户端没有 `Accept-Encoding` 时，reqwest 可能自行补压缩协商头。
+
+这些是当前实现事实。如果后续要收紧请求头规则，应修改代码和测试，而不是先把文档写成目标状态。
+
+## 普通透传响应
+
+不带 `-pigs` 的请求走 passthrough：
+
+- 上游状态码保留；
+- 响应 body 以字节流方式回传；
+- 响应头只跳过 `connection`、`transfer-encoding`、`content-length`；
+- `content-encoding` 会保留；
+- passthrough 的 reqwest 客户端关闭 gzip / brotli / deflate 自动解压，所以压缩 body 与编码头保持对应。
+
+## 编排响应是重新合成的
+
+带 `-pigs` 的响应不是上游某一次响应的原样转发，而是 `pigs-protocol` 根据整轮编排产物重新合成。
+
+当前行为：
+
+- `model` 使用客户端原始的 `-pigs` 名称；
+- 文本按执行顺序保留，控制标记 `PIGEND` / `PIGFAIL` 会被过滤；
+- thinking / reasoning、工具调用和其它已解析的原生块按 `Part` 序列尽量保留；
+- `stop_reason` / `finish_reason` 取最后一轮解析到的值；
+- 响应 id、时间戳、协议壳由 pigs 新生成；
+- 非流式走 `synthesize_json`；
+- 流式走 `StreamEncoder` 合成 SSE。
+
+因此“编排响应原样透传上游响应”不是当前代码行为。
+
+## usage 的当前策略
+
+当前代码**不做跨相位 token 累加**。
+
+`TurnState::record_round` 会比较每个子请求的 `usage.input_tokens`：
+
+- 没有历史 usage 时直接保存；
+- 新 usage 的 `input_tokens` 更大时，用该 **完整 usage 对象原值** 替换；
+- 相等或更小时保留已有对象。
+
+最终完成响应使用这个被选中的 usage 对象。
+
+注意：OpenAI Chat 常见字段名是 `prompt_tokens`，当前选择逻辑只读取 `input_tokens`。因此这类 usage 若没有 `input_tokens`，比较值会按 0 处理，通常会保留最先记录到的完整 usage 对象。
+
+工具调用导致暂停时，proxy 在构造暂停响应时传入 `usage: None`。因此工具暂停响应不会返回“截至目前的累计 usage”。
+
+## 流式行为
+
+客户端 body 中 `stream:true` 时，编排采用流式处理；代码不会主动重写 `stream` 字段。
+
+- 上游 SSE 增量会被解析；
+- 文本经过 `MarkerFilter`，避免 `PIGEND` / `PIGFAIL` 泄给客户端；
+- thinking / reasoning 增量按协议实时转发；
+- 工具调用以及部分无法边到边还原的原生块在收尾阶段补发；
+- 一旦客户端 SSE 已经开始，后续编排错误通过流内错误帧表达，HTTP 状态无法再改成错误码。
+
+客户端未请求流式时，各子请求按整体响应读取，最终合成 JSON。
+
+## 状态机
+
+Pre：
+
+- `PIGEND` → 简单路径结束；
+- `PIGFAIL` → 记录失败路径并留在 Pre，最多重规划 2 次；
+- 无标记 → 进入 Executor。
+
+Executor：
+
+- 不解析控制标记；
+- 结束后进入 Post。
+
+Post：
+
+- `PIGEND` → 正常完成；
+- `PIGFAIL` → 回 Pre 重规划；
+- 无标记 → 继续 Post，最多重试 3 次。
+
+预算耗尽返回编排错误。proxy 对预算错误返回 422；其它编排错误通常返回 502。
+
+## 配置与职责
+
+根 `config.toml` 当前包含：
+
+- `listen`
+- 可选 `key`
+- `[upstream].openai`
+- `[upstream].responses`
+- `[upstream].anthropic`
+
+`--base-url` 会临时把三个协议 base 都设置成同一个地址。
+
+crate 职责：
+
+- `pigs`：CLI、配置加载、日志、启动；
+- `pigs-proxy`：HTTP 入口、分流、透传、loopback、客户端响应流；
+- `pigs-orchestrator`：Pre / Executor / Post 状态机、continuation；
+- `pigs-protocol`：协议判定、JSON/SSE 解析、请求体尾部手术、响应合成。
+
+`pigs-mini-agent/` 是独立 Git / Cargo 项目，不属于根 workspace。
+
+## 历史实现与文档同步
+
+`legacy/` 是历史参考实现，不再作为“当前行为必须逐字一致”的权威。文档与当前代码冲突时，以当前代码为事实基线；若决定改变行为，应先明确新契约，再修改代码和测试。
+
+修改实现后，应同步更新本文件和 5 个 HTML 说明页，避免设计说明与实际代码再次分叉。
 
 ## 语言约定
 
-- **代码注释用英文**、**文档用中文**（与 legacy `AGENTS.md` 一致；本仓库当前的 `index.html` 是中文详解，供审阅）。
-- 代码注释语言若与本条不符，属待修项（当前 `crates/` 下注释为中文）。
+- 文档使用中文；
+- 当前 `crates/` 源码仍存在大量中文注释，这是代码现状；
+- 本轮只更新文档，不以文档修改替代代码整改。
