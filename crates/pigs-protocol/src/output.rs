@@ -734,6 +734,130 @@ pub fn trailing_tool_result_ids(protocol: Protocol, body: &Value) -> Vec<String>
     }
 }
 
+/// 返回客户端这次真正新回填的尾部工具结果条目（保留协议原生 JSON）。
+///
+/// 这些条目会被追加到服务端保存的当前 pig 对话现场中；不会把客户端整段历史
+/// 当作新的 phase 请求重新解释。
+pub fn trailing_tool_result_items(protocol: Protocol, body: &Value) -> Vec<Value> {
+    match protocol {
+        Protocol::OpenAI => trailing_items(body.get("messages"), |message| {
+            message.get("role").and_then(|r| r.as_str()) == Some("tool")
+        }),
+        Protocol::Anthropic => trailing_items(body.get("messages"), |message| {
+            if message.get("role").and_then(|r| r.as_str()) != Some("user") {
+                return false;
+            }
+            let Some(parts) = message.get("content").and_then(|c| c.as_array()) else {
+                return false;
+            };
+            !parts.is_empty()
+                && parts.iter().all(|part| {
+                    part.get("type").and_then(|t| t.as_str()) == Some("tool_result")
+                })
+        }),
+        Protocol::Responses => trailing_items(body.get("input"), |item| {
+            item.get("type").and_then(|t| t.as_str()) == Some("function_call_output")
+        }),
+    }
+}
+
+/// 把一轮模型输出转换成下一轮请求要接回去的协议原生 assistant 记录。
+///
+/// 这是服务端 phase transcript 的一部分：模型说过什么、调用过什么工具，由 pigs
+/// 自己保存；客户端只负责把工具结果送回来。
+pub fn model_output_transcript_items(protocol: Protocol, output: &ModelOutput) -> Vec<Value> {
+    match protocol {
+        Protocol::OpenAI => {
+            let mut message = json!({"role": "assistant"});
+            let text = output
+                .parts
+                .iter()
+                .filter_map(|part| match part {
+                    Part::Text(text) => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<String>();
+            message["content"] = if text.is_empty() && !output.tool_calls.is_empty() {
+                Value::Null
+            } else {
+                json!(text)
+            };
+            let reasoning = output
+                .parts
+                .iter()
+                .filter_map(|part| match part {
+                    Part::Reasoning(text) => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<String>();
+            if !reasoning.is_empty() {
+                message["reasoning_content"] = json!(reasoning);
+            }
+            if !output.tool_calls.is_empty() {
+                message["tool_calls"] = Value::Array(
+                    output
+                        .tool_calls
+                        .iter()
+                        .map(|call| call.native.clone())
+                        .collect(),
+                );
+            }
+            vec![message]
+        }
+        Protocol::Anthropic => {
+            let content: Vec<Value> = output
+                .parts
+                .iter()
+                .filter_map(|part| match part {
+                    Part::Text(text) => Some(json!({"type": "text", "text": text})),
+                    Part::Reasoning(text) => {
+                        Some(json!({"type": "thinking", "thinking": text}))
+                    }
+                    Part::ToolCall(call) => Some(call.native.clone()),
+                    Part::Native(block) => Some(block.clone()),
+                })
+                .collect();
+            vec![json!({"role": "assistant", "content": content})]
+        }
+        Protocol::Responses => output
+            .parts
+            .iter()
+            .filter_map(|part| match part {
+                Part::Text(text) => Some(json!({
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": text, "annotations": []}]
+                })),
+                Part::Reasoning(text) => Some(json!({
+                    "type": "reasoning",
+                    "summary": [{"type": "summary_text", "text": text}]
+                })),
+                Part::ToolCall(call) => Some(call.native.clone()),
+                Part::Native(item) => Some(item.clone()),
+            })
+            .collect(),
+    }
+}
+
+fn trailing_items<F>(container: Option<&Value>, is_item: F) -> Vec<Value>
+where
+    F: Fn(&Value) -> bool,
+{
+    let Some(items) = container.and_then(|c| c.as_array()) else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    for item in items.iter().rev() {
+        if !is_item(item) {
+            break;
+        }
+        found.push(item.clone());
+    }
+    found.reverse();
+    found
+}
+
 /// 从尾部连续的工具结果条目收集 id。
 fn trailing_ids<F>(container: Option<&Value>, ids_of: F) -> Vec<String>
 where
@@ -1011,6 +1135,10 @@ mod tests {
             {"role": "tool", "tool_call_id": "call_1", "content": "输出"}
         ]});
         assert_eq!(trailing_tool_result_ids(Protocol::OpenAI, &body), vec!["call_1"]);
+        assert_eq!(
+            trailing_tool_result_items(Protocol::OpenAI, &body),
+            vec![json!({"role": "tool", "tool_call_id": "call_1", "content": "输出"})]
+        );
         // 末条是普通 user → 不是恢复请求
         let body = json!({"messages": [
             {"role": "tool", "tool_call_id": "call_1", "content": "输出"},
@@ -1023,6 +1151,10 @@ mod tests {
             {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": "x"}]}
         ]});
         assert_eq!(trailing_tool_result_ids(Protocol::Anthropic, &body), vec!["toolu_1"]);
+        assert_eq!(
+            trailing_tool_result_items(Protocol::Anthropic, &body),
+            vec![json!({"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": "x"}]})]
+        );
         // 混杂文本块 → 不算
         let body = json!({"messages": [
             {"role": "user", "content": [
@@ -1038,5 +1170,48 @@ mod tests {
             {"type": "function_call_output", "call_id": "fc_1", "output": "ok"}
         ]});
         assert_eq!(trailing_tool_result_ids(Protocol::Responses, &body), vec!["fc_1"]);
+        assert_eq!(
+            trailing_tool_result_items(Protocol::Responses, &body),
+            vec![json!({"type": "function_call_output", "call_id": "fc_1", "output": "ok"})]
+        );
+    }
+
+    #[test]
+    fn model_output_becomes_native_phase_transcript() {
+        let chat = parse_json_output(
+            Protocol::OpenAI,
+            &json!({"choices": [{"message": {
+                "role": "assistant",
+                "content": "查一下",
+                "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "Bash", "arguments": "{}"}}]
+            }, "finish_reason": "tool_calls"}]}),
+        );
+        let chat_items = model_output_transcript_items(Protocol::OpenAI, &chat);
+        assert_eq!(chat_items.len(), 1);
+        assert_eq!(chat_items[0]["role"], "assistant");
+        assert_eq!(chat_items[0]["tool_calls"][0]["id"], "call_1");
+
+        let anthropic = parse_json_output(
+            Protocol::Anthropic,
+            &json!({"content": [
+                {"type": "text", "text": "查一下"},
+                {"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": {}}
+            ], "stop_reason": "tool_use"}),
+        );
+        let anthropic_items = model_output_transcript_items(Protocol::Anthropic, &anthropic);
+        assert_eq!(anthropic_items.len(), 1);
+        assert_eq!(anthropic_items[0]["role"], "assistant");
+        assert_eq!(anthropic_items[0]["content"][1]["id"], "toolu_1");
+
+        let responses = parse_json_output(
+            Protocol::Responses,
+            &json!({"output": [
+                {"type": "function_call", "call_id": "fc_1", "name": "Bash", "arguments": "{}"}
+            ]}),
+        );
+        let response_items = model_output_transcript_items(Protocol::Responses, &responses);
+        assert_eq!(response_items.len(), 1);
+        assert_eq!(response_items[0]["type"], "function_call");
+        assert_eq!(response_items[0]["call_id"], "fc_1");
     }
 }

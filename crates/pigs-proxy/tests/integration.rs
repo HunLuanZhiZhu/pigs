@@ -206,6 +206,20 @@ fn openai_body(model: &str, stream: bool) -> Value {
     })
 }
 
+fn append_openai_tool_result(body: &mut Value, id: &str) {
+    let messages = body["messages"].as_array_mut().unwrap();
+    messages.push(json!({
+        "role": "assistant",
+        "content": null,
+        "tool_calls": [{
+            "id": id,
+            "type": "function",
+            "function": {"name": "Bash", "arguments": "{\"command\":\"ls\"}"}
+        }]
+    }));
+    messages.push(json!({"role": "tool", "tool_call_id": id, "content": "文件列表"}));
+}
+
 fn openai_text_response(text: &str) -> (&'static str, Bytes) {
     (
         "application/json",
@@ -240,7 +254,7 @@ fn openai_sse_response(text: &str) -> (&'static str, Bytes) {
 
 
 /// 假上游的"模型要工具"响应（OpenAI Chat 形状）。
-fn openai_tool_call_response() -> (&'static str, Bytes) {
+fn openai_tool_call_response(id: &str) -> (&'static str, Bytes) {
     (
         "application/json",
         Bytes::from(
@@ -249,7 +263,7 @@ fn openai_tool_call_response() -> (&'static str, Bytes) {
                     "message": {
                         "role": "assistant", "content": null,
                         "tool_calls": [{
-                            "id": "call_1", "type": "function",
+                            "id": id, "type": "function",
                             "function": {"name": "Bash", "arguments": "{\"command\":\"ls\"}"}
                         }]
                     },
@@ -641,7 +655,7 @@ async fn compressed_upstream_response_is_decompressed_locally() {
 #[tokio::test]
 async fn tool_pause_and_resume_round_trip() {
     let (_up, upstream_url, fu) = spawn_fake_upstream().await;
-    fu.responses.lock().unwrap().push(openai_tool_call_response());
+    fu.responses.lock().unwrap().push(openai_tool_call_response("call_1"));
     fu.responses
         .lock()
         .unwrap()
@@ -688,19 +702,171 @@ PIGEND"));
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["choices"][0]["message"]["content"], "答案是 4");
     assert_eq!(body["choices"][0]["finish_reason"], "stop");
+    assert!(
+        body["choices"][0]["message"].get("tool_calls").is_none(),
+        "工具已经消费完成，最终响应不能重放历史 tool_calls"
+    );
     // usage 是上游给的真值（不是 0）
     assert_eq!(body["usage"]["total_tokens"], 10);
 
-    // 第二次子请求：客户端历史一字不改，指令追加在尾部；tools 仍在
+    // 第二次子请求：阶段提示仍固定在最初 user 消息；工具结果保持在尾部；tools 仍在。
     let reqs = fu.requests.lock().unwrap();
     assert_eq!(reqs.len(), 2);
     let sent = &reqs[1].1;
     let msgs = sent["messages"].as_array().unwrap();
     let roles: Vec<&str> = msgs.iter().map(|m| m["role"].as_str().unwrap()).collect();
-    assert_eq!(roles, vec!["system", "user", "assistant", "tool", "user"]);
+    assert_eq!(roles, vec!["system", "user", "assistant", "tool"]);
     assert_eq!(msgs[3]["content"], "文件列表", "工具结果原样带上");
-    assert!(msgs[4]["content"].as_str().unwrap().contains("执行前分析"));
+    let phase_user = msgs[1]["content"].as_str().unwrap();
+    assert!(phase_user.contains("执行前分析"));
+    assert_eq!(phase_user.matches("执行前分析").count(), 1);
     assert!(sent.get("tools").is_some(), "tools 全程都在");
+}
+
+/// 流式多轮工具回归：每次暂停只发本轮新调用；最终完成后不得重放任何历史调用。
+#[tokio::test]
+async fn streaming_tool_rounds_do_not_replay_consumed_calls() {
+    let (_up, upstream_url, fu) = spawn_fake_upstream().await;
+    {
+        let mut q = fu.responses.lock().unwrap();
+        q.push(openai_tool_call_response("call_1"));
+        q.push(openai_tool_call_response("call_2"));
+        q.push(openai_text_response("最终答案\nPIGEND"));
+    }
+    let (_pigs, pigs_url) = spawn_pigs(&upstream_url).await;
+    let client = reqwest::Client::new();
+
+    let first = client
+        .post(format!("{pigs_url}/chat/completions"))
+        .json(&openai_body("gpt-x-pigs", true))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(first.status(), 200);
+    let first_sse = first.text().await.unwrap();
+    assert!(first_sse.contains("call_1"));
+    assert!(!first_sse.contains("call_2"));
+
+    let mut resume1 = openai_body("gpt-x-pigs", true);
+    append_openai_tool_result(&mut resume1, "call_1");
+    let second = client
+        .post(format!("{pigs_url}/chat/completions"))
+        .json(&resume1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(second.status(), 200);
+    let second_sse = second.text().await.unwrap();
+    assert!(second_sse.contains("call_2"), "第二轮新工具调用必须发给客户端");
+    assert!(
+        !second_sse.contains("call_1"),
+        "第二次暂停不能重放已经消费过的 call_1"
+    );
+
+    let mut resume2 = openai_body("gpt-x-pigs", true);
+    append_openai_tool_result(&mut resume2, "call_1");
+    append_openai_tool_result(&mut resume2, "call_2");
+    let final_resp = client
+        .post(format!("{pigs_url}/chat/completions"))
+        .json(&resume2)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(final_resp.status(), 200);
+    let final_sse = final_resp.text().await.unwrap();
+    assert_eq!(
+        pigs_protocol::extract_sse_text(pigs_protocol::Protocol::OpenAI, &final_sse).unwrap(),
+        "最终答案"
+    );
+    assert!(final_sse.contains("data: [DONE]"));
+    assert!(!final_sse.contains("call_1"));
+    assert!(!final_sse.contains("call_2"));
+    assert!(
+        !final_sse.contains("\"tool_calls\""),
+        "Completed 收尾不能重新发送历史工具调用"
+    );
+}
+
+/// 真实代理链路：Executor 的阶段说明只在进入该 pig 时放一次；工具恢复只追加原生对话。
+#[tokio::test]
+async fn executor_resume_keeps_one_phase_prompt_upstream() {
+    let (_up, upstream_url, fu) = spawn_fake_upstream().await;
+    {
+        let mut q = fu.responses.lock().unwrap();
+        q.push(openai_text_response("计划A"));
+        q.push(openai_tool_call_response("call_1"));
+        q.push(openai_tool_call_response("call_2"));
+        q.push(openai_text_response("草稿完成"));
+        q.push(openai_text_response("验收通过\nPIGEND"));
+    }
+    let (_pigs, pigs_url) = spawn_pigs(&upstream_url).await;
+    let client = reqwest::Client::new();
+
+    let first = client
+        .post(format!("{pigs_url}/chat/completions"))
+        .json(&openai_body("gpt-x-pigs", true))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(first.status(), 200);
+    let first_sse = first.text().await.unwrap();
+    assert!(first_sse.contains("call_1"));
+
+    let mut resume1 = openai_body("gpt-x-pigs", true);
+    append_openai_tool_result(&mut resume1, "call_1");
+    let second = client
+        .post(format!("{pigs_url}/chat/completions"))
+        .json(&resume1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(second.status(), 200);
+    let second_sse = second.text().await.unwrap();
+    assert!(second_sse.contains("call_2"));
+    assert!(!second_sse.contains("call_1"));
+
+    let mut resume2 = openai_body("gpt-x-pigs", true);
+    append_openai_tool_result(&mut resume2, "call_1");
+    append_openai_tool_result(&mut resume2, "call_2");
+    let final_resp = client
+        .post(format!("{pigs_url}/chat/completions"))
+        .json(&resume2)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(final_resp.status(), 200);
+    let final_sse = final_resp.text().await.unwrap();
+    assert!(!final_sse.contains("call_1"));
+    assert!(!final_sse.contains("call_2"));
+    assert!(!final_sse.contains("\"tool_calls\""));
+
+    let reqs = fu.requests.lock().unwrap();
+    assert_eq!(reqs.len(), 5);
+    let exec_first = &reqs[1].1;
+    let exec_resume1 = &reqs[2].1;
+    let exec_resume2 = &reqs[3].1;
+    let roles = |body: &Value| -> Vec<String> {
+        body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|message| message["role"].as_str().unwrap().to_string())
+            .collect()
+    };
+    assert_eq!(roles(exec_first), vec!["system", "user"]);
+    assert_eq!(roles(exec_resume1), vec!["system", "user", "assistant", "tool"]);
+    assert_eq!(
+        roles(exec_resume2),
+        vec!["system", "user", "assistant", "tool", "assistant", "tool"]
+    );
+    for body in [exec_first, exec_resume1, exec_resume2] {
+        let user = body["messages"][1]["content"].as_str().unwrap();
+        assert_eq!(
+            user.matches("完成对内部信息和外部信息的获取后").count(),
+            1,
+            "同一 Executor pig 的阶段说明不能重复注入"
+        );
+    }
 }
 
 /// 尾部带工具结果却没有对应现场 → 明确报错，不悄悄重跑一整轮。

@@ -14,6 +14,12 @@ use std::time::{Duration, Instant};
 pub struct TurnState {
     /// 当前相位。
     pub phase: Pig,
+    /// 本轮最初的客户端请求 body。阶段请求始终从这里构造，不拿恢复请求重建阶段语义。
+    pub root_body: Value,
+    /// 当前 pig 第一次进入时构造好的基础请求（已注入一次阶段提示）。
+    pub phase_base_body: Option<Value>,
+    /// 当前 pig 内已经发生过的协议原生 assistant/tool 对话记录。
+    pub phase_transcript: Vec<Value>,
     /// 已走过的相位序列（诊断）。
     pub path: Vec<Pig>,
     /// Pre 的分析（Executor 指令要用）。
@@ -24,7 +30,7 @@ pub struct TurnState {
     pub failure_paths: Vec<String>,
     /// 各段可见文本（最终答复 = 按顺序空行拼接）。
     pub visible: Vec<String>,
-    /// 给客户端的内容序列（顺序权威）：文本已去控制标记，其余原生块一律原样。
+    /// 持久内容序列（顺序权威）：文本已去控制标记；已交给客户端执行的 ToolCall 不持久化。
     pub parts: Vec<Part>,
     /// 本相位各轮的原始文本（含控制标记，用于路由）。
     pub phase_raw: Vec<String>,
@@ -43,9 +49,12 @@ pub struct TurnState {
 }
 
 impl TurnState {
-    pub fn new(lang: Lang, session: String) -> Self {
+    pub fn new(lang: Lang, session: String, root_body: Value) -> Self {
         Self {
             phase: Pig::Pre,
+            root_body,
+            phase_base_body: None,
+            phase_transcript: Vec::new(),
             path: Vec::new(),
             pre_output: String::new(),
             transcript: Vec::new(),
@@ -62,18 +71,21 @@ impl TurnState {
         }
     }
 
-    /// 记一轮模型输出：文本进 visible、原始文本进 phase_raw、usage 取 input 最大者整对象、停止原因更新。
-    pub fn record_round(&mut self, raw_text: &str, output: &crate::proto::ModelOutput) {
-        self.phase_raw.push(raw_text.to_string());
-        let visible = crate::markers::strip_markers(raw_text);
-        if !visible.is_empty() {
-            self.visible.push(visible);
-        }
-        // 内容序列：文本去标记后进（控制标记绝不许漏给客户端），其余原生块原样
+    /// 清掉当前 pig 的临时对话现场。进入新 pig 或 Pre 重规划时调用。
+    pub fn reset_phase_conversation(&mut self) {
+        self.phase_base_body = None;
+        self.phase_transcript.clear();
+    }
+
+    /// 把当前模型输出整理成给客户端看的内容序列。
+    ///
+    /// 这里会保留 ToolCall；调用方只在 Paused 响应里使用它们。
+    pub(crate) fn client_parts_for_round(&self, output: &crate::proto::ModelOutput) -> Vec<Part> {
         let has_text = self
             .parts
             .iter()
             .any(|part| matches!(part, Part::Text(text) if !text.is_empty()));
+        let mut parts = Vec::new();
         for part in &output.parts {
             match part {
                 Part::Text(text) => {
@@ -85,12 +97,28 @@ impl TurnState {
                         } else {
                             cleaned
                         };
-                        self.parts.push(Part::Text(piece));
+                        parts.push(Part::Text(piece));
                     }
                 }
-                other => self.parts.push(other.clone()),
+                other => parts.push(other.clone()),
             }
         }
+        parts
+    }
+
+    /// 记一轮模型输出：文本/思考等持久化；ToolCall 只属于暂停响应，不进入 continuation / 最终 Completed。
+    pub fn record_round(&mut self, raw_text: &str, output: &crate::proto::ModelOutput) {
+        self.phase_raw.push(raw_text.to_string());
+        let visible = crate::markers::strip_markers(raw_text);
+        if !visible.is_empty() {
+            self.visible.push(visible);
+        }
+        // ToolCall 是一次性的暂停信号：客户端执行后就消费掉，不能在最终响应里再次出现。
+        self.parts.extend(
+            self.client_parts_for_round(output)
+                .into_iter()
+                .filter(|part| !matches!(part, Part::ToolCall(_))),
+        );
         if let Some(usage) = &output.usage {
             // 整对象选择：input_tokens 最大的那只子请求原样胜出（缺失按 0，平局保持现有）
             // ——不做任何跨相位相加，回传的每个数都是上游真实产生过的。
@@ -221,7 +249,7 @@ mod tests {
     use serde_json::json;
 
     fn state() -> TurnState {
-        TurnState::new(Lang::Zh, "sess".into())
+        TurnState::new(Lang::Zh, "sess".into(), json!({"messages": []}))
     }
 
     /// 构造一个只带 usage 的模型输出（其余字段空）。

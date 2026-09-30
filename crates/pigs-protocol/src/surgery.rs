@@ -154,6 +154,30 @@ pub fn push_user_message(body: &mut Value, protocol: Protocol, text: &str) -> Re
     }
 }
 
+/// 把一组协议原生对话条目追加到请求尾部。
+///
+/// 用于同一 pig 内继续工具对话：阶段提示已经存在于基础请求中，后续只追加
+/// assistant/tool 对话记录，不再新增阶段 user 提示。
+pub fn append_transcript_items(
+    body: &mut Value,
+    protocol: Protocol,
+    items: &[Value],
+) -> Result<()> {
+    if items.is_empty() {
+        return Ok(());
+    }
+    match protocol {
+        Protocol::OpenAI | Protocol::Anthropic => {
+            messages_mut(body, protocol)?.extend(items.iter().cloned());
+            Ok(())
+        }
+        Protocol::Responses => {
+            input_items_mut(body, protocol)?.extend(items.iter().cloned());
+            Ok(())
+        }
+    }
+}
+
 /// 把上一只 pig 的产出作为一条 assistant 消息接回对话。
 pub fn push_assistant_message(body: &mut Value, protocol: Protocol, text: &str) -> Result<()> {
     match protocol {
@@ -382,6 +406,39 @@ mod tests {
         let mut body = json!({"model": "m"});
         let err = append_to_last_user_text(&mut body, Protocol::Responses, "P").unwrap_err();
         assert!(matches!(err, Error::NoUserMessage(_)));
+    }
+
+    #[test]
+    fn phase_transcript_appends_after_the_single_phase_prompt() {
+        let mut chat = json!({
+            "messages": [{"role": "user", "content": "任务\n\n---\n\n阶段说明"}]
+        });
+        append_transcript_items(
+            &mut chat,
+            Protocol::OpenAI,
+            &[
+                json!({"role": "assistant", "content": null, "tool_calls": [{"id": "call_1"}]}),
+                json!({"role": "tool", "tool_call_id": "call_1", "content": "ok"}),
+            ],
+        )
+        .unwrap();
+        let messages = chat["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[0]["role"], "user");
+        assert_eq!(messages[1]["role"], "assistant");
+        assert_eq!(messages[2]["role"], "tool");
+
+        let mut responses = json!({"input": "任务\n\n---\n\n阶段说明"});
+        append_transcript_items(
+            &mut responses,
+            Protocol::Responses,
+            &[json!({"type": "function_call_output", "call_id": "fc_1", "output": "ok"})],
+        )
+        .unwrap();
+        let input = responses["input"].as_array().unwrap();
+        assert_eq!(input.len(), 2);
+        assert_eq!(input[0]["role"], "user");
+        assert_eq!(input[1]["type"], "function_call_output");
     }
 
     #[test]

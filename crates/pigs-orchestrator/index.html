@@ -28,15 +28,16 @@ code{background:#eef1f6;border-radius:4px;padding:1px 6px;font-family:Consolas,m
 
 <h2>子请求如何组装</h2>
 <div class="card">
-<p>每次调用 pig 时，orchestrator 从 <code>TurnInput.body</code> 克隆一份 JSON，而不是构建一套 typed request。</p>
+<p>orchestrator 为每个 pig 建立一次基础请求，而不是每次工具恢复都重新解释客户端整段请求。</p>
 <p>组装顺序是：</p>
 <ol>
-<li>把当前 transcript 中的产物逐条作为 assistant 消息追加；</li>
-<li>生成当前相位提示词；Executor 提示词会包含 Pre 的 <code>pre_output</code>，失败路径等上下文也由模板注入；</li>
-<li>调用 <code>append_instruction</code> 把指令加在请求尾部：末项是 user 时追加到其文本，否则新建 user 消息；</li>
+<li>进入新 pig 时，从本轮最初的请求 body 构造基础请求；</li>
+<li>只在这一步注入一次相位提示词：Pre/Executor 追加到当前任务 user 文本，Post 追加此前产物与一次 Post user 指令；</li>
+<li>同一 pig 内若发生工具调用，模型的原生 assistant/tool-call 记录保存在 <code>phase_transcript</code>；客户端回填的尾部工具结果也追加到这里；</li>
+<li>恢复时复用同一个基础请求，再把 <code>phase_transcript</code> 接在后面，不新增相位 user 指令；</li>
 <li>序列化 JSON，形成 <code>SubRequest</code>。</li>
 </ol>
-<p>因此旧文档里“多段产物合并成一条 assistant 消息”的说法已经不符合当前代码：当前 transcript 是逐条 push，随后逐条追加。</p>
+<p>因此一个 pig 内无论暂停/恢复多少次，相位提示始终只有一份；工具结果保持在对话尾部，模型继续刚才的工作，而不是被重新布置整阶段任务。</p>
 </div>
 
 <h2>模型名与其它 body 字段</h2>
@@ -60,6 +61,7 @@ proxy 匹配 ContinuationStore
   ↓
 resume 同一相位</pre>
 <p><code>ContinuationStore</code> 当前默认容量 64，TTL 30 分钟，纯内存保存。匹配规则是某个 continuation 的全部 pending id 都出现在请求尾部工具结果 id 集合中；匹配后即从 store 取出，避免重复恢复。</p>
+<p><code>ToolCall</code> 是一次性的暂停信号：Paused 响应只携带本轮新产生的调用；continuation 中的最终输出 <code>TurnState.parts</code> 不保存这些 ToolCall。与此同时，当前 pig 的原生 assistant/tool-call 记录会进入内部 <code>phase_transcript</code>，用于下一轮上游对话续接。客户端回填结果后，只把新的尾部工具结果追加到该 transcript；后续 Paused 和最终 Completed 都不会向客户端重放已经消费的历史调用。</p>
 </div>
 
 <h2>会话头与 content-type</h2>

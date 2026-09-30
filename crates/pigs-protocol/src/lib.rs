@@ -11,7 +11,8 @@ pub mod sse;
 pub mod surgery;
 
 pub use output::{
-    parse_json_output, parse_sse_output, trailing_tool_result_ids, ModelOutput, Part, ToolCall,
+    model_output_transcript_items, parse_json_output, parse_sse_output,
+    trailing_tool_result_ids, trailing_tool_result_items, ModelOutput, Part, ToolCall,
 };
 pub use response::{
     extract_response_text, extract_sse_text, synthesize_json, synthesize_sse, LiveEvent,
@@ -20,9 +21,9 @@ pub use response::{
 pub use route::{has_pigs, protocol_from_path, strip_pigs_suffix, Protocol};
 pub use sse::is_sse_content_type;
 pub use surgery::{
-    append_instruction, append_to_last_user_text, extract_last_user_text, get_model, has_client_stream,
-    push_assistant_message, push_user_message, set_model, set_stream, strip_tools,
-    SUFFIX_SEPARATOR,
+    append_instruction, append_to_last_user_text, append_transcript_items, extract_last_user_text,
+    get_model, has_client_stream, push_assistant_message, push_user_message, set_model, set_stream,
+    strip_tools, SUFFIX_SEPARATOR,
 };
 
 /// 编解码错误。

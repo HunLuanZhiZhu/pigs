@@ -16,7 +16,7 @@ code{background:#eef1f6;border-radius:4px;padding:1px 6px;font-family:Consolas,m
 <div class="card"><table>
 <tr><th>模块</th><th>当前职责</th></tr>
 <tr><td><code>route.rs</code></td><td>三协议路径判定、<code>-pigs</code> 后缀判断与剥离。</td></tr>
-<tr><td><code>surgery.rs</code></td><td>读取/改 model、识别 stream、尾部追加 user 指令、追加 assistant 产物等 JSON 修改。</td></tr>
+<tr><td><code>surgery.rs</code></td><td>读取/改 model、识别 stream、在阶段开始时追加提示、追加相位内原生对话条目等 JSON 修改。</td></tr>
 <tr><td><code>output.rs</code></td><td>把三协议 JSON/SSE 上游输出解析为统一 <code>ModelOutput</code>、<code>Part</code>、<code>ToolCall</code>，并提取尾部工具结果 id。</td></tr>
 <tr><td><code>response.rs</code></td><td>SSE 增量解析、实时事件处理、<code>StreamEncoder</code>、非流式 JSON/SSE 响应合成。</td></tr>
 <tr><td><code>sse.rs</code></td><td>SSE content-type 等基础判断。</td></tr>
@@ -45,7 +45,9 @@ code{background:#eef1f6;border-radius:4px;padding:1px 6px;font-family:Consolas,m
 <ul>
 <li><code>set_model</code>：覆盖顶层 <code>model</code>。</li>
 <li><code>has_client_stream</code>：读取顶层布尔 <code>stream</code>。</li>
-<li><code>append_instruction</code>：末项是 user 时在最后一条 user 文本尾部加 <code>\n\n---\n\n</code> + 指令；否则新增 user 消息。</li>
+<li><code>append_to_last_user_text</code>：在阶段开始时，把 Pre/Executor 提示追加到当前任务 user 文本。</li>
+<li><code>append_transcript_items</code>：同一 pig 内恢复工具对话时，只追加已保存的原生 assistant/tool 记录，不新增阶段 user 提示。</li>
+<li><code>append_instruction</code> 仍是通用 helper，但当前 orchestrator 的工具恢复主链路不再用它重复注入相位提示。</li>
 <li><code>push_assistant_message</code>：按三协议各自格式追加 assistant 产物。</li>
 <li><code>push_user_message</code>：追加新的 user 消息；Responses 的字符串 input 必要时会展开为 message 数组。</li>
 </ul>

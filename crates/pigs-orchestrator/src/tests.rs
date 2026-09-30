@@ -343,7 +343,23 @@ async fn tool_calls_pause_the_phase_and_give_native_calls_to_client() {
     assert_eq!(paused.tool_calls[0].name, "Bash");
     assert_eq!(paused.tool_calls[0].arguments_json(), "{\"command\":\"ls\"}");
     assert_eq!(paused.text, "");
-    assert_eq!(store.lock().unwrap().len(), 1, "现场必须存下来等结果");
+    assert!(
+        paused.parts.iter().any(|part| matches!(part, Part::ToolCall(call) if call.id == "call_1")),
+        "Paused 响应必须包含本轮工具调用"
+    );
+    let continuation = store
+        .lock()
+        .unwrap()
+        .take_match(&["call_1".into()])
+        .expect("现场必须存下来等结果");
+    assert!(
+        continuation
+            .state
+            .parts
+            .iter()
+            .all(|part| !matches!(part, Part::ToolCall(_))),
+        "continuation 不得持久化已发给客户端的 ToolCall"
+    );
 }
 
 /// 恢复：客户端把工具结果发回来，接着**同一只 pig** 继续跑。
@@ -378,17 +394,21 @@ async fn resume_continues_same_phase_with_tool_result() {
     );
     assert_eq!(result.ended_with, EndedWith::SimplePath);
     assert_eq!(result.text, "答案是 4");
+    assert!(
+        result.parts.iter().all(|part| !matches!(part, Part::ToolCall(_))),
+        "已消费的工具调用不能进入最终 Completed"
+    );
 
-    // 恢复请求：客户端历史一字不动，指令追加在**尾部**（新增一条 user 消息）
+    // 恢复请求：阶段提示仍只在最初 user 消息中出现一次；工具结果保持在尾部，
+    // 不再新增一条 user 消息重新布置阶段任务。
     let reqs = transport.requests.lock().unwrap();
     assert_eq!(reqs.len(), 2);
     let body: serde_json::Value = serde_json::from_slice(&reqs[1].body).unwrap();
-    assert_eq!(
-        roles(&body),
-        vec!["system", "user", "assistant", "tool", "user"]
-    );
+    assert_eq!(roles(&body), vec!["system", "user", "assistant", "tool"]);
     assert_eq!(body["messages"][3]["content"], "输出", "工具结果原样保留");
-    assert!(last_message_content(&body).contains("执行前分析"));
+    let phase_user = body["messages"][1]["content"].as_str().unwrap();
+    assert!(phase_user.contains("执行前分析"));
+    assert_eq!(phase_user.matches("执行前分析").count(), 1);
     assert_eq!(body["tools"][0]["function"]["name"], "Bash", "工具定义仍带着");
 }
 
@@ -420,6 +440,19 @@ async fn multiple_tool_rounds_inside_one_phase() {
             .unwrap(),
     );
     assert_eq!(paused2.tool_calls[0].id, "call_2");
+    let paused2_ids: Vec<&str> = paused2
+        .parts
+        .iter()
+        .filter_map(|part| match part {
+            Part::ToolCall(call) => Some(call.id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        paused2_ids,
+        vec!["call_2"],
+        "第二次暂停只能发本轮新调用，不能重放 call_1"
+    );
 
     let continuation = store2.lock().unwrap().take_match(&["call_2".into()]).unwrap();
     assert_eq!(continuation.state.phase, Pig::Pre, "全程都在同一只 pig 里");
@@ -432,6 +465,105 @@ async fn multiple_tool_rounds_inside_one_phase() {
     );
     assert_eq!(result.text, "做完了");
     assert_eq!(result.path, vec![Pig::Pre], "相位只在第一次推进时记一次");
+    assert!(
+        result.parts.iter().all(|part| !matches!(part, Part::ToolCall(_))),
+        "多轮工具都消费完成后，最终结果不能重放历史 ToolCall"
+    );
+
+    let reqs = transport.requests.lock().unwrap();
+    let resume1: serde_json::Value = serde_json::from_slice(&reqs[1].body).unwrap();
+    let resume2: serde_json::Value = serde_json::from_slice(&reqs[2].body).unwrap();
+    assert_eq!(roles(&resume1), vec!["system", "user", "assistant", "tool"]);
+    assert_eq!(
+        roles(&resume2),
+        vec!["system", "user", "assistant", "tool", "assistant", "tool"]
+    );
+    for body in [&resume1, &resume2] {
+        let phase_user = body["messages"][1]["content"].as_str().unwrap();
+        assert_eq!(
+            phase_user.matches("执行前分析").count(),
+            1,
+            "同一 Pre pig 内阶段提示只能出现一次"
+        );
+    }
+}
+
+/// Executor 连续工具恢复时，执行计划只在进入 Executor 时注入一次。
+#[tokio::test]
+async fn executor_tool_resumes_keep_one_phase_prompt() {
+    let transport = fake(vec![
+        FakeTransport::text(200, "计划A"),
+        FakeTransport::tool_calls(200, &[("call_1", "Read")]),
+        FakeTransport::tool_calls(200, &[("call_2", "Read")]),
+        FakeTransport::text(200, "草稿完成"),
+        FakeTransport::text(200, "验收通过\nPIGEND"),
+    ]);
+    let orchestrator = Orchestrator::new();
+
+    let (rt1, store1) = runtime(transport.clone());
+    let paused1 = paused(
+        orchestrator
+            .run(input(proto::Protocol::OpenAI), rt1)
+            .await
+            .unwrap(),
+    );
+    assert_eq!(paused1.tool_calls[0].id, "call_1");
+
+    let continuation1 = store1
+        .lock()
+        .unwrap()
+        .take_match(&["call_1".into()])
+        .unwrap();
+    assert_eq!(continuation1.state.phase, Pig::Executor);
+    let (rt2, store2) = runtime(transport.clone());
+    let paused2 = paused(
+        orchestrator
+            .resume(resume_body(&["call_1"]), rt2, continuation1)
+            .await
+            .unwrap(),
+    );
+    assert_eq!(paused2.tool_calls[0].id, "call_2");
+
+    let continuation2 = store2
+        .lock()
+        .unwrap()
+        .take_match(&["call_2".into()])
+        .unwrap();
+    let (rt3, _store3) = runtime(transport.clone());
+    let result = completed(
+        orchestrator
+            .resume(
+                resume_body(&["call_1", "call_2"]),
+                rt3,
+                continuation2,
+            )
+            .await
+            .unwrap(),
+    );
+    assert_eq!(result.ended_with, EndedWith::PigEnd);
+
+    let reqs = transport.requests.lock().unwrap();
+    assert_eq!(reqs.len(), 5);
+    let exec_first: serde_json::Value = serde_json::from_slice(&reqs[1].body).unwrap();
+    let exec_resume1: serde_json::Value = serde_json::from_slice(&reqs[2].body).unwrap();
+    let exec_resume2: serde_json::Value = serde_json::from_slice(&reqs[3].body).unwrap();
+    assert_eq!(roles(&exec_first), vec!["system", "user"]);
+    assert_eq!(
+        roles(&exec_resume1),
+        vec!["system", "user", "assistant", "tool"]
+    );
+    assert_eq!(
+        roles(&exec_resume2),
+        vec!["system", "user", "assistant", "tool", "assistant", "tool"]
+    );
+    for body in [&exec_first, &exec_resume1, &exec_resume2] {
+        let user = body["messages"][1]["content"].as_str().unwrap();
+        assert_eq!(
+            user.matches("完成对内部信息和外部信息的获取后").count(),
+            1,
+            "Executor 阶段说明在同一 pig 中必须只有一份"
+        );
+    }
 }
 
 #[tokio::test]

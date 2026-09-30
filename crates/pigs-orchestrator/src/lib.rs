@@ -121,7 +121,7 @@ pub struct TurnResult {
     pub text: String,
     /// 每段可见文本（按执行顺序，诊断/测试用）。
     pub visible: Vec<String>,
-    /// 给客户端的内容序列（文本 + 思考 + 工具调用 + 其它原生块，按顺序）。
+    /// 最终内容序列（文本 + 思考 + 其它原生块，按顺序）；已消费的工具调用不会再次出现。
     pub parts: Vec<Part>,
     /// 结束方式（诊断/日志用）。
     pub ended_with: EndedWith,
@@ -129,7 +129,7 @@ pub struct TurnResult {
     pub session: String,
     /// 完整走过的 pig 序列（含工具往返后的重复相位，诊断用）。
     pub path: Vec<Pig>,
-    /// 跨相位累加的上游 usage（原样对象；上游没给就是 None）。
+    /// 当前策略选中的上游 usage 原对象（上游没给就是 None）。
     pub usage: Option<serde_json::Value>,
     /// 最后一个相位给的停止原因（原样回传）。
     pub stop_reason: Option<String>,
@@ -142,7 +142,7 @@ pub struct PausedTurn {
     pub tool_calls: Vec<ToolCall>,
     /// 到目前为止的可见文本（流式客户端已经收到了；非流式用它拼响应）。
     pub text: String,
-    /// 到目前为止的内容序列（给客户端的内容，顺序权威）。
+    /// 暂停响应的内容序列：持久内容 + 本轮一次性的工具调用，顺序权威。
     pub parts: Vec<Part>,
     /// 这一轮的停止原因（上游原话，通常是 tool_calls / tool_use）。
     pub stop_reason: Option<String>,
@@ -199,7 +199,7 @@ impl Orchestrator {
             .clone()
             .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
         let lang = lang::detect_lang(&proto::extract_last_user_text(&input.body, input.protocol));
-        let state = TurnState::new(lang, session);
+        let state = TurnState::new(lang, session, input.body.clone());
         Self::drive(input, rt, state).await
     }
 
@@ -208,14 +208,49 @@ impl Orchestrator {
         &self,
         input: TurnInput,
         rt: Runtime,
-        continuation: Continuation,
+        mut continuation: Continuation,
     ) -> Result<Outcome> {
         tracing::info!(
             continuation = %continuation.id,
             phase = continuation.state.phase.as_str(),
             "恢复相位（工具结果已回填）"
         );
+        // 客户端只负责送回本轮新的工具结果。阶段提示、模型此前的工具调用等
+        // 都由服务端 continuation 保存，不能从恢复请求重新构造阶段语义。
+        continuation.state.phase_transcript.extend(
+            proto::trailing_tool_result_items(input.protocol, &input.body),
+        );
         Self::drive(input, rt, continuation.state).await
+    }
+
+    /// 为新进入的 pig 构造一次基础请求。阶段提示在这里注入，之后整个 pig 都复用它。
+    fn build_phase_base_body(
+        input: &TurnInput,
+        state: &TurnState,
+        phase: Pig,
+    ) -> Result<serde_json::Value> {
+        let mut body = state.root_body.clone();
+        match phase {
+            Pig::Pre => {
+                let instruction = prompts::pre_instruction(state.lang, &state.failure_paths);
+                proto::append_to_last_user_text(&mut body, input.protocol, &instruction)?;
+            }
+            Pig::Executor => {
+                let instruction = prompts::executor_instruction(state.lang, &state.pre_output);
+                proto::append_to_last_user_text(&mut body, input.protocol, &instruction)?;
+            }
+            Pig::Post => {
+                for text in &state.transcript {
+                    proto::push_assistant_message(&mut body, input.protocol, text)?;
+                }
+                proto::push_user_message(
+                    &mut body,
+                    input.protocol,
+                    &prompts::post_instruction(state.lang),
+                )?;
+            }
+        }
+        Ok(body)
     }
 
     /// 状态机主循环：每轮发一次子请求，按"有没有工具调用"决定暂停还是推进相位。
@@ -235,23 +270,35 @@ impl Orchestrator {
             }
             tracing::info!(pig = phase.as_str(), first_entry, "pig round");
 
-            // 相位指令：Pre 带失败路径、Executor 带 Pre 分析、Post 是模板本身
-            let instruction = match phase {
-                Pig::Pre => prompts::pre_instruction(state.lang, &state.failure_paths),
-                Pig::Executor => prompts::executor_instruction(state.lang, &state.pre_output),
-                Pig::Post => prompts::post_instruction(state.lang),
-            };
-            // 产物接回对话的只有 Post（Pre/Executor 的输入由指令模板承载）
-            let transcript: &[String] = if phase == Pig::Post {
-                &state.transcript
-            } else {
-                &[]
-            };
-
+            // 每个 pig 的阶段提示只在第一次进入时注入一次。之后的工具往返只追加
+            // phase_transcript，绝不在工具结果尾部重新放一条阶段 user 提示。
+            if state.phase_base_body.is_none() {
+                state.phase_base_body = Some(Self::build_phase_base_body(
+                    &ctx.input,
+                    &state,
+                    phase,
+                )?);
+            }
+            let base_body = state
+                .phase_base_body
+                .as_ref()
+                .expect("phase base body must exist");
             let output = ctx
-                .call_pig(phase, &instruction, transcript, &state.session)
+                .call_pig(phase, base_body, &state.phase_transcript, &state.session)
                 .await?;
+            let round_transcript =
+                proto::model_output_transcript_items(ctx.input.protocol, &output);
+            // ToolCall 只属于这一发 Paused 响应。先按原顺序组好客户端内容，
+            // 再把本轮的持久部分写进 state；continuation / Completed 都不能携带已消费的 ToolCall。
+            let paused_parts = if output.tool_calls.is_empty() {
+                None
+            } else {
+                let mut parts = state.parts.clone();
+                parts.extend(state.client_parts_for_round(&output));
+                Some(parts)
+            };
             state.record_round(&output.text, &output);
+            state.phase_transcript.extend(round_transcript);
 
             // 模型要工具 → 暂停，把调用原样交给客户端（相位不结束）
             if !output.tool_calls.is_empty() {
@@ -263,7 +310,7 @@ impl Orchestrator {
                     "模型请求工具调用，暂停相位等待客户端执行"
                 );
                 let text = state.final_text();
-                let parts = state.parts.clone();
+                let parts = paused_parts.unwrap_or_else(|| state.parts.clone());
                 let continuation_id = ctx
                     .store
                     .lock()
@@ -304,12 +351,14 @@ impl Orchestrator {
                         state.pre_output.clear();
                         state.post_iterations = 0;
                         state.phase_raw.clear();
+                        state.reset_phase_conversation();
                     }
                     // 正常计划 → 交给 Executor
                     None => {
                         state.pre_output = strip_markers(&raw);
                         state.phase_raw.clear();
                         state.phase = Pig::Executor;
+                        state.reset_phase_conversation();
                     }
                 },
                 // ---------------- Executor：执行 ----------------
@@ -318,6 +367,7 @@ impl Orchestrator {
                     state.transcript.push(strip_markers(&raw));
                     state.phase_raw.clear();
                     state.phase = Pig::Post;
+                    state.reset_phase_conversation();
                 }
                 // ---------------- Post：验收 / 路由 ----------------
                 Pig::Post => match detect_marker(&raw) {
@@ -340,6 +390,7 @@ impl Orchestrator {
                         state.post_iterations = 0;
                         state.phase_raw.clear();
                         state.phase = Pig::Pre;
+                        state.reset_phase_conversation();
                     }
                     // 推进了但没完成 → 提示词要求它继续执行任务，所以再走一次 Post
                     None => {
@@ -369,20 +420,17 @@ struct Ctx {
 impl Ctx {
     /// 组装并发送一只 pig 的子请求，返回这一轮的模型输出。
     ///
-    /// 体只做两件事：把产物作为 assistant 消息接回对话、把相位指令追加到尾部。
-    /// **不改任何字段**（`tools`、`stream`、`temperature`… 原样透传给上游）。
+    /// `base_body` 已经在进入 pig 时注入过一次阶段提示；这里每轮只把当前 pig
+    /// 已累积的原生 assistant/tool 对话接在后面。
     async fn call_pig(
         &self,
         pig: Pig,
-        instruction: &str,
-        transcript: &[String],
+        base_body: &serde_json::Value,
+        phase_transcript: &[serde_json::Value],
         session: &str,
     ) -> Result<ModelOutput> {
-        let mut body = self.input.body.clone();
-        for text in transcript {
-            proto::push_assistant_message(&mut body, self.input.protocol, text)?;
-        }
-        proto::append_instruction(&mut body, self.input.protocol, instruction)?;
+        let mut body = base_body.clone();
+        proto::append_transcript_items(&mut body, self.input.protocol, phase_transcript)?;
 
         // 头也照原样走；只在缺失时补 content-type / 会话头（会话头按现行决定保留）
         let mut headers: Vec<(String, String)> = self.input.base_headers.clone();

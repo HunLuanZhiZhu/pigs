@@ -19,11 +19,11 @@ pigs 是一个 Rust 前置代理。普通请求走透传；只有同时满足以
 当前编排对子请求 body 的业务修改如下：
 
 - 客户端模型名 `<name>-pigs` 改成 `<name>` 发给上游；回客户端时使用客户端原始模型名。
-- Pre / Executor：把相位指令追加在请求尾部。末项是 user 时，追加到最后一条 user 文本；否则新增 user 消息。
-- Post：把此前产物逐条追加为 assistant 消息，再追加 Post 的 user 指令。
+- Pre / Executor：只在进入该 pig 时，把相位指令追加到当前任务 user 文本；同一 pig 内的工具暂停/恢复不会再次注入相位指令。
+- Post：只在进入 Post 时，把此前产物逐条追加为 assistant 消息，再追加一次 Post 的 user 指令；Post 内继续执行时复用该基础现场。
 - 其它字段，例如 `tools`、`tool_choice`、`stream`、`temperature`、`max_tokens`、`thinking`、`reasoning`、`response_format`、`stream_options`、`parallel_tool_calls` 等，当前主链路不主动删除或改写。
 
-历史中的工具调用、工具结果、图片和其它非文本块继续保留。相位提示词只在尾部追加，目的是尽量保持上游提示词前缀缓存。
+历史中的工具调用、工具结果、图片和其它非文本块继续保留。每个 pig 持有自己的基础请求与相位内原生对话记录：相位提示只在 pig 开始时注入一次，之后模型输出、工具调用和工具结果按原生顺序追加。
 
 `pigs-protocol` 中仍保留 `set_stream`、`strip_tools` 等通用函数，但当前编排主链路不会调用它们。
 
@@ -32,11 +32,12 @@ pigs 是一个 Rust 前置代理。普通请求走透传；只有同时满足以
 `tools` / `tool_choice` 会继续发给上游。上游返回工具调用后：
 
 - 当前 pig 相位暂停；
-- 工具调用按三协议各自的原生形状交给客户端执行；
+- 工具调用按三协议各自的原生形状交给客户端执行；ToolCall 只属于当前 Paused 响应，不进入持久 TurnState；
 - `ContinuationStore` 在进程内存保存现场，默认最多 64 条，TTL 30 分钟；
 - 客户端把工具结果接回历史后再次请求，pigs 从请求尾部提取工具结果 id；
 - 若 id 与某个 continuation 的全部 pending 调用匹配，则取出该现场并继续同一只 pig；
-- 同一 pig 可以经历任意多轮“工具调用 → 客户端执行 → 工具结果回填”；
+- 同一 pig 可以经历任意多轮“工具调用 → 客户端执行 → 工具结果回填”；每次暂停只返回本轮新产生的工具调用，不重放已经消费过的历史调用；
+- 工具调用被结果匹配并恢复后即视为已消费；最终 Completed 响应不得再次包含这些历史 ToolCall；
 - 有工具结果但找不到匹配现场时返回 HTTP 409，不重新跑整轮；
 - 服务重启后 continuation 不恢复。
 

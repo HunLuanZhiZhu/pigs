@@ -31,7 +31,7 @@ nav a{display:inline-block;margin:4px 8px 4px 0;padding:8px 12px;border-radius:8
 
 <h2>编排做什么</h2>
 <div class="card">
-<p>编排把一次 <code>-pigs</code> 请求拆成若干上游请求。模型名发上游前去掉 <code>-pigs</code>；相位提示词追加在消息尾部；Post 会把此前产物作为 assistant 消息逐条接回。工具调用不会在 pigs 内执行，而是暂停当前相位，交给客户端执行，再通过 continuation 恢复同一只 pig。</p>
+<p>编排把一次 <code>-pigs</code> 请求拆成若干上游请求。模型名发上游前去掉 <code>-pigs</code>；每个 pig 的相位提示只在进入该 pig 时注入一次。Post 会把此前产物作为 assistant 消息逐条接回。工具调用不会在 pigs 内执行，而是暂停当前相位，交给客户端执行；恢复时复用该 pig 的基础请求，只追加模型工具调用与新的工具结果，不重复注入相位提示。</p>
 <p>客户端看到的编排响应由 <code>pigs-protocol</code> 重新合成，并不是某一次上游响应的原样转发。响应中的 model 使用客户端原始 <code>-pigs</code> 名称。</p>
 </div>
 
