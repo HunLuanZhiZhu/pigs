@@ -7,3 +7,22 @@ request_body.json
 /pigs-mini-agent/
 config.example.toml
 /target-alt/
+
+# ARIS/ZCode 研究项目本地安装（init.py --all --quiet 生成）
+.zcode/
+.aris/
+templates/
+
+# 论文目录
+paper/
+
+# 本地研究流水线与中间产物（不作为公开仓库内容）
+/idea-stage/
+/refine-logs/
+/review-stage/
+/experiment-inspection/
+/implementation/
+
+# Python 本地缓存
+__pycache__/
+*.py[cod]
