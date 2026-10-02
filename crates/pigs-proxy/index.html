@@ -28,7 +28,7 @@ table{border-collapse:collapse;width:100%}th,td{border:1px solid var(--line);pad
 <h2>请求头</h2>
 <div class="card">
 <p><code>Upstream::forward_headers</code> 会过滤 <code>host</code>、<code>content-length</code>、<code>connection</code>、<code>transfer-encoding</code>。其它端到端头默认保留。</p>
-<p>当配置 <code>key</code> 非空时，客户端的 <code>authorization</code> 与 <code>x-api-key</code> 会被移除，再写入：</p>
+<p>配置文件由 <code>pigs</code> CLI 选择（<code>config.local.toml</code> 优先于 <code>config.toml</code>）。当当前生效配置的 <code>key</code> 非空时，客户端的 <code>authorization</code> 与 <code>x-api-key</code> 会被移除，再写入：</p>
 <ul><li><code>authorization: Bearer &lt;key&gt;</code></li><li><code>x-api-key: &lt;key&gt;</code></li></ul>
 <p>因此“所有请求头原样透传”不是当前实现。</p>
 </div>

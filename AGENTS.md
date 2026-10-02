@@ -29,7 +29,7 @@ pigs 是一个 Rust 前置代理。普通请求走透传；只有同时满足以
 
 ## 工具调用与 continuation
 
-`tools` / `tool_choice` 会继续发给上游。上游返回工具调用后：
+`tools` / `tool_choice` 会继续发给上游。若初次 Pre 请求带有非空 `tools` 且未显式设置 `tool_choice = none`，即使 Pre 输出 `PIGEND`，也不会直接走 SIMPLE_PATH；该 Pre 输出会作为计划进入 Executor，避免 Pre 的文本捷径吞掉客户端要求保留的 function-calling 语义。显式 `tool_choice = none` 时仍允许 Pre 简单路径直接结束。上游返回工具调用后：
 
 - 当前 pig 相位暂停；
 - 工具调用按三协议各自的原生形状交给客户端执行；ToolCall 只属于当前 Paused 响应，不进入持久 TurnState；
@@ -62,7 +62,7 @@ pigs 是一个 Rust 前置代理。普通请求走透传；只有同时满足以
 
 - 转发时跳过 `host`、`content-length`、`connection`、`transfer-encoding`；
 - 其它端到端头默认保留，例如 `accept-encoding`、`anthropic-version`、`user-agent`；
-- 若 `config.toml` 的 `key` 非空，会忽略客户端原有 `authorization` / `x-api-key`，改为同时写入 `authorization: Bearer <key>` 和 `x-api-key: <key>`；
+- 启动时配置选择优先级为 `config.local.toml` → `config.toml`；若当前生效配置的 `key` 非空，会忽略客户端原有 `authorization` / `x-api-key`，改为同时写入 `authorization: Bearer <key>` 和 `x-api-key: <key>`；
 - 编排子请求若缺少 `content-type`，会补 `content-type: application/json`；
 - 编排开始时，若客户端没有 `x-opencode-session`，orchestrator 会生成 UUID v7，并在本次编排所有子请求中补上；若客户端已带则继承；
 - loopback 子请求额外加入随机 `x-pigs-loopback`，用于让本机 handler 跳过 `-pigs` 再分流；
@@ -129,7 +129,7 @@ pigs 是一个 Rust 前置代理。普通请求走透传；只有同时满足以
 
 Pre：
 
-- `PIGEND` → 简单路径结束；
+- `PIGEND` → 通常简单路径结束；但初次 Pre 若存在可用客户端 `tools`（且未显式 `tool_choice = none`），则把 Pre 输出保存为计划并进入 Executor；
 - `PIGFAIL` → 记录失败路径并留在 Pre，最多重规划 2 次；
 - 无标记 → 进入 Executor。
 
@@ -148,7 +148,9 @@ Post：
 
 ## 配置与职责
 
-根 `config.toml` 当前包含：
+启动时若根目录存在 `config.local.toml`，会优先读取它；否则读取 `config.toml`。两者都不存在时才生成默认 `config.toml`。`config.local.toml` 用于本机私有配置（例如固定上游 API key），并被 Git 忽略。
+
+根 `config.toml` 仍是公开默认模板，当前包含：
 
 - `listen`
 - 可选 `key`
@@ -194,3 +196,14 @@ crate 职责：
 - 文档使用中文；
 - 当前 `crates/` 源码仍存在大量中文注释，这是代码现状；
 - 本轮只更新文档，不以文档修改替代代码整改。
+<!-- ARIS:BEGIN -->
+## ARIS Skill Scope (ZCode)
+ARIS skills installed in this project: 84 entries.
+Manifest: `.aris/installed-skills.txt` (lists every skill and its upstream target).
+For ARIS workflows, prefer the project-local skills under `.zcode/skills/` over global skills.
+Reviewer routing: under ZCode, always prefer `Task(agent_type: gpt-reviewer)` (model and reasoning already configured) over Codex MCP; use Codex MCP only when the user explicitly requests it or when `gpt-reviewer` is unavailable.
+Skill execution (ZCode): always invoke skills via the Skill tool (`/research-pipeline`, `/idea-discovery`, ...); reading SKILL.md with Read is for inspection only and never substitutes for invocation. Do not re-implement a skill's workflow by hand from its prose.
+Long-run rule (ZCode-only): any task expected to exceed ~10 minutes (e.g. model training, large sweeps) MUST run via `Bash(run_in_background: true)`; either rely on the tool's persisted output log or redirect stdout/stderr to a `logs/` file yourself — never leave output only in the live session. Every log line MUST carry a wall-clock timestamp precise to the second (`%Y-%m-%d %H:%M:%S`); the main agent judges background-task state by reading the log tail, not by the session being alive.
+Do not delete skill directories wholesale; edit individual SKILL.md files in place (they are hard copies owned by this project, originally from `D:\AIWorkSpace\Auto-zcode-research-in-sleep\Auto-claude-code-research-in-sleep`).
+Update with: `python D:\AIWorkSpace\Auto-zcode-research-in-sleep\init.py --reconcile`  (re-runnable; reconciles new/removed skills).
+<!-- ARIS:END -->

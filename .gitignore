@@ -6,6 +6,7 @@ request_body.json
 .pigs/pig.local.toml
 /pigs-mini-agent/
 config.example.toml
+/config.local.toml
 /target-alt/
 
 # ARIS/ZCode 研究项目本地安装（init.py --all --quiet 生成）
@@ -22,6 +23,7 @@ paper/
 /review-stage/
 /experiment-inspection/
 /implementation/
+/research-local/
 
 # Python 本地缓存
 __pycache__/

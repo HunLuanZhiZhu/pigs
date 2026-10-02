@@ -61,7 +61,7 @@ openai    = "https://opencode.ai/zen/go/v1"
 responses = "https://opencode.ai/zen/go/v1"
 anthropic = "https://opencode.ai/zen/go"</pre>
 <p>三个协议分别选择自己的 base，再拼接客户端原路径与 query。未识别路径使用 <code>upstream.openai</code>。命令行 <code>--base-url</code> 会临时把三个 base 全部设置成同一个值。</p>
-<p><code>key</code> 留空时保留客户端鉴权头；非空时会覆盖客户端的 <code>authorization</code> / <code>x-api-key</code>，同时写入 Bearer 和 x-api-key 两种形式。</p>
+<p>启动时优先读取根目录 <code>config.local.toml</code>，不存在时回退到 <code>config.toml</code>；两者都不存在才生成默认 <code>config.toml</code>。<code>config.local.toml</code> 用于本机私有覆盖并被 Git 忽略。当前生效配置的 <code>key</code> 留空时保留客户端鉴权头；非空时会覆盖客户端的 <code>authorization</code> / <code>x-api-key</code>，同时写入 Bearer 和 x-api-key 两种形式。</p>
 <p>当前内部测试阶段 HTTP 抓包默认 <code>max</code>：每个客户端、内部 loopback、真实上游的请求/响应分别写入 <code>logs/http</code>，完整记录 JSON/SSE body。编排请求另外记录 <code>orchestration-decision</code> / <code>orchestration-outcome</code>，用于直接看请求为何被判成 resume、新开一轮或冲突。敏感头与常见敏感 query 参数自动打码；body 不做语义脱敏。流式响应文件还带 <code>capture_complete</code>，可以直接判断响应是否中途断开。</p>
 </div>
 
