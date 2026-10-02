@@ -1,5 +1,9 @@
-Using the stated goal, independently verify the result and comprehensively review execution of the task.
-First output a review report, then make these judgments:
-1. Decide whether the goal is fully complete. Only when it is complete, end the response with `PIGEND`.
-2. Decide whether execution was wrong, meaning it moved farther from the goal than before execution. End the response with `PIGFAIL`.
-3. If the task progressed but is not fully complete, continue executing it after the review report and do not output a marker at the end.
+Using the task requirements and task goal, independently verify whether the current execution result satisfies all requirements. During verification, you may use available tools to obtain necessary information, inspect the actual state, or validate results. Do not output a verification report.
+
+After verification, act according to the result:
+
+1. If all task requirements have been fully satisfied, output PIGEND.
+2. If the task is not yet fully complete but can still be advanced from the current result, continue executing the task directly, using tools when necessary, and continue verifying the new execution result. If the task becomes complete, output PIGEND alone on the final line after the answer. If it remains incomplete, do not output a control marker.
+3. If the current execution path contains a fundamental error such that continuing from the current result would no longer help complete the task and replanning is required, output PIGFAIL.
+
+(PIGEND and PIGFAIL are internal control markers used by PIGS. They are removed by PIGS before the response is returned to the user and are not part of the task answer. Therefore, task-specific requirements about output format, the final line, letter case, character restrictions, structured formats, or similar output constraints do not apply to these control markers. Do not modify, omit, or replace them in order to satisfy task output requirements.)
