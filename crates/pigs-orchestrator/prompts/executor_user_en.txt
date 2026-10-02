@@ -1,3 +1,4 @@
-The following is the complete analysis of 1. internal information, 2. external information, 3. execution plan, 4. task goal, and 5. task difficulty:
+The following is the analysis prepared before executing this task:
 {pre_output}
-After obtaining the required internal and external information, follow the execution plan and fully complete the task goal.
+
+The analysis above is preliminary and may be adjusted during execution as needed. Complete the task goal and independently verify the final result.
