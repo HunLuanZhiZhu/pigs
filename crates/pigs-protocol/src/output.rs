@@ -63,6 +63,14 @@ impl ModelOutput {
     pub fn is_empty(&self) -> bool {
         self.text.is_empty() && self.tool_calls.is_empty()
     }
+
+    /// 上游明确表示本轮因为生成 token 上限而被截断。
+    pub fn is_truncated(&self) -> bool {
+        matches!(
+            self.stop_reason.as_deref(),
+            Some("length" | "max_tokens" | "max_output_tokens")
+        )
+    }
 }
 
 /// 解析非流式 JSON 响应。
@@ -992,6 +1000,22 @@ where
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
+
+    #[test]
+    fn detects_token_limit_stop_reasons() {
+        for reason in ["length", "max_tokens", "max_output_tokens"] {
+            let out = ModelOutput {
+                stop_reason: Some(reason.into()),
+                ..ModelOutput::default()
+            };
+            assert!(out.is_truncated(), "reason={reason}");
+        }
+        let normal = ModelOutput {
+            stop_reason: Some("stop".into()),
+            ..ModelOutput::default()
+        };
+        assert!(!normal.is_truncated());
+    }
 
     #[test]
     fn chat_json_with_tool_calls_keeps_native_shape() {

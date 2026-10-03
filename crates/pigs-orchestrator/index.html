@@ -17,15 +17,15 @@ code{background:#eef1f6;border-radius:4px;padding:1px 6px;font-family:Consolas,m
 <h2>状态机</h2>
 <div class="card"><table>
 <tr><th>相位</th><th>模型输出</th><th>下一步</th></tr>
-<tr><td>Pre</td><td>末尾控制标记 <code>PIGEND</code></td><td>简单路径完成，不进入 Executor/Post。</td></tr>
+<tr><td>Pre</td><td>实质正文后的末尾 <code>PIGEND</code></td><td>简单路径完成，不进入 Executor/Post；只有控制标记而没有正文仍无效。</td></tr>
 <tr><td>Pre</td><td><code>PIGFAIL</code></td><td>记录失败路径并重新 Pre；重规划预算常量为 2。</td></tr>
 <tr><td>Pre</td><td>无控制标记</td><td>保存为 <code>pre_output</code>，进入 Executor。</td></tr>
 <tr><td>Executor</td><td>任意正常输出</td><td>不按 PIG 标记路由；完整物化 Executor 会话现场，并在末尾追加 Post 的 user 指令后进入 Post。</td></tr>
-<tr><td>Post</td><td><code>PIGEND</code></td><td>正常完成。</td></tr>
-<tr><td>Post</td><td><code>PIGFAIL</code></td><td>记录失败路径，回 Pre 重规划。</td></tr>
+<tr><td>Post</td><td><code>PIGEND</code>（可单独一行）</td><td>正常完成。</td></tr>
+<tr><td>Post</td><td><code>PIGFAIL</code>（可单独一行）</td><td>记录失败路径，回 Pre 重规划。</td></tr>
 <tr><td>Post</td><td>无控制标记</td><td>继续在同一 Post 对话现场追加模型输出；Post 迭代预算常量为 3。</td></tr>
 </table>
-<p>预算耗尽返回 <code>Error::Budget</code>。非流式 proxy 会把这种错误映射为 HTTP 422。</p>
+<p>Pre 使用严格标记检测，Post 使用只看最后非空行的终止标记检测。任何相位若 <code>stop_reason</code> 明确表示 token 上限截断（<code>length</code> / <code>max_tokens</code> / <code>max_output_tokens</code>），会返回 <code>Error::OutputTruncated</code>，不会把半截文本继续交给下一相位。预算耗尽返回 <code>Error::Budget</code>；非流式 proxy 会把预算错误映射为 HTTP 422，其它编排错误通常为 502。</p>
 </div>
 
 <h2>子请求如何组装</h2>
@@ -101,6 +101,6 @@ resume 同一相位</pre>
 
 <h2>错误处理</h2>
 <div class="card">
-<p>transport 或解析错误会立即终止当前编排，不在 orchestrator 内自动重试。是否采用额外重试策略属于其它层的职责。</p>
+<p>transport、解析错误或明确的 token 截断会立即终止当前编排，不在 orchestrator 内自动重试。token 截断使用独立的 <code>OutputTruncated</code> 错误，不再与“无文本”混为一类；是否采用额外恢复/重试策略属于其它层的职责。</p>
 </div>
 </div></body></html>

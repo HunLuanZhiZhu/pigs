@@ -22,8 +22,8 @@ fn control_marker(line: &str) -> Option<Marker> {
     }
 }
 
-/// 仅当**最后一个非空行**是控制标记时才算检测到，且要求前面存在非标记的实质行。
-/// （防止模型只输出一个光秃秃的标记。移植自 legacy `phased_markers.rs`。）
+/// Pre 使用的严格检测：仅当**最后一个非空行**是控制标记时才算检测到，且要求前面
+/// 存在非标记的实质行，防止简单路径只输出一个光秃秃的标记。
 pub fn detect_marker(text: &str) -> Option<Marker> {
     let lines: Vec<&str> = text
         .lines()
@@ -37,6 +37,15 @@ pub fn detect_marker(text: &str) -> Option<Marker> {
         return None;
     }
     control_marker(last)
+}
+
+/// Post 使用的终止检测：只要求最后一个非空行是控制标记。
+/// Post 的任务结果已经存在于 Executor 上下文中，因此 `PIGEND` / `PIGFAIL` 单独一行也是合法路由信号。
+pub fn detect_terminal_marker(text: &str) -> Option<Marker> {
+    text.lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .and_then(control_marker)
 }
 
 /// 从文本中剔除所有控制标记行。
@@ -139,6 +148,14 @@ mod tests {
         assert_eq!(detect_marker("PIGEND"), None); // 无实质行
         assert_eq!(detect_marker("PIGFAIL\n理由\nPIGEND"), Some(Marker::End));
         assert_eq!(detect_marker("普通回答，无标记"), None);
+    }
+
+    #[test]
+    fn detects_terminal_marker_without_substantive_text() {
+        assert_eq!(detect_terminal_marker("PIGEND"), Some(Marker::End));
+        assert_eq!(detect_terminal_marker("PIGFAIL"), Some(Marker::Failed));
+        assert_eq!(detect_terminal_marker("核验过程\nPIGEND\n"), Some(Marker::End));
+        assert_eq!(detect_terminal_marker("普通回答，无标记"), None);
     }
 
     #[test]

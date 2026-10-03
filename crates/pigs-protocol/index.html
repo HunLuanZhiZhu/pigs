@@ -60,7 +60,7 @@ code{background:#eef1f6;border-radius:4px;padding:1px 6px;font-family:Consolas,m
 <h2>上游输出解析</h2>
 <div class="card">
 <p>JSON 与 SSE 输出会被统一解析成 <code>ModelOutput</code>。统一内容序列使用 <code>Part</code> 表示文本、reasoning/thinking、工具调用以及协议原生块。</p>
-<p>工具调用会同时保存统一字段和协议原生 JSON，以便最终响应尽量恢复客户端所需形状。停止原因与 usage 也从上游输出中提取。</p>
+<p>工具调用会同时保存统一字段和协议原生 JSON，以便最终响应尽量恢复客户端所需形状。停止原因与 usage 也从上游输出中提取。<code>ModelOutput::is_truncated()</code> 会把 <code>length</code>、<code>max_tokens</code>、<code>max_output_tokens</code> 识别为生成上限截断，供 orchestrator 区分“被截断”与“真正没有文本/工具调用”。</p>
 <p>这不是“任意上游 JSON 原样往返”：只有解析器明确提取/保留的内容会进入统一模型，顶层响应 id、时间戳和其它未建模元数据不会作为原始响应整体保留。</p>
 </div>
 

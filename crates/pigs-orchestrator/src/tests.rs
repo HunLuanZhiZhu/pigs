@@ -38,6 +38,16 @@ impl FakeTransport {
         )
     }
 
+    fn text_with_finish_reason(status: u16, text: &str, finish_reason: &str) -> SubResponse {
+        Self::json(
+            status,
+            json!({
+                "choices": [{"message": {"content": text}, "finish_reason": finish_reason}],
+                "usage": {"input_tokens": 1, "output_tokens": 2}
+            }),
+        )
+    }
+
     /// 模型要调用工具（OpenAI Chat 形状）。
     fn tool_calls(status: u16, calls: &[(&str, &str)]) -> SubResponse {
         let calls: Vec<serde_json::Value> = calls
@@ -624,6 +634,48 @@ async fn post_pigfail_returns_to_pre_with_failure_paths() {
     );
     assert!(!post2.to_string().contains("草稿一"));
     assert!(!post2.to_string().contains("走偏了"));
+}
+
+#[tokio::test]
+async fn post_accepts_marker_only_pigend() {
+    let transport = fake(vec![
+        FakeTransport::text(200, "计划"),
+        FakeTransport::text(200, "草稿完成"),
+        FakeTransport::text(200, "PIGEND"),
+    ]);
+    let (rt, _store) = runtime(transport.clone());
+    let result = completed(
+        Orchestrator::new()
+            .run(input(proto::Protocol::OpenAI), rt)
+            .await
+            .unwrap(),
+    );
+    assert_eq!(result.ended_with, EndedWith::PigEnd);
+    assert_eq!(transport.requests.lock().unwrap().len(), 3);
+}
+
+#[tokio::test]
+async fn truncated_pre_is_rejected_even_when_text_exists() {
+    let transport = fake(vec![FakeTransport::text_with_finish_reason(
+        200,
+        "半截计划",
+        "length",
+    )]);
+    let (rt, _store) = runtime(transport.clone());
+    let err = Orchestrator::new()
+        .run(input(proto::Protocol::OpenAI), rt)
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        Error::OutputTruncated(proto::Protocol::OpenAI, "pre", reason)
+            if reason == "length"
+    ));
+    assert_eq!(
+        transport.requests.lock().unwrap().len(),
+        1,
+        "截断的 Pre 不能被当成正常计划送进 Executor"
+    );
 }
 
 #[tokio::test]

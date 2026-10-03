@@ -16,7 +16,7 @@ pub mod prompts;
 pub mod state;
 pub mod transport;
 
-use markers::{detect_marker, strip_markers, Marker, MarkerFilter};
+use markers::{detect_marker, detect_terminal_marker, strip_markers, Marker, MarkerFilter};
 use pigs_protocol as proto;
 use proto::{ModelOutput, Part, ToolCall};
 use state::{Continuation, ContinuationStore, TurnState};
@@ -175,6 +175,8 @@ pub enum Error {
     Protocol(#[from] proto::Error),
     #[error("传输错误: {0}")]
     Transport(#[from] TransportError),
+    #[error("上游输出因 token 限制被截断（协议 {0:?}，pig {1}，reason {2}）")]
+    OutputTruncated(proto::Protocol, &'static str, String),
     #[error("上游响应既没有文本也没有工具调用（协议 {0:?}，pig {1}）")]
     NoText(proto::Protocol, &'static str),
     #[error("编排预算耗尽: {0}")]
@@ -386,7 +388,7 @@ impl Orchestrator {
                     state.phase_transcript.clear();
                 }
                 // ---------------- Post：验收 / 路由 ----------------
-                Pig::Post => match detect_marker(&raw) {
+                Pig::Post => match detect_terminal_marker(&raw) {
                     // 验收通过 → 整轮结束
                     Some(Marker::End) => {
                         return Ok(Outcome::Completed(state.complete(EndedWith::PigEnd)))
@@ -552,6 +554,13 @@ fn parse_output(protocol: proto::Protocol, pig: Pig, resp: &SubResponse) -> Resu
             }
         }
     };
+    if output.is_truncated() {
+        return Err(Error::OutputTruncated(
+            protocol,
+            pig.as_str(),
+            output.stop_reason.clone().unwrap_or_default(),
+        ));
+    }
     if output.is_empty() {
         return Err(Error::NoText(protocol, pig.as_str()));
     }

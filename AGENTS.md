@@ -129,7 +129,8 @@ pigs 是一个 Rust 前置代理。普通请求走透传；只有同时满足以
 
 Pre：
 
-- `PIGEND` → 通常简单路径结束；但初次 Pre 若存在可用客户端 `tools`（且未显式 `tool_choice = none`），则把 Pre 输出保存为计划并进入 Executor；
+- Pre 提示会要求总结任务目标和会影响结果的关键条件，并把题意不清、多种合理解释或关键条件存在较大不确定性视为难点，供简单/复杂路径判断；
+- `PIGEND` 使用严格检测：标记前必须已有非控制标记的实质文本，防止简单路径只有控制词而没有用户答案；满足后通常简单路径结束，但初次 Pre 若存在可用客户端 `tools`（且未显式 `tool_choice = none`），则把 Pre 输出保存为计划并进入 Executor；
 - `PIGFAIL` → 记录失败路径并留在 Pre，最多重规划 2 次；
 - 无标记 → 进入 Executor。
 
@@ -140,11 +141,13 @@ Executor：
 
 Post：
 
-- `PIGEND` → 正常完成；
-- `PIGFAIL` → 回 Pre 重规划；
+- `PIGEND` → 正常完成；Post 使用终止标记检测，因此仅输出一行 `PIGEND` 也合法；
+- `PIGFAIL` → 回 Pre 重规划；仅输出一行 `PIGFAIL` 也合法；
 - 无标记 → 继续 Post，最多重试 3 次。
 
-预算耗尽返回编排错误。proxy 对预算错误返回 422；其它编排错误通常返回 502。
+任何相位只要上游停止原因明确表示生成 token 上限截断（当前识别 OpenAI Chat 的 `length`、Anthropic 的 `max_tokens`、Responses 的 `max_output_tokens`），就返回截断错误，不把部分文本当作完整 Pre/Executor/Post 产出继续推进。
+
+预算耗尽返回编排错误。proxy 对预算错误返回 422；其它编排错误（包括 token 截断）通常返回 502。
 
 ## 配置与职责
 
