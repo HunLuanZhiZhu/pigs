@@ -1,4 +1,4 @@
-Using the task requirements and task goal, independently verify whether the current execution result satisfies all requirements. During verification, you may use available tools to obtain necessary information, inspect the actual state, or validate results. Do not output a verification report.
+Using the task requirements and task goal, independently verify whether the current execution result satisfies all requirements. Focus on whether the result accurately completes the task goal and follows the required content, scope, format, and constraints, and whether the key facts, assumptions, and actual state that affect the result have sufficient support; do not treat unsupported added information as confirmed fact. During verification, you may use available tools to obtain necessary information, inspect the actual state, or validate results. Do not judge correctness solely from the current execution result's own claims. Do not output a verification report.
 
 After verification, act according to the result:
 

@@ -1,4 +1,4 @@
 The following is the analysis prepared before executing this task:
 {pre_output}
 
-The analysis above is preliminary and may be adjusted during execution as needed. Complete the task goal and independently verify the final result.
+The analysis above is preliminary and may be adjusted during execution as needed. Only when there are genuinely multiple reasonable interpretations, prefer the simpler, more straightforward interpretation. Complete the task goal and independently verify the final result.
