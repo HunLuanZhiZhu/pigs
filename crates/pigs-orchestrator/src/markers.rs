@@ -1,7 +1,9 @@
-//! 控制面标记：PIGEND / PIGFAIL。相位结束条件是"模型答完"；标记仅用于路由。
+//! 控制面标记：PIGEND / PIGNEXT / PIGFAIL。相位结束条件是"模型答完"；标记仅用于路由。
 
 /// 成功结束标记（整轮完成）。
 pub const PIGEND: &str = "PIGEND";
+/// 可修补标记（Post 验收后回到 Executor 继续执行）。
+pub const PIGNEXT: &str = "PIGNEXT";
 /// 失败路径标记（回到 Pre 重规划）。
 pub const PIGFAIL: &str = "PIGFAIL";
 
@@ -10,6 +12,8 @@ pub const PIGFAIL: &str = "PIGFAIL";
 pub enum Marker {
     /// PIGEND —— 整轮正常结束。
     End,
+    /// PIGNEXT —— 当前结果可继续修补，回 Executor。
+    Next,
     /// PIGFAIL —— 路径失败，需要重规划。
     Failed,
 }
@@ -17,6 +21,7 @@ pub enum Marker {
 fn control_marker(line: &str) -> Option<Marker> {
     match line.trim() {
         PIGEND => Some(Marker::End),
+        PIGNEXT => Some(Marker::Next),
         PIGFAIL => Some(Marker::Failed),
         _ => None,
     }
@@ -40,7 +45,7 @@ pub fn detect_marker(text: &str) -> Option<Marker> {
 }
 
 /// Post 使用的终止检测：只要求最后一个非空行是控制标记。
-/// Post 的任务结果已经存在于 Executor 上下文中，因此 `PIGEND` / `PIGFAIL` 单独一行也是合法路由信号。
+/// Post 的任务结果已经存在于 Executor 上下文中，因此 `PIGEND` / `PIGNEXT` / `PIGFAIL` 单独一行也是合法路由信号。
 pub fn detect_terminal_marker(text: &str) -> Option<Marker> {
     text.lines()
         .rev()
@@ -65,7 +70,8 @@ pub fn is_control_marker_line(line: &str) -> bool {
 
 /// 这段文本是否"还有可能长成控制标记"（即它是某个标记的开头）。
 fn is_possible_marker_prefix(text: &str) -> bool {
-    !text.is_empty() && (PIGEND.starts_with(text) || PIGFAIL.starts_with(text))
+    !text.is_empty()
+        && (PIGEND.starts_with(text) || PIGNEXT.starts_with(text) || PIGFAIL.starts_with(text))
 }
 
 /// 删除整行控制标记，但保留其它行与换行布局（用于流式增量转发）。
@@ -79,7 +85,7 @@ pub fn strip_control_lines_preserving_layout(text: &str) -> String {
 /// 流式增量过滤器：把上游增量按块喂进来，吐出可以立刻转发给客户端的可见文本。
 ///
 /// 控制标记可能跨增量到达（"PIG" + "END"），所以**只压住两种尾巴**：
-/// 1. 可能正在长成标记的最后一行（`PIG` → `PIGEND`），连它前面那个换行一起留着——
+/// 1. 可能正在长成标记的最后一行（`PIG` → `PIGEND` / `PIGNEXT`），连它前面那个换行一起留着——
 ///    标记被丢弃时，这个换行也跟着丢掉，不会在答复里留下多余空行；
 /// 2. 悬在末尾、还没有下一行内容的换行（等下一行有实质内容了再放行）。
 ///
@@ -144,6 +150,7 @@ mod tests {
     #[test]
     fn detects_only_on_last_non_empty_line() {
         assert_eq!(detect_marker("分析……\nPIGEND\n"), Some(Marker::End));
+        assert_eq!(detect_marker("x\nPIGNEXT"), Some(Marker::Next));
         assert_eq!(detect_marker("x\nPIGFAIL"), Some(Marker::Failed));
         assert_eq!(detect_marker("PIGEND"), None); // 无实质行
         assert_eq!(detect_marker("PIGFAIL\n理由\nPIGEND"), Some(Marker::End));
@@ -153,14 +160,19 @@ mod tests {
     #[test]
     fn detects_terminal_marker_without_substantive_text() {
         assert_eq!(detect_terminal_marker("PIGEND"), Some(Marker::End));
+        assert_eq!(detect_terminal_marker("PIGNEXT"), Some(Marker::Next));
         assert_eq!(detect_terminal_marker("PIGFAIL"), Some(Marker::Failed));
-        assert_eq!(detect_terminal_marker("核验过程\nPIGEND\n"), Some(Marker::End));
+        assert_eq!(
+            detect_terminal_marker("核验过程\nPIGEND\n"),
+            Some(Marker::End)
+        );
         assert_eq!(detect_terminal_marker("普通回答，无标记"), None);
     }
 
     #[test]
     fn strips_marker_lines() {
         assert_eq!(strip_markers("报告内容\nPIGEND"), "报告内容");
+        assert_eq!(strip_markers("a\nPIGNEXT\nb\n"), "a\nb");
         assert_eq!(strip_markers("a\nPIGFAIL\nb\n"), "a\nb");
         assert_eq!(strip_markers("干净文本"), "干净文本");
     }
@@ -181,6 +193,7 @@ mod tests {
     fn filter_never_leaks_markers_and_preserves_layout() {
         let cases = [
             ("第一行\nPIGEND", "第一行"),
+            ("第一行\n第二行\nPIGNEXT", "第一行\n第二行"),
             ("第一行\n第二行\nPIGFAIL", "第一行\n第二行"),
             ("分析\n\n结论\nPIGEND\n", "分析\n\n结论"),
             ("没有标记的普通回答", "没有标记的普通回答"),

@@ -21,11 +21,12 @@ code{background:#eef1f6;border-radius:4px;padding:1px 6px;font-family:Consolas,m
 <tr><td>Pre</td><td><code>PIGFAIL</code></td><td>记录失败路径并重新 Pre；重规划预算常量为 2。</td></tr>
 <tr><td>Pre</td><td>无控制标记</td><td>保存为 <code>pre_output</code>，进入 Executor。</td></tr>
 <tr><td>Executor</td><td>任意正常输出</td><td>不按 PIG 标记路由；完整物化 Executor 会话现场，并在末尾追加 Post 的 user 指令后进入 Post。</td></tr>
-<tr><td>Post</td><td><code>PIGEND</code>（可单独一行）</td><td>正常完成。</td></tr>
-<tr><td>Post</td><td><code>PIGFAIL</code>（可单独一行）</td><td>记录失败路径，回 Pre 重规划。</td></tr>
-<tr><td>Post</td><td>无控制标记</td><td>继续在同一 Post 对话现场追加模型输出；Post 迭代预算常量为 3。</td></tr>
+<tr><td>Post</td><td><code>PIGEND</code>（可单独一行）</td><td>接受当前 Executor 结果并正常完成。</td></tr>
+<tr><td>Post</td><td><code>PIGNEXT</code></td><td>当前结果可修补：砍回最近一次 Executor 完成时的 checkpoint，丢弃 Post 指令与 Post transcript，再用原 Executor 指令模板把 Post 反馈作为新的执行前分析；连续修补预算为 3。</td></tr>
+<tr><td>Post</td><td><code>PIGFAIL</code></td><td>记录根本问题，回 Pre 重规划；不表示回滚外部状态。</td></tr>
+<tr><td>Post</td><td>无控制标记</td><td>视为核验协议未完成，继续在同一 Post 对话现场重试；无标记重试预算为 3。</td></tr>
 </table>
-<p>Pre 使用严格标记检测，Post 使用只看最后非空行的终止标记检测。任何相位若 <code>stop_reason</code> 明确表示 token 上限截断（<code>length</code> / <code>max_tokens</code> / <code>max_output_tokens</code>），会返回 <code>Error::OutputTruncated</code>，不会把半截文本继续交给下一相位。预算耗尽返回 <code>Error::Budget</code>；非流式 proxy 会把预算错误映射为 HTTP 422，其它编排错误通常为 502。</p>
+<p>Pre 使用严格标记检测，Post 使用只看最后非空行的终止标记检测。Post 只负责核验和路由，不自行执行修补；需要修补时用 <code>PIGNEXT</code> 把控制权交回 Executor。任何相位若 <code>stop_reason</code> 明确表示 token 上限截断（<code>length</code> / <code>max_tokens</code> / <code>max_output_tokens</code>），会返回 <code>Error::OutputTruncated</code>，不会把半截文本继续交给下一相位。预算耗尽返回 <code>Error::Budget</code>；非流式 proxy 会把预算错误映射为 HTTP 422，其它编排错误通常为 502。</p>
 </div>
 
 <h2>子请求如何组装</h2>
@@ -35,7 +36,9 @@ code{background:#eef1f6;border-radius:4px;padding:1px 6px;font-family:Consolas,m
 <ol>
 <li>Pre / Executor 进入时，从本轮最初的请求 body 构造基础请求；</li>
 <li>Pre / Executor 只在这一步把相位提示追加到当前任务 user 文本；</li>
-<li>Executor 完成时，不从最初请求重建 Post。系统会把 Executor 的基础请求与完整 <code>phase_transcript</code> 物化成连续上下文，再只追加一条 Post user 指令；因此 Post 的消息前缀与 Executor 最后一发请求保持一致，并继续带上 Executor 最终 assistant 输出；</li>
+<li>Executor 完成时，先把 Executor 的基础请求与完整 <code>phase_transcript</code> 物化成一个 checkpoint；该 checkpoint 恰好截止到 Executor 最终 assistant 输出，尚未包含任何 Post 指令；Post 请求只是在这个 checkpoint 后追加一条 Post user 指令；</li>
+<li>Post 返回 <code>PIGNEXT</code> 时，系统回到上述 checkpoint，丢弃 Post user 指令及整个 Post transcript；随后新增一条 user 消息，内容直接复用普通 <code>executor_instruction</code> 模板，只把其中的执行前分析替换为 Post 去除控制标记后的反馈；</li>
+<li>工具 continuation 恢复除了要求 pending tool-call id 全部匹配，还要求 A/B 模式一致，避免两种输出模式互相消费现场；</li>
 <li>同一 pig 内若发生工具调用，模型的原生 assistant/tool-call 记录保存在 <code>phase_transcript</code>；客户端回填时，用 pending id 定位本次恢复起点，然后把从匹配工具结果开始的客户端新增消息原样接回，包括后续 reminder / 普通 user 消息；</li>
 <li>恢复时复用同一个基础请求，再把 <code>phase_transcript</code> 接在后面，不新增相位 user 指令；</li>
 <li>序列化 JSON，形成 <code>SubRequest</code>。</li>
@@ -45,13 +48,13 @@ code{background:#eef1f6;border-radius:4px;padding:1px 6px;font-family:Consolas,m
 
 <h2>模型名与其它 body 字段</h2>
 <div class="card">
-<p>去掉 <code>-pigs</code> 的 model 修改发生在 proxy 进入 orchestrator 之前。orchestrator 本身不会调用 <code>set_stream</code> 或 <code>strip_tools</code>；客户端原有的 <code>stream</code>、<code>tools</code>、<code>tool_choice</code>、thinking/reasoning 等字段随克隆 body 保留。</p>
+<p>去掉 <code>-pigs</code> / <code>-pigsb</code> 的 model 修改发生在 proxy 进入 orchestrator 之前；proxy 同时把 A/B 模式写入 <code>TurnInput</code>。orchestrator 本身不会调用 <code>set_stream</code> 或 <code>strip_tools</code>；客户端原有的 <code>stream</code>、<code>tools</code>、<code>tool_choice</code>、thinking/reasoning 等字段随克隆 body 保留。</p>
 <p>由于 body 经过 <code>serde_json::Value</code> 解析再序列化，只能承诺 JSON 语义字段保留，不能承诺原始字节、空白或对象键顺序完全一致。</p>
 </div>
 
 <h2>工具调用与 continuation</h2>
 <div class="card">
-<p>一只 pig 可以包含多轮工具往返。模型输出只要还有工具调用，当前相位就不会做 PIGEND/PIGFAIL 路由，而是先暂停：</p>
+<p>一只 pig 可以包含多轮工具往返。模型输出只要还有工具调用，当前相位就不会做 PIGEND/PIGNEXT/PIGFAIL 路由，而是先暂停：</p>
 <pre>模型请求工具
   ↓
 保存 TurnState + pending tool ids
@@ -80,11 +83,12 @@ resume 同一相位</pre>
 <div class="warn">loopback 内部令牌 <code>x-pigs-loopback</code> 是 proxy transport 加的。当前 upstream header 过滤未删除它，所以它目前会继续到真实上游；这里记录的是现状，不代表目标设计。</div>
 </div>
 
-<h2>流式</h2>
+<h2>模式 A / B 与流式</h2>
 <div class="card">
 <p>当父请求 body 的 <code>stream</code> 为 true 时，orchestrator 使用 transport 的 streaming 路径。上游 SSE 被增量解析并通过 <code>ProgressSink</code> 产生事件。</p>
 <ul>
-<li>文本增量经过 <code>MarkerFilter</code>，只抑制可能形成尾部控制标记的字符，避免 <code>PIGEND</code>/<code>PIGFAIL</code> 泄出；</li>
+<li>模式 A（<code>-pigs</code>）的文本增量经过 <code>MarkerFilter</code> 后实时发送；</li>
+<li>模式 B（<code>-pigsb</code>）的普通文本在 Pre/Executor/Post 生成时不发送。Simple Path 只有 Pre <code>PIGEND</code> 后提交 Pre 答案；复杂路径把 Executor 普通文本先存为 candidate，只有随后 Post <code>PIGEND</code> 才提交；<code>PIGNEXT</code>/<code>PIGFAIL</code> 会丢弃当前 candidate；</li>
 <li>thinking、reasoning summary、signature 等使用带类型事件传给 proxy 的 <code>StreamEncoder</code>；</li>
 <li>一轮结束时，无法实时还原的原生块由收尾逻辑补发。</li>
 </ul>
@@ -93,7 +97,7 @@ resume 同一相位</pre>
 
 <h2>最终内容与 usage</h2>
 <div class="card">
-<p><code>TurnState</code> 会把各轮去除控制标记后的可见文本按顺序保留；最终 <code>TurnResult.text</code> 用两个换行连接这些片段。<code>parts</code> 同时保存文本和解析出的非文本块，供 protocol 层合成最终响应。</p>
+<p>模式 A 中，<code>TurnState</code> 继续按执行顺序保留各阶段普通文本。模式 B 中，Pre/Post 普通文本不进入客户端业务正文；<code>candidate_text</code> 保存当前 Executor 候选，<code>committed_text</code> 只保存最终被接受的业务正文。thinking/reasoning 与工具调用不受正文隐藏规则影响。流式 B 因此只延迟普通业务正文；reasoning 与工具事件仍可实时发生。</p>
 <p><code>stop_reason</code> 每一轮都会覆盖，最终保留最后一轮解析到的值。</p>
 <p><strong>usage 不累计。</strong>当前实现比较 <code>usage.input_tokens</code>，保留该值最大的那一轮完整 usage 对象；平局保留旧对象。OpenAI Chat 若只提供 <code>prompt_tokens</code> 而没有 <code>input_tokens</code>，比较值按 0 处理。</p>
 <div class="note">工具暂停时，状态现场本身仍包含已记录的 usage；但 proxy 的 Paused 响应明确使用 <code>usage: None</code>，所以客户端不会收到“截至暂停点的累计 usage”。</div>

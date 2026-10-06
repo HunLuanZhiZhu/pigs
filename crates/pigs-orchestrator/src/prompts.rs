@@ -14,20 +14,28 @@ fn norm(s: &'static str) -> String {
 }
 
 fn pre_template(lang: Lang) -> String {
-    norm(match lang { Lang::Zh => include_str!("../prompts/pre_user_zh.txt"),
-                      Lang::En => include_str!("../prompts/pre_user_en.txt") })
+    norm(match lang {
+        Lang::Zh => include_str!("../prompts/pre_user_zh.txt"),
+        Lang::En => include_str!("../prompts/pre_user_en.txt"),
+    })
 }
 fn executor_template(lang: Lang) -> String {
-    norm(match lang { Lang::Zh => include_str!("../prompts/executor_user_zh.txt"),
-                      Lang::En => include_str!("../prompts/executor_user_en.txt") })
+    norm(match lang {
+        Lang::Zh => include_str!("../prompts/executor_user_zh.txt"),
+        Lang::En => include_str!("../prompts/executor_user_en.txt"),
+    })
 }
 fn post_template(lang: Lang) -> String {
-    norm(match lang { Lang::Zh => include_str!("../prompts/post_user_zh.txt"),
-                      Lang::En => include_str!("../prompts/post_user_en.txt") })
+    norm(match lang {
+        Lang::Zh => include_str!("../prompts/post_user_zh.txt"),
+        Lang::En => include_str!("../prompts/post_user_en.txt"),
+    })
 }
 fn failure_paths_template(lang: Lang) -> String {
-    norm(match lang { Lang::Zh => include_str!("../prompts/failure_paths_zh.txt"),
-                      Lang::En => include_str!("../prompts/failure_paths_en.txt") })
+    norm(match lang {
+        Lang::Zh => include_str!("../prompts/failure_paths_zh.txt"),
+        Lang::En => include_str!("../prompts/failure_paths_en.txt"),
+    })
 }
 
 /// Pre pig 的指令：追加到最后一条 user 消息文本后面（含历次失败路径）。
@@ -46,6 +54,7 @@ pub fn executor_instruction(lang: Lang, pre_output: &str) -> String {
 pub fn post_instruction(lang: Lang) -> String {
     post_template(lang)
 }
+
 
 /// 失败路径块：空列表 → 空串；非空 → 模板 + 编号列表（legacy 同款编号格式）。
 fn failure_paths_block(lang: Lang, paths: &[String]) -> String {
@@ -78,9 +87,12 @@ mod tests {
     #[test]
     fn pre_instruction_embeds_failure_paths() {
         let p = pre_instruction(Lang::Zh, &[]);
-        assert!(p.contains("执行前分析"));
+        assert!(p.contains("本次需要你先思考以下问题的答案"));
         assert!(!p.contains("曾失败过"));
-        assert!(p.trim_end().ends_with("PIGEND"), "模板本身没动");
+        assert!(p.contains("PIGEND"));
+        assert!(p
+            .trim_end()
+            .ends_with("输出为所要求思考的问题的回答以及判定理由。"));
 
         let p = pre_instruction(Lang::Zh, &[String::from("第一次尝试报告")]);
         assert!(p.contains("曾失败过"));
@@ -91,8 +103,8 @@ mod tests {
     fn executor_instruction_fills_pre_output() {
         let p = executor_instruction(Lang::Zh, "计划X");
         assert!(p.contains("计划X"));
-        assert!(p.starts_with("以下是对本次任务在"));
-        assert!(p.trim_end().ends_with("按照执行计划全力完成任务目标"));
+        assert!(p.starts_with("以下是本任务的执行前分析："));
+        assert!(p.trim_end().ends_with("完成任务目标并自主核验最终结果。"));
         // 不含用户问题（问题留在原 user 消息里，由 body 手术追加）
         assert!(!p.contains("帮我完成任务"));
         // 不再有 legacy 之外的自造块
@@ -102,15 +114,18 @@ mod tests {
     #[test]
     fn post_instruction_is_pure_template() {
         let p = post_instruction(Lang::Zh);
-        assert!(p.starts_with("根据设定的目标，独立验收结果"));
-        assert!(p.contains("PIGEND") && p.contains("PIGFAIL"));
+        assert!(p.starts_with("根据任务要求和任务目标，独立核验当前执行结果"));
+        assert!(p.contains("PIGEND") && p.contains("PIGNEXT") && p.contains("PIGFAIL"));
         assert!(!p.contains("执行结果：") && !p.contains("以下是需要验收"));
     }
 
+
     #[test]
     fn english_templates_exist() {
-        assert!(pre_instruction(Lang::En, &[]).contains("five questions"));
+        assert!(pre_instruction(Lang::En, &[])
+            .contains("First think through the answers to the following questions"));
         assert!(executor_instruction(Lang::En, "PRE").contains("PRE"));
+        assert!(post_instruction(Lang::En).contains("PIGNEXT"));
         assert!(post_instruction(Lang::En).contains("PIGFAIL"));
     }
 }

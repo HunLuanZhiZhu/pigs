@@ -1,6 +1,6 @@
 //! pigs-protocol —— 三种协议的公共字典。
 //!
-//! 全仓库最底层 crate：路径路由、`-pigs` 后缀规则、请求体手术（改 model / 关流式 /
+//! 全仓库最底层 crate：路径路由、`-pigs` / `-pigsb` 后缀与模式规则、请求体手术（改 model / 关流式 /
 //! 去 tools / 替换最后一条 user 消息）、响应文本提取（JSON 与 SSE）、最终答复合成。
 //! 只依赖 serde_json，不做任何 HTTP。
 
@@ -19,7 +19,7 @@ pub use response::{
     extract_response_text, extract_sse_text, synthesize_json, synthesize_sse, LiveEvent,
     ResponseContent, SseTextStream, StreamEncoder,
 };
-pub use route::{has_pigs, protocol_from_path, strip_pigs_suffix, Protocol};
+pub use route::{has_pigs, parse_pigs_model, protocol_from_path, strip_pigs_suffix, PigsMode, Protocol};
 pub use sse::is_sse_content_type;
 pub use surgery::{
     append_instruction, append_to_last_user_text, append_transcript_items, extract_last_user_text,

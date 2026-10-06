@@ -1,7 +1,7 @@
 //! pigs-orchestrator —— 编排引擎。
 //!
 //! 三只 pig 组成一头 pigs：Pre（规划/分流）→ Executor（执行）→ Post（验收），
-//! 由 PIGEND / PIGFAIL 控制标记与预算驱动的状态机串起来。
+//! 由 PIGEND / PIGNEXT / PIGFAIL 控制标记与预算驱动的状态机串起来。
 //!
 //! **一只 pig 是一段对话区间**：模型要工具 → 客户端执行 → 结果回填 → 模型继续，
 //! 直到模型这一轮不再要工具，相位才算产出（跨等待的现场见 [`state::Continuation`]）。
@@ -32,10 +32,12 @@ pub const LOOPBACK_TOKEN_HEADER: &str = "x-pigs-loopback";
 
 /// 预算常量（legacy 默认值；刻意不进配置——它们是编排语义的一部分）。
 /// - `MAX_PRE_REPLANS`：PIGFAIL 回到 Pre 重规划的次数上限；
-/// - `MAX_POST_ITERATIONS`：Post 无标记输出的连续重试次数上限。
+/// - `MAX_POST_ITERATIONS`：Post 无标记输出的连续重试次数上限；
+/// - `MAX_EXECUTOR_CONTINUES`：Post 通过 PIGNEXT 要求 Executor 继续修补的次数上限。
 /// 超预算一律判为本轮失败（绝不假装成功）。
 const MAX_PRE_REPLANS: u32 = 2;
 const MAX_POST_ITERATIONS: u32 = 3;
+const MAX_EXECUTOR_CONTINUES: u32 = 3;
 
 /// 单只 pig（一个相位）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,7 +46,7 @@ pub enum Pig {
     Pre,
     /// 信息收集 + 起草答复（工具调用多发生在这个相位）。
     Executor,
-    /// 审阅 + GOAL 验收 + 失败/重规划。
+    /// 纯核验 + 路由：接受、回 Executor 继续修补、或回 Pre 重规划。
     Post,
 }
 
@@ -83,6 +85,8 @@ pub type ProgressSink = Arc<dyn Fn(PigEvent) + Send + Sync>;
 pub struct TurnInput {
     /// 协议（由请求路径判定）。
     pub protocol: proto::Protocol,
+    /// 输出模式：A 逐阶段暴露正文；B 只提交最终被接受的业务正文。
+    pub mode: proto::PigsMode,
     /// 原始请求 body（JSON）。客户端请求什么就是什么，只允许在尾部追加。
     pub body: serde_json::Value,
     /// 协议路径（子请求原样使用）。
@@ -117,9 +121,9 @@ pub enum Outcome {
 /// 完成后的结果。
 #[derive(Debug, Clone)]
 pub struct TurnResult {
-    /// 最终答复 = 各只 pig 可见文本按顺序空行拼接（已剥离控制标记）。
+    /// 最终答复。模式 A = 各只 pig 可见文本拼接；模式 B = 最终 committed business text。
     pub text: String,
-    /// 每段可见文本（按执行顺序，诊断/测试用）。
+    /// 客户端业务正文片段：模式 A 按执行顺序；模式 B 只有最终提交的一段。
     pub visible: Vec<String>,
     /// 最终内容序列（文本 + 思考 + 其它原生块，按顺序）；已消费的工具调用不会再次出现。
     pub parts: Vec<Part>,
@@ -140,7 +144,7 @@ pub struct TurnResult {
 pub struct PausedTurn {
     /// 交给客户端执行的工具调用（协议原生，原样）。
     pub tool_calls: Vec<ToolCall>,
-    /// 到目前为止的可见文本（流式客户端已经收到了；非流式用它拼响应）。
+    /// 到目前为止的客户端业务正文。模式 B 在工具暂停时通常为空，因为候选尚未验收。
     pub text: String,
     /// 暂停响应的内容序列：持久内容 + 本轮一次性的工具调用，顺序权威。
     pub parts: Vec<Part>,
@@ -201,7 +205,7 @@ impl Orchestrator {
             .clone()
             .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
         let lang = lang::detect_lang(&proto::extract_last_user_text(&input.body, input.protocol));
-        let state = TurnState::new(lang, session, input.body.clone());
+        let state = TurnState::new_with_mode(lang, session, input.body.clone(), input.mode);
         Self::drive(input, rt, state).await
     }
 
@@ -217,6 +221,9 @@ impl Orchestrator {
             phase = continuation.state.phase.as_str(),
             "恢复相位（工具结果已回填）"
         );
+        if input.mode != continuation.state.mode {
+            return Err(Error::Budget("continuation 的 PIGS 模式与恢复请求不一致".into()));
+        }
         // continuation 只负责判断“这次请求是不是上一轮工具调用的继续”。
         // 一旦确认恢复，就保留客户端从匹配工具结果开始追加的后续消息原样，不擅自过滤 reminder/user。
         let resume_items =
@@ -250,20 +257,49 @@ impl Orchestrator {
         Ok(body)
     }
 
-    /// 把 Executor 完整会话现场物化为 Post 的基础请求，并只在末尾追加一条评审 user 消息。
-    ///
-    /// 这样 Post 的前缀就是 Executor 最后一轮请求的完整前缀，再接 Executor 最终输出；
-    /// 不从 root_body 重建，也不压缩工具调用/工具结果，尽量保持上游前缀缓存命中。
-    fn build_post_base_from_executor(input: &TurnInput, state: &TurnState) -> Result<serde_json::Value> {
+    /// 物化“Executor 已执行完、尚未进入 Post”的完整上下文截面。
+    fn build_executor_checkpoint(
+        input: &TurnInput,
+        state: &TurnState,
+    ) -> Result<serde_json::Value> {
         let mut body = state
             .phase_base_body
             .clone()
-            .ok_or_else(|| Error::Budget("Executor 缺少 phase_base_body，无法进入 Post".into()))?;
+            .ok_or_else(|| Error::Budget("Executor 缺少 phase_base_body，无法建立 checkpoint".into()))?;
         proto::append_transcript_items(&mut body, input.protocol, &state.phase_transcript)?;
+        Ok(body)
+    }
+
+    /// 从 Executor checkpoint 构造 Post：只在 checkpoint 后追加一条 Post 核验 user 消息。
+    fn build_post_base_from_checkpoint(
+        input: &TurnInput,
+        state: &TurnState,
+        checkpoint: &serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let mut body = checkpoint.clone();
         proto::push_user_message(
             &mut body,
             input.protocol,
             &prompts::post_instruction(state.lang),
+        )?;
+        Ok(body)
+    }
+
+    /// Post 返回 PIGNEXT 时，砍回最近一次 Executor 完成的 checkpoint。
+    /// 然后复用原 Executor 指令模板，只把“执行前分析”替换为 Post 的核验反馈。
+    fn build_executor_base_from_checkpoint(
+        input: &TurnInput,
+        state: &TurnState,
+        feedback: &str,
+    ) -> Result<serde_json::Value> {
+        let mut body = state
+            .executor_checkpoint_body
+            .clone()
+            .ok_or_else(|| Error::Budget("Post 缺少 Executor checkpoint，无法 PIGNEXT".into()))?;
+        proto::push_user_message(
+            &mut body,
+            input.protocol,
+            &prompts::executor_instruction(state.lang, feedback),
         )?;
         Ok(body)
     }
@@ -288,11 +324,8 @@ impl Orchestrator {
             // 每个 pig 的阶段提示只在第一次进入时注入一次。之后的工具往返只追加
             // phase_transcript，绝不在工具结果尾部重新放一条阶段 user 提示。
             if state.phase_base_body.is_none() {
-                state.phase_base_body = Some(Self::build_phase_base_body(
-                    &ctx.input,
-                    &state,
-                    phase,
-                )?);
+                state.phase_base_body =
+                    Some(Self::build_phase_base_body(&ctx.input, &state, phase)?);
             }
             let base_body = state
                 .phase_base_body
@@ -317,8 +350,11 @@ impl Orchestrator {
 
             // 模型要工具 → 暂停，把调用原样交给客户端（相位不结束）
             if !output.tool_calls.is_empty() {
-                let pending: Vec<String> =
-                    output.tool_calls.iter().map(|call| call.id.clone()).collect();
+                let pending: Vec<String> = output
+                    .tool_calls
+                    .iter()
+                    .map(|call| call.id.clone())
+                    .collect();
                 tracing::info!(
                     pig = phase.as_str(),
                     calls = pending.len(),
@@ -352,6 +388,7 @@ impl Orchestrator {
                 Pig::Pre => match detect_marker(&raw) {
                     // 简单路径：Pre 直接给出答案，整轮结束
                     Some(Marker::End) => {
+                        state.commit_text(strip_markers(&raw));
                         return Ok(Outcome::Completed(state.complete(EndedWith::SimplePath)))
                     }
                     // 路径失败 → 记录，回 Pre 重规划（预算内）
@@ -365,12 +402,18 @@ impl Orchestrator {
                         state.pre_replans += 1;
                         state.pre_output.clear();
                         state.post_iterations = 0;
+                        state.executor_continues = 0;
                         state.phase_raw.clear();
                         state.reset_phase_conversation();
                     }
-                    // 正常计划 → 交给 Executor
-                    None => {
+                    // PIGNEXT 只对 Post 有路由语义；若 Pre 意外输出它，按普通复杂计划进入 Executor。
+                    // 正常无标记计划同样进入 Executor。
+                    Some(Marker::Next) | None => {
                         state.pre_output = strip_markers(&raw);
+                        state.post_iterations = 0;
+                        state.executor_continues = 0;
+                        state.executor_checkpoint_body = None;
+                        state.discard_candidate();
                         state.phase_raw.clear();
                         state.phase = Pig::Executor;
                         state.reset_phase_conversation();
@@ -379,9 +422,14 @@ impl Orchestrator {
                 // ---------------- Executor：执行 ----------------
                 Pig::Executor => {
                     // 不解析标记：Executor 之后总是进 Post 验收。
-                    // Post 不再从 root_body + 摘要重建，而是完整继承 Executor 当前会话现场，
-                    // 仅在其末尾追加一条新的评审 user 消息。
-                    let post_base = Self::build_post_base_from_executor(&ctx.input, &state)?;
+                    // 模式 B 先把本次 Executor 的普通文本保存为候选，但尚不提交给客户端。
+                    state.set_candidate(strip_markers(&raw));
+                    // 再保存“Executor 已完成”的上下文截面；Post 只是在该截面后临时追加核验指令。
+                    let checkpoint = Self::build_executor_checkpoint(&ctx.input, &state)?;
+                    let post_base =
+                        Self::build_post_base_from_checkpoint(&ctx.input, &state, &checkpoint)?;
+                    state.executor_checkpoint_body = Some(checkpoint);
+                    state.post_iterations = 0;
                     state.phase_raw.clear();
                     state.phase = Pig::Post;
                     state.phase_base_body = Some(post_base);
@@ -391,9 +439,31 @@ impl Orchestrator {
                 Pig::Post => match detect_terminal_marker(&raw) {
                     // 验收通过 → 整轮结束
                     Some(Marker::End) => {
+                        state.commit_candidate();
                         return Ok(Outcome::Completed(state.complete(EndedWith::PigEnd)))
                     }
-                    // 执行走偏 → 清空产物，回 Pre 重规划（预算内）
+                    // 可修补 → Post 只给反馈，不自行执行；把完整现场交回 Executor 继续。
+                    Some(Marker::Next) => {
+                        if state.executor_continues >= MAX_EXECUTOR_CONTINUES {
+                            return Err(Error::Budget(format!(
+                                "Executor 继续修补次数超过 {MAX_EXECUTOR_CONTINUES} 次"
+                            )));
+                        }
+                        let feedback = strip_markers(&raw);
+                        let executor_base = Self::build_executor_base_from_checkpoint(
+                            &ctx.input,
+                            &state,
+                            &feedback,
+                        )?;
+                        state.executor_continues += 1;
+                        state.post_iterations = 0;
+                        state.discard_candidate();
+                        state.phase_raw.clear();
+                        state.phase = Pig::Executor;
+                        state.phase_base_body = Some(executor_base);
+                        state.phase_transcript.clear();
+                    }
+                    // 执行走偏 → 回 Pre 重规划（预算内）。这不是回滚，Pre 面对的是当前真实状态。
                     Some(Marker::Failed) => {
                         if state.pre_replans >= MAX_PRE_REPLANS {
                             return Err(Error::Budget(format!(
@@ -405,11 +475,14 @@ impl Orchestrator {
                         state.pre_replans += 1;
                         state.pre_output.clear();
                         state.post_iterations = 0;
+                        state.executor_continues = 0;
+                        state.executor_checkpoint_body = None;
+                        state.discard_candidate();
                         state.phase_raw.clear();
                         state.phase = Pig::Pre;
                         state.reset_phase_conversation();
                     }
-                    // 推进了但没完成 → 提示词要求它继续执行任务，所以再走一次 Post
+                    // 无控制标记 → 视为核验器协议未完成，留在 Post 重试；不让 Post 自行执行任务
                     None => {
                         if state.post_iterations >= MAX_POST_ITERATIONS {
                             return Err(Error::Budget(format!(
@@ -483,6 +556,7 @@ impl Ctx {
             Some(progress) => {
                 progress(PigEvent::Start(pig));
                 let filter = Arc::new(Mutex::new(MarkerFilter::new()));
+                let stream_text = self.input.mode == proto::PigsMode::A;
                 let sink: LiveSink = {
                     let filter = Arc::clone(&filter);
                     let progress = Arc::clone(progress);
@@ -490,9 +564,11 @@ impl Ctx {
                         match event {
                             // 文本要过控制标记过滤；思考原样转发
                             proto::LiveEvent::Text(delta) => {
-                                let visible =
-                                    filter.lock().map(|mut f| f.push(&delta)).unwrap_or_default();
-                                if !visible.is_empty() {
+                                let visible = filter
+                                    .lock()
+                                    .map(|mut f| f.push(&delta))
+                                    .unwrap_or_default();
+                                if stream_text && !visible.is_empty() {
                                     progress(PigEvent::Delta(visible));
                                 }
                             }
@@ -513,7 +589,7 @@ impl Ctx {
                     .send_streaming(req, self.input.protocol, sink)
                     .await?;
                 let tail = filter.lock().map(|mut f| f.finish()).unwrap_or_default();
-                if !tail.is_empty() {
+                if stream_text && !tail.is_empty() {
                     progress(PigEvent::Delta(tail));
                 }
                 progress(PigEvent::End(pig));
@@ -544,8 +620,10 @@ fn parse_output(protocol: proto::Protocol, pig: Pig, resp: &SubResponse) -> Resu
             Ok(value) => proto::parse_json_output(protocol, &value),
             Err(e) => {
                 // 上游回了 2xx 但 body 不是 JSON：把现场带进错误，便于诊断
-                let snippet: String =
-                    String::from_utf8_lossy(&resp.body).chars().take(300).collect();
+                let snippet: String = String::from_utf8_lossy(&resp.body)
+                    .chars()
+                    .take(300)
+                    .collect();
                 return Err(Error::Protocol(proto::Error::InvalidJsonWithBody {
                     reason: e.to_string(),
                     content_type: resp.content_type.clone().unwrap_or_default(),

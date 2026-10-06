@@ -15,7 +15,7 @@ table{border-collapse:collapse;width:100%}th,td{border:1px solid var(--line);pad
 <div class="card"><table>
 <tr><th>输入</th><th>当前处理</th></tr>
 <tr><td>带合法 <code>x-pigs-loopback</code> 的内部请求</td><td>跳过编排判断，直接走 passthrough，避免递归。</td></tr>
-<tr><td><code>POST</code> + 三协议路径</td><td>先尝试解析 JSON。非法 JSON 返回 400；合法后读取 model，带 <code>-pigs</code> 则编排，不带则继续透传原始 body。</td></tr>
+<tr><td><code>POST</code> + 三协议路径</td><td>先尝试解析 JSON。非法 JSON 返回 400；合法后读取 model，带 <code>-pigs</code> 或 <code>-pigsb</code> 则编排，不带则继续透传原始 body。</td></tr>
 <tr><td>其它请求</td><td>直接 passthrough。</td></tr>
 </table></div>
 
@@ -39,11 +39,12 @@ table{border-collapse:collapse;width:100%}th,td{border:1px solid var(--line);pad
 <p>面向真实上游的 reqwest 客户端显式关闭 gzip / brotli / deflate 自动解压，目的是让压缩 body 与编码头保持一致。</p>
 </div>
 
-<h2><code>-pigs</code> 编排</h2>
+<h2><code>-pigs</code> / <code>-pigsb</code> 编排</h2>
 <div class="card">
-<p>proxy 先把请求 JSON 中的 model 改成去掉 <code>-pigs</code> 的真实模型名，然后构造 <code>TurnInput</code>。客户端是否流式由原 body 的 <code>stream</code> 布尔值决定。</p>
+<p>proxy 解析 model 后缀：<code>-pigs</code> 选择模式 A，<code>-pigsb</code> 选择模式 B；随后去掉后缀写入真实上游 model，并把模式放入 <code>TurnInput</code>。客户端是否流式由原 body 的 <code>stream</code> 布尔值决定。</p>
 <p>proxy 会扫描当前请求中的全部工具结果 id，并从 <code>ContinuationStore</code> 中寻找其 pending id 已全部出现的现场；匹配成功即恢复同一只 pig，不要求工具结果处于请求绝对尾部。若存在尾部工具结果却找不到现场则返回 409；否则才按新请求处理。每次 Paused 响应只返回当前这轮新产生的工具调用，已消费的历史 ToolCall 不会跟着 continuation 进入下一次响应。</p>
 <p>非流式编排完成后调用 <code>synthesize_json</code>；流式请求则立即返回 SSE body，后台运行状态机并通过 <code>StreamEncoder</code> 持续发帧。</p>
+<p>模式 A 会把普通文本增量实时交给 <code>StreamEncoder</code>。模式 B 会抑制阶段 ordinary-text delta，直到 Simple 的 Pre 或 Complex 的 Executor 被正式接受后，才在收尾阶段把最终业务正文写入 SSE；thinking/reasoning 和工具调用仍按原协议发送。</p>
 </div>
 
 <h2>loopback</h2>
@@ -56,8 +57,8 @@ table{border-collapse:collapse;width:100%}th,td{border:1px solid var(--line);pad
 
 <h2>编排响应</h2>
 <div class="card">
-<p>编排路径不会把最后一个上游响应直接交给客户端。proxy 构造 <code>ResponseContent</code>，其中 model 使用客户端原始 <code>-pigs</code> 名称，再由 protocol 层生成新的 JSON/SSE 协议壳。</p>
-<p>Completed 使用状态机最终选中的 usage；Paused 明确传 <code>usage: None</code>。停止原因使用状态机记录的最后一轮值。Completed 的 parts 只包含持久文本、thinking/reasoning 和其它原生块，不包含已经执行完成的历史工具调用。</p>
+<p>编排路径不会把最后一个上游响应直接交给客户端。proxy 构造 <code>ResponseContent</code>，其中 model 使用客户端原始 PIGS 名称（包括 <code>-pigs</code> / <code>-pigsb</code>），再由 protocol 层生成新的 JSON/SSE 协议壳。</p>
+<p>Completed 使用状态机最终选中的 usage；Paused 明确传 <code>usage: None</code>。停止原因使用状态机记录的最后一轮值。模式 A 的 Completed parts 保留各阶段普通文本；模式 B 的 Completed parts 只加入最终 committed business text，同时继续保留已解析的 reasoning/native 非文本块。已经执行完成的历史 ToolCall 不会重放。<code>PIGEND</code>/<code>PIGNEXT</code>/<code>PIGFAIL</code> 都不会成为客户端业务正文。</p>
 </div>
 
 <h2>HTTP 诊断抓包</h2>

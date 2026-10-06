@@ -16,14 +16,14 @@ nav a{display:inline-block;margin:4px 8px 4px 0;padding:8px 12px;border-radius:8
 </head>
 <body><div class="wrap">
 <h1>pigs 当前架构总览</h1>
-<p class="tagline">当前代码事实：普通请求走前置代理透传；POST 到三种协议路径且 model 以 <code>-pigs</code> 结尾时，进入 Pre → Executor → Post 编排。</p>
+<p class="tagline">当前代码事实：普通请求走前置代理透传；POST 到三种协议路径且 model 以 <code>-pigs</code>（模式 A）或 <code>-pigsb</code>（模式 B）结尾时，进入 Pre → Executor → Post 编排。</p>
 
 <h2>请求如何分流</h2>
 <div class="card">
 <table>
 <tr><th>条件</th><th>当前行为</th></tr>
-<tr><td>内部 loopback 请求</td><td>跳过 <code>-pigs</code> 判断，直接进入透传通道。</td></tr>
-<tr><td>POST + 已识别协议路径</td><td>先解析 JSON 读取 model。JSON 非法直接返回 400；合法且 model 带 <code>-pigs</code> 才编排，否则使用原始 body 继续透传。</td></tr>
+<tr><td>内部 loopback 请求</td><td>跳过 PIGS 后缀判断，直接进入透传通道。</td></tr>
+<tr><td>POST + 已识别协议路径</td><td>先解析 JSON 读取 model。JSON 非法直接返回 400；合法且 model 带 <code>-pigs</code> / <code>-pigsb</code> 才编排，否则使用原始 body 继续透传。</td></tr>
 <tr><td>其它方法或路径</td><td>直接透传。</td></tr>
 </table>
 <p>已识别协议为 OpenAI Chat <code>/chat/completions</code>、Anthropic Messages <code>/v1/messages</code>、OpenAI Responses <code>/responses</code>；协议判断也接受以这些后缀结束的路径。</p>
@@ -31,8 +31,8 @@ nav a{display:inline-block;margin:4px 8px 4px 0;padding:8px 12px;border-radius:8
 
 <h2>编排做什么</h2>
 <div class="card">
-<p>编排把一次 <code>-pigs</code> 请求拆成若干上游请求。模型名发上游前去掉 <code>-pigs</code>；每个 pig 的相位提示只在进入该 pig 时注入一次。Pre 会显式整理目标、会影响结果的关键条件和歧义/不确定性，再决定简单或复杂路径。Executor 完成后，Post 不从原始请求重建，而是直接继承 Executor 的完整协议上下文，并只在末尾追加一条评审 user 消息，以尽量保持长前缀稳定。Post 允许单独一行 <code>PIGEND</code>/<code>PIGFAIL</code> 作为路由信号，而 Pre 仍要求控制标记前已有实质文本。工具调用不会在 pigs 内执行，而是暂停当前相位，交给客户端执行；恢复时复用该 pig 的基础请求，只追加后续原生对话，不重复注入相位提示。任何 phase 若上游明确以 token 上限原因结束，则按截断错误终止，不把半截输出继续送入下一 phase。</p>
-<p>客户端看到的编排响应由 <code>pigs-protocol</code> 重新合成，并不是某一次上游响应的原样转发。响应中的 model 使用客户端原始 <code>-pigs</code> 名称。</p>
+<p>编排把一次 <code>-pigs</code> / <code>-pigsb</code> 请求拆成若干上游请求。模型名发上游前去掉对应后缀；每个 pig 的相位提示只在进入该 pig 时注入一次。Pre 会显式整理目标、会影响结果的关键条件和歧义/不确定性，再决定简单或复杂路径。Executor 完成后，Post 不从原始请求重建，而是直接继承 Executor 的完整协议上下文，并只在末尾追加一条评审 user 消息，以尽量保持长前缀稳定。Post 是纯核验器：<code>PIGEND</code> 接受当前 Executor 结果，<code>PIGNEXT</code> 携带核验反馈回 Executor 继续修补，<code>PIGFAIL</code> 回 Pre 重规划；Post 不自行修改业务结果。Pre 仍要求结束控制标记前已有实质文本。工具调用不会在 pigs 内执行，而是暂停当前相位，交给客户端执行；恢复时复用该 pig 的基础请求，只追加后续原生对话，不重复注入相位提示。任何 phase 若上游明确以 token 上限原因结束，则按截断错误终止，不把半截输出继续送入下一 phase。输出模式当前并存：<code>-pigs</code> 为 A，继续累积各阶段普通文本；<code>-pigsb</code> 为 B，隐藏内部 Pre/Post 与被否决的 Executor 普通文本，只提交最终被接受的业务答案。B 下 reasoning 与工具调用仍按原协议可见，流式业务正文延迟到验收后发送。</p>
+<p>客户端看到的编排响应由 <code>pigs-protocol</code> 重新合成，并不是某一次上游响应的原样转发。响应中的 model 使用客户端原始名称（包括 <code>-pigs</code> / <code>-pigsb</code> 后缀）。</p>
 </div>
 
 <h2>四个 crate</h2>

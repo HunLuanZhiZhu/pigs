@@ -8,9 +8,9 @@ pigs 是一个 Rust 前置代理。普通请求走透传；只有同时满足以
 
 1. HTTP 方法是 `POST`；
 2. 路径能识别为 OpenAI Chat、OpenAI Responses 或 Anthropic Messages；
-3. 请求 JSON 的 `model` 以 `-pigs` 结尾。
+3. 请求 JSON 的 `model` 以 `-pigs`（模式 A）或 `-pigsb`（模式 B）结尾。
 
-注意：`POST` 到已识别协议路径时，proxy 会先解析 JSON 才能读取 model。因此这类请求即使最终不带 `-pigs`，若 JSON 本身非法也会直接返回 400，而不是进入普通透传。
+注意：`POST` 到已识别协议路径时，proxy 会先解析 JSON 才能读取 model。因此这类请求即使最终不带 PIGS 后缀，若 JSON 本身非法也会直接返回 400，而不是进入普通透传。
 
 ## 编排请求体
 
@@ -18,12 +18,12 @@ pigs 是一个 Rust 前置代理。普通请求走透传；只有同时满足以
 
 当前编排对子请求 body 的业务修改如下：
 
-- 客户端模型名 `<name>-pigs` 改成 `<name>` 发给上游；回客户端时使用客户端原始模型名。
+- 客户端模型名 `<name>-pigs` / `<name>-pigsb` 都改成 `<name>` 发给上游；回客户端时使用客户端原始模型名。`-pigs` 选择模式 A，`-pigsb` 选择模式 B。
 - Pre / Executor：只在进入该 pig 时，把相位指令追加到当前任务 user 文本；同一 pig 内的工具暂停/恢复不会再次注入相位指令。
-- Post：不从最初请求重新构造。Executor 完成后，把 Executor 的基础请求与完整 `phase_transcript` 物化成连续对话，再只追加一条 Post 的 user 指令；因此 Post 以前一发 Executor 请求为完整消息前缀，并额外包含 Executor 最终 assistant 输出。Post 内继续执行时复用这一基础现场。
+- Post：不从最初请求重新构造。Executor 完成后，先保存“Executor 已执行完毕、尚未追加 Post 指令”的完整 checkpoint，再在该 checkpoint 后只追加一条 Post user 指令进行核验。Post 只负责核验和路由，不自行修改任务结果；若输出 `PIGNEXT`，系统丢弃 Post 指令与 Post transcript，回到该 Executor checkpoint，并新增一条与普通 Executor 相同格式的 user 指令，其中 `{pre_output}` 改为 Post 去除控制标记后的核验反馈。
 - 其它字段，例如 `tools`、`tool_choice`、`stream`、`temperature`、`max_tokens`、`thinking`、`reasoning`、`response_format`、`stream_options`、`parallel_tool_calls` 等，当前主链路不主动删除或改写。
 
-历史中的工具调用、工具结果、图片和其它非文本块继续保留。每个 pig 持有自己的基础请求与相位内原生对话记录：相位提示只在 pig 开始时注入一次，之后模型输出、工具调用和工具结果按原生顺序追加。Executor → Post 是特例：Post 直接继承 Executor 已形成的完整协议上下文，以保持长前缀稳定、减少重复读取和前缀缓存损失。
+历史中的工具调用、工具结果、图片和其它非文本块继续保留。每个 pig 持有自己的基础请求与相位内原生对话记录：相位提示只在 pig 开始时注入一次，之后模型输出、工具调用和工具结果按原生顺序追加。Executor → Post 直接继承 Executor 完整 checkpoint；Post → Executor(PIGNEXT) 则先砍回这个 checkpoint，Post 自身的核验提示/轨迹不进入下一次 Executor，只把最终核验反馈作为新的 Executor“执行前分析”输入。
 
 `pigs-protocol` 中仍保留 `set_stream`、`strip_tools` 等通用函数，但当前编排主链路不会调用它们。
 
@@ -35,7 +35,7 @@ pigs 是一个 Rust 前置代理。普通请求走透传；只有同时满足以
 - 工具调用按三协议各自的原生形状交给客户端执行；ToolCall 只属于当前 Paused 响应，不进入持久 TurnState；
 - `ContinuationStore` 在进程内存保存现场，默认最多 64 条，TTL 30 分钟；
 - 客户端把工具结果接回历史后再次请求，pigs 会在整份请求中查找当前 pending continuation 所等待的工具结果 id；结果后即使还有 reminder / 普通 user 消息，也仍可恢复；
-- 若 id 与某个 continuation 的全部 pending 调用匹配，则取出该现场并继续同一只 pig；
+- 若 id 与某个 continuation 的全部 pending 调用匹配，且 A/B 模式与当前请求一致，则取出该现场并继续同一只 pig；A/B 不会互相消费 continuation；
 - 同一 pig 可以经历任意多轮“工具调用 → 客户端执行 → 工具结果回填”；每次暂停只返回本轮新产生的工具调用，不重放已经消费过的历史调用；
 - 工具调用被结果匹配并恢复后即视为已消费；最终 Completed 响应不得再次包含这些历史 ToolCall；
 - 有工具结果但找不到匹配现场时返回 HTTP 409，不重新跑整轮；
@@ -65,7 +65,7 @@ pigs 是一个 Rust 前置代理。普通请求走透传；只有同时满足以
 - 启动时配置选择优先级为 `config.local.toml` → `config.toml`；若当前生效配置的 `key` 非空，会忽略客户端原有 `authorization` / `x-api-key`，改为同时写入 `authorization: Bearer <key>` 和 `x-api-key: <key>`；
 - 编排子请求若缺少 `content-type`，会补 `content-type: application/json`；
 - 编排开始时，若客户端没有 `x-opencode-session`，orchestrator 会生成 UUID v7，并在本次编排所有子请求中补上；若客户端已带则继承；
-- loopback 子请求额外加入随机 `x-pigs-loopback`，用于让本机 handler 跳过 `-pigs` 再分流；
+- loopback 子请求额外加入随机 `x-pigs-loopback`，用于让本机 handler 跳过 PIGS 后缀再分流；
 - **当前代码没有在进入真实上游前过滤 `x-pigs-loopback`，所以该内部头会继续被转发到上游。**
 - loopback 使用默认 reqwest 客户端，具备自动压缩协商/解压行为；当客户端没有 `Accept-Encoding` 时，reqwest 可能自行补压缩协商头。
 
@@ -73,7 +73,7 @@ pigs 是一个 Rust 前置代理。普通请求走透传；只有同时满足以
 
 ## 普通透传响应
 
-不带 `-pigs` 的请求走 passthrough：
+不带 `-pigs` / `-pigsb` 的请求走 passthrough：
 
 - 上游状态码保留；
 - 响应 body 以字节流方式回传；
@@ -83,19 +83,20 @@ pigs 是一个 Rust 前置代理。普通请求走透传；只有同时满足以
 
 ## 编排响应是重新合成的
 
-带 `-pigs` 的响应不是上游某一次响应的原样转发，而是 `pigs-protocol` 根据整轮编排产物重新合成。
+带 `-pigs` / `-pigsb` 的响应都不是上游某一次响应的原样转发，而是 `pigs-protocol` 根据整轮编排产物重新合成。
 
 当前行为：
 
-- `model` 使用客户端原始的 `-pigs` 名称；
-- 文本按执行顺序保留，控制标记 `PIGEND` / `PIGFAIL` 会被过滤；
+- `model` 使用客户端原始模型名（包括 `-pigs` 或 `-pigsb` 后缀）；
+- 模式 A（`-pigs`）：普通文本按执行顺序保留，控制标记会被过滤；
+- 模式 B（`-pigsb`）：Pre/Post 普通文本以及被 `PIGNEXT`/`PIGFAIL` 否决的 Executor 候选不会进入客户端业务正文。Simple Path 只提交 Pre 的最终答案；复杂路径只在 Post `PIGEND` 后提交当前 Executor candidate；
 - thinking / reasoning、工具调用和其它已解析的原生块按 `Part` 序列尽量保留；
 - `stop_reason` / `finish_reason` 取最后一轮解析到的值；
 - 响应 id、时间戳、协议壳由 pigs 新生成；
 - 非流式走 `synthesize_json`；
 - 流式走 `StreamEncoder` 合成 SSE。
 
-因此“编排响应原样透传上游响应”不是当前代码行为。
+因此“编排响应原样透传上游响应”不是当前代码行为。模式 A 与模式 B 当前并存，通过 model 后缀选择；两者共用同一套 Pre/Executor/Post、PIGNEXT、工具 continuation 和核验逻辑，只在普通业务正文的可见性/提交时机上不同。
 
 ## usage 的当前策略
 
@@ -118,8 +119,9 @@ pigs 是一个 Rust 前置代理。普通请求走透传；只有同时满足以
 客户端 body 中 `stream:true` 时，编排采用流式处理；代码不会主动重写 `stream` 字段。
 
 - 上游 SSE 增量会被解析；
-- 文本经过 `MarkerFilter`，避免 `PIGEND` / `PIGFAIL` 泄给客户端；
-- thinking / reasoning 增量按协议实时转发；
+- 模式 A 的文本经过 `MarkerFilter` 后实时转发，避免 `PIGEND` / `PIGNEXT` / `PIGFAIL` 泄给客户端；
+- 模式 B 的普通业务文本不在阶段生成时转发：Simple 等 Pre `PIGEND` 后提交，Complex 等 Post `PIGEND` 后提交最后一次被接受的 Executor candidate；因此 `stream:true` 下业务正文是“验收后再以 SSE 发出”，不是 token 生成即提交；
+- thinking / reasoning 增量在 A/B 中都按协议实时转发；
 - 工具调用以及部分无法边到边还原的原生块在收尾阶段补发；
 - 一旦客户端 SSE 已经开始，后续编排错误通过流内错误帧表达，HTTP 状态无法再改成错误码。
 
@@ -141,9 +143,11 @@ Executor：
 
 Post：
 
-- `PIGEND` → 正常完成；Post 使用终止标记检测，因此仅输出一行 `PIGEND` 也合法；
-- `PIGFAIL` → 回 Pre 重规划；仅输出一行 `PIGFAIL` 也合法；
-- 无标记 → 继续 Post，最多重试 3 次。
+- Post 是纯核验器：可以用工具核验，但不自行继续执行、修改或重写任务结果；
+- `PIGEND` → 接受当前 Executor 结果并正常完成；仅输出一行 `PIGEND` 也合法；
+- `PIGNEXT` → 当前结果可继续修补；Post 应给出简短可执行反馈。系统砍回最近一次 Executor 完成时保存的 checkpoint，丢弃 Post 指令与 Post transcript，再用原 Executor 指令模板把 Post 反馈作为新的“执行前分析”交给 Executor。连续修补最多 3 次；
+- `PIGFAIL` → 当前执行路径需要重新规划，记录失败反馈并回 Pre；
+- 无标记 → 视为核验器协议未完成，留在 Post 重试，最多 3 次。
 
 任何相位只要上游停止原因明确表示生成 token 上限截断（当前识别 OpenAI Chat 的 `length`、Anthropic 的 `max_tokens`、Responses 的 `max_output_tokens`），就返回截断错误，不把部分文本当作完整 Pre/Executor/Post 产出继续推进。
 

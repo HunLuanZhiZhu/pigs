@@ -1,4 +1,14 @@
-//! 裸路径 → 协议判定，与 `-pigs` 后缀规则（全仓库唯一定义处）。
+//! 裸路径 → 协议判定，与 `-pigs` / `-pigsb` 后缀规则（全仓库唯一定义处）。
+
+
+/// PIGS 输出模式。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PigsMode {
+    /// 模式 A：各阶段普通文本按执行顺序对客户端可见。
+    A,
+    /// 模式 B：内部阶段普通文本隐藏，只提交最终被接受的业务答案。
+    B,
+}
 
 /// 支持的三种协议。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,16 +46,29 @@ pub fn protocol_from_path(path: &str) -> Option<Protocol> {
     }
 }
 
-/// model 名是否携带 `-pigs` 后缀。
-pub fn has_pigs(model: &str) -> bool {
-    model.ends_with("-pigs")
+/// 解析 PIGS model 后缀，返回真正上游 model 名与输出模式。
+///
+/// - `<model>-pigs`  → 模式 A
+/// - `<model>-pigsb` → 模式 B
+pub fn parse_pigs_model(model: &str) -> Option<(String, PigsMode)> {
+    if let Some(real) = model.strip_suffix("-pigsb") {
+        Some((real.to_string(), PigsMode::B))
+    } else {
+        model
+            .strip_suffix("-pigs")
+            .map(|real| (real.to_string(), PigsMode::A))
+    }
 }
 
-/// 剥掉 `-pigs` 后缀，返回真正的上游 model 名；无后缀返回 None。
-///
-/// 例：`"claude-opus-5-pigs"` → `Some("claude-opus-5")`；`"claude-opus-5"` → `None`。
+/// model 名是否携带任一种 PIGS 后缀。
+pub fn has_pigs(model: &str) -> bool {
+    parse_pigs_model(model).is_some()
+}
+
+/// 剥掉任一种 PIGS 后缀，只返回真正的上游 model 名。
+/// 需要区分 A/B 时使用 [`parse_pigs_model`]。
 pub fn strip_pigs_suffix(model: &str) -> Option<String> {
-    model.strip_suffix("-pigs").map(|s| s.to_string())
+    parse_pigs_model(model).map(|(real, _)| real)
 }
 
 #[cfg(test)]
@@ -71,13 +94,22 @@ mod tests {
     #[test]
     fn pigs_suffix_rules() {
         assert!(has_pigs("claude-opus-5-pigs"));
+        assert!(has_pigs("claude-opus-5-pigsb"));
         assert!(!has_pigs("claude-opus-5-pig"));
         assert!(!has_pigs("claude-opus-5"));
-        assert_eq!(strip_pigs_suffix("claude-opus-5-pigs").as_deref(), Some("claude-opus-5"));
-        assert_eq!(strip_pigs_suffix("claude-opus-5-pig"), None);
-        assert_eq!(strip_pigs_suffix("deepseek-v4.1-flash-pigs").as_deref(), Some("deepseek-v4.1-flash"));
+
+        assert_eq!(
+            parse_pigs_model("claude-opus-5-pigs"),
+            Some(("claude-opus-5".into(), PigsMode::A))
+        );
+        assert_eq!(
+            parse_pigs_model("claude-opus-5-pigsb"),
+            Some(("claude-opus-5".into(), PigsMode::B))
+        );
+        assert_eq!(strip_pigs_suffix("deepseek-v4.1-flash-pigsb").as_deref(), Some("deepseek-v4.1-flash"));
         assert_eq!(strip_pigs_suffix("claude-opus-5"), None);
-        // 只有后缀本身时，剥离结果为空模型名
         assert_eq!(strip_pigs_suffix("-pigs").as_deref(), Some(""));
+        assert_eq!(strip_pigs_suffix("-pigsb").as_deref(), Some(""));
     }
+
 }

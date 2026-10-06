@@ -38,6 +38,33 @@ impl FakeTransport {
         )
     }
 
+    fn protocol_text(protocol: proto::Protocol, status: u16, text: &str) -> SubResponse {
+        match protocol {
+            proto::Protocol::OpenAI => Self::text(status, text),
+            proto::Protocol::Anthropic => Self::json(
+                status,
+                json!({
+                    "content": [{"type": "text", "text": text}],
+                    "stop_reason": "end_turn",
+                    "usage": {"input_tokens": 1, "output_tokens": 2}
+                }),
+            ),
+            proto::Protocol::Responses => Self::json(
+                status,
+                json!({
+                    "status": "completed",
+                    "output": [{
+                        "type": "message",
+                        "role": "assistant",
+                        "status": "completed",
+                        "content": [{"type": "output_text", "text": text, "annotations": []}]
+                    }],
+                    "usage": {"input_tokens": 1, "output_tokens": 2}
+                }),
+            ),
+        }
+    }
+
     fn text_with_finish_reason(status: u16, text: &str, finish_reason: &str) -> SubResponse {
         Self::json(
             status,
@@ -137,6 +164,7 @@ fn input(protocol: proto::Protocol) -> TurnInput {
     };
     TurnInput {
         protocol,
+        mode: proto::PigsMode::A,
         body,
         path: path.into(),
         query: Some("beta=1".into()),
@@ -187,6 +215,34 @@ fn paused(outcome: Outcome) -> PausedTurn {
     match outcome {
         Outcome::Paused(paused) => paused,
         Outcome::Completed(result) => panic!("期望暂停，却完成了: {result:?}"),
+    }
+}
+
+fn input_mode(protocol: proto::Protocol, mode: proto::PigsMode) -> TurnInput {
+    let mut value = input(protocol);
+    value.mode = mode;
+    value
+}
+
+fn input_mode_for_protocol(protocol: proto::Protocol, mode: proto::PigsMode) -> TurnInput {
+    if protocol != proto::Protocol::Responses {
+        return input_mode(protocol, mode);
+    }
+    TurnInput {
+        protocol,
+        mode,
+        body: json!({
+            "model": "r-x",
+            "stream": true,
+            "tools": [{"type": "function", "name": "Bash", "parameters": {}}],
+            "tool_choice": "auto",
+            "temperature": 0.3,
+            "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "帮我完成任务Z"}]}]
+        }),
+        path: "/responses".into(),
+        query: Some("beta=1".into()),
+        base_headers: vec![("authorization".into(), "Bearer k".into())],
+        client_session: None,
     }
 }
 
@@ -247,13 +303,16 @@ async fn subrequests_pass_everything_through_untouched() {
     assert_eq!(strip_model(&body), "gpt-x");
     // 其余字段原样
     assert_eq!(body["stream"], true, "stream 不许被改写");
-    assert_eq!(body["tools"][0]["function"]["name"], "Bash", "tools 不许被删");
+    assert_eq!(
+        body["tools"][0]["function"]["name"], "Bash",
+        "tools 不许被删"
+    );
     assert_eq!(body["tool_choice"], "auto");
     assert_eq!(body["temperature"], 0.3);
     // 尾部追加相位指令（末条 user 消息被追加）
     let content = last_message_content(&body);
     assert!(content.starts_with("帮我完成任务Z"));
-    assert!(content.contains("执行前分析"));
+    assert!(content.contains("本次需要你先思考以下问题的答案"));
     // query 原样带上
     assert_eq!(req.query.as_deref(), Some("beta=1"));
     // 头原样（含 accept-encoding：解压是本地的事，不改请求）
@@ -277,8 +336,8 @@ async fn subrequests_pass_everything_through_untouched() {
 #[tokio::test]
 async fn happy_path_three_pigs_with_pigend() {
     let transport = fake(vec![
-        FakeTransport::text(200, "分析：需要X和Y"),  // pre
-        FakeTransport::text(200, "执行结果……"),      // executor
+        FakeTransport::text(200, "分析：需要X和Y"),   // pre
+        FakeTransport::text(200, "执行结果……"),       // executor
         FakeTransport::text(200, "验收通过\nPIGEND"), // post
     ]);
     let (rt, _store) = runtime(transport.clone());
@@ -306,11 +365,17 @@ async fn happy_path_three_pigs_with_pigend() {
         let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
         let content = last_message_content(&body);
         if i == 0 {
-            assert!(content.contains("帮我完成任务Z") && content.contains("执行前分析"));
+            assert!(
+                content.contains("帮我完成任务Z")
+                    && content.contains("本次需要你先思考以下问题的答案")
+            );
         } else if i == 1 {
-            assert!(content.contains("分析：需要X和Y"), "Executor 指令要带 Pre 分析");
+            assert!(
+                content.contains("分析：需要X和Y"),
+                "Executor 指令要带 Pre 分析"
+            );
         } else {
-            assert!(content.contains("根据设定的目标"));
+            assert!(content.contains("根据任务要求和任务目标"));
             assert_eq!(
                 roles(&body),
                 vec!["system", "user", "assistant", "user"],
@@ -336,6 +401,111 @@ async fn simple_path_short_circuits_in_pre() {
     assert_eq!(result.path, vec![Pig::Pre]);
 }
 
+#[tokio::test]
+async fn mode_b_simple_commits_only_pre_answer() {
+    let transport = fake(vec![FakeTransport::text(200, "答案是 4\nPIGEND")]);
+    let (rt, _store) = runtime(transport);
+    let result = completed(
+        Orchestrator::new()
+            .run(input_mode(proto::Protocol::OpenAI, proto::PigsMode::B), rt)
+            .await
+            .unwrap(),
+    );
+    assert_eq!(result.ended_with, EndedWith::SimplePath);
+    assert_eq!(result.text, "答案是 4");
+    assert_eq!(result.visible, vec!["答案是 4"]);
+    let texts: Vec<&str> = result
+        .parts
+        .iter()
+        .filter_map(|part| match part {
+            Part::Text(text) => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(texts, vec!["答案是 4"]);
+}
+
+#[tokio::test]
+async fn mode_b_complex_commits_only_accepted_executor() {
+    let transport = fake(vec![
+        FakeTransport::text(200, "内部分析"),
+        FakeTransport::text(200, "最终业务答案"),
+        FakeTransport::text(200, "核验通过\nPIGEND"),
+    ]);
+    let (rt, _store) = runtime(transport);
+    let result = completed(
+        Orchestrator::new()
+            .run(input_mode(proto::Protocol::OpenAI, proto::PigsMode::B), rt)
+            .await
+            .unwrap(),
+    );
+    assert_eq!(result.ended_with, EndedWith::PigEnd);
+    assert_eq!(result.text, "最终业务答案");
+    assert_eq!(result.visible, vec!["最终业务答案"]);
+    assert!(!result.text.contains("内部分析"));
+    assert!(!result.text.contains("核验通过"));
+}
+
+#[tokio::test]
+async fn mode_b_clean_business_text_works_for_all_three_protocols() {
+    for protocol in [
+        proto::Protocol::OpenAI,
+        proto::Protocol::Anthropic,
+        proto::Protocol::Responses,
+    ] {
+        let transport = fake(vec![
+            FakeTransport::protocol_text(protocol, 200, "内部分析"),
+            FakeTransport::protocol_text(protocol, 200, "协议无关的最终答案"),
+            FakeTransport::protocol_text(protocol, 200, "PIGEND"),
+        ]);
+        let (rt, _store) = runtime(transport);
+        let result = completed(
+            Orchestrator::new()
+                .run(input_mode_for_protocol(protocol, proto::PigsMode::B), rt)
+                .await
+                .unwrap(),
+        );
+        assert_eq!(result.text, "协议无关的最终答案", "protocol={protocol:?}");
+        assert!(!result.text.contains("内部分析"));
+    }
+}
+
+#[tokio::test]
+async fn mode_b_tool_pause_hides_ordinary_text_but_keeps_tool_call() {
+    let response = FakeTransport::json(
+        200,
+        json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "内部工具说明",
+                    "tool_calls": [{
+                        "id": "call_b",
+                        "type": "function",
+                        "function": {"name": "Bash", "arguments": "{\"command\":\"ls\"}"}
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }],
+            "usage": {"input_tokens": 5, "output_tokens": 2}
+        }),
+    );
+    let transport = fake(vec![response]);
+    let (rt, _store) = runtime(transport);
+    let paused = paused(
+        Orchestrator::new()
+            .run(input_mode(proto::Protocol::OpenAI, proto::PigsMode::B), rt)
+            .await
+            .unwrap(),
+    );
+    assert!(paused.text.is_empty());
+    assert!(paused.parts.iter().all(|part| !matches!(part, Part::Text(_))));
+    assert!(paused
+        .parts
+        .iter()
+        .any(|part| matches!(part, Part::ToolCall(call) if call.id == "call_b")));
+}
+
 /// 工具调用：相位**不结束**，调用原样交给客户端，现场存进 continuation。
 #[tokio::test]
 async fn tool_calls_pause_the_phase_and_give_native_calls_to_client() {
@@ -351,10 +521,16 @@ async fn tool_calls_pause_the_phase_and_give_native_calls_to_client() {
     assert_eq!(paused.tool_calls.len(), 1);
     assert_eq!(paused.tool_calls[0].id, "call_1");
     assert_eq!(paused.tool_calls[0].name, "Bash");
-    assert_eq!(paused.tool_calls[0].arguments_json(), "{\"command\":\"ls\"}");
+    assert_eq!(
+        paused.tool_calls[0].arguments_json(),
+        "{\"command\":\"ls\"}"
+    );
     assert_eq!(paused.text, "");
     assert!(
-        paused.parts.iter().any(|part| matches!(part, Part::ToolCall(call) if call.id == "call_1")),
+        paused
+            .parts
+            .iter()
+            .any(|part| matches!(part, Part::ToolCall(call) if call.id == "call_1")),
         "Paused 响应必须包含本轮工具调用"
     );
     let continuation = store
@@ -377,7 +553,7 @@ async fn tool_calls_pause_the_phase_and_give_native_calls_to_client() {
 async fn resume_continues_same_phase_with_tool_result() {
     let transport = fake(vec![
         FakeTransport::tool_calls(200, &[("call_1", "Bash")]), // Pre 第一轮：要工具
-        FakeTransport::text(200, "答案是 4\nPIGEND"),           // 恢复后：Pre 给出答案
+        FakeTransport::text(200, "答案是 4\nPIGEND"),          // 恢复后：Pre 给出答案
     ]);
     let (rt, store) = runtime(transport.clone());
     let orchestrator = Orchestrator::new();
@@ -405,7 +581,10 @@ async fn resume_continues_same_phase_with_tool_result() {
     assert_eq!(result.ended_with, EndedWith::SimplePath);
     assert_eq!(result.text, "答案是 4");
     assert!(
-        result.parts.iter().all(|part| !matches!(part, Part::ToolCall(_))),
+        result
+            .parts
+            .iter()
+            .all(|part| !matches!(part, Part::ToolCall(_))),
         "已消费的工具调用不能进入最终 Completed"
     );
 
@@ -417,9 +596,15 @@ async fn resume_continues_same_phase_with_tool_result() {
     assert_eq!(roles(&body), vec!["system", "user", "assistant", "tool"]);
     assert_eq!(body["messages"][3]["content"], "输出", "工具结果原样保留");
     let phase_user = body["messages"][1]["content"].as_str().unwrap();
-    assert!(phase_user.contains("执行前分析"));
-    assert_eq!(phase_user.matches("执行前分析").count(), 1);
-    assert_eq!(body["tools"][0]["function"]["name"], "Bash", "工具定义仍带着");
+    assert!(phase_user.contains("本次需要你先思考以下问题的答案"));
+    assert_eq!(
+        phase_user.matches("本次需要你先思考以下问题的答案").count(),
+        1
+    );
+    assert_eq!(
+        body["tools"][0]["function"]["name"], "Bash",
+        "工具定义仍带着"
+    );
 }
 
 /// 多轮工具往返：每次暂停交出一批调用，结果回齐后相位继续，最终产出。
@@ -441,7 +626,11 @@ async fn multiple_tool_rounds_inside_one_phase() {
     );
     assert_eq!(paused1.tool_calls[0].id, "call_1");
 
-    let continuation = store.lock().unwrap().take_match(&["call_1".into()]).unwrap();
+    let continuation = store
+        .lock()
+        .unwrap()
+        .take_match(&["call_1".into()])
+        .unwrap();
     let (rt2, store2) = runtime(transport.clone());
     let paused2 = paused(
         orchestrator
@@ -464,7 +653,11 @@ async fn multiple_tool_rounds_inside_one_phase() {
         "第二次暂停只能发本轮新调用，不能重放 call_1"
     );
 
-    let continuation = store2.lock().unwrap().take_match(&["call_2".into()]).unwrap();
+    let continuation = store2
+        .lock()
+        .unwrap()
+        .take_match(&["call_2".into()])
+        .unwrap();
     assert_eq!(continuation.state.phase, Pig::Pre, "全程都在同一只 pig 里");
     let (rt3, _store3) = runtime(transport.clone());
     let result = completed(
@@ -476,7 +669,10 @@ async fn multiple_tool_rounds_inside_one_phase() {
     assert_eq!(result.text, "做完了");
     assert_eq!(result.path, vec![Pig::Pre], "相位只在第一次推进时记一次");
     assert!(
-        result.parts.iter().all(|part| !matches!(part, Part::ToolCall(_))),
+        result
+            .parts
+            .iter()
+            .all(|part| !matches!(part, Part::ToolCall(_))),
         "多轮工具都消费完成后，最终结果不能重放历史 ToolCall"
     );
 
@@ -491,7 +687,7 @@ async fn multiple_tool_rounds_inside_one_phase() {
     for body in [&resume1, &resume2] {
         let phase_user = body["messages"][1]["content"].as_str().unwrap();
         assert_eq!(
-            phase_user.matches("执行前分析").count(),
+            phase_user.matches("本次需要你先思考以下问题的答案").count(),
             1,
             "同一 Pre pig 内阶段提示只能出现一次"
         );
@@ -542,11 +738,7 @@ async fn executor_tool_resumes_keep_one_phase_prompt() {
     let (rt3, _store3) = runtime(transport.clone());
     let result = completed(
         orchestrator
-            .resume(
-                resume_body(&["call_1", "call_2"]),
-                rt3,
-                continuation2,
-            )
+            .resume(resume_body(&["call_1", "call_2"]), rt3, continuation2)
             .await
             .unwrap(),
     );
@@ -569,7 +761,7 @@ async fn executor_tool_resumes_keep_one_phase_prompt() {
     for body in [&exec_first, &exec_resume1, &exec_resume2] {
         let user = body["messages"][1]["content"].as_str().unwrap();
         assert_eq!(
-            user.matches("完成对内部信息和外部信息的获取后").count(),
+            user.matches("以下是本任务的执行前分析：").count(),
             1,
             "Executor 阶段说明在同一 pig 中必须只有一份"
         );
@@ -608,7 +800,14 @@ async fn post_pigfail_returns_to_pre_with_failure_paths() {
     assert_eq!(result.ended_with, EndedWith::PigEnd);
     assert_eq!(
         result.path,
-        vec![Pig::Pre, Pig::Executor, Pig::Post, Pig::Pre, Pig::Executor, Pig::Post]
+        vec![
+            Pig::Pre,
+            Pig::Executor,
+            Pig::Post,
+            Pig::Pre,
+            Pig::Executor,
+            Pig::Post
+        ]
     );
 
     let reqs = transport.requests.lock().unwrap();
@@ -652,6 +851,112 @@ async fn post_accepts_marker_only_pigend() {
     );
     assert_eq!(result.ended_with, EndedWith::PigEnd);
     assert_eq!(transport.requests.lock().unwrap().len(), 3);
+}
+
+#[tokio::test]
+async fn post_pignext_returns_to_executor_with_feedback_then_rechecks() {
+    let transport = fake(vec![
+        FakeTransport::text(200, "计划"),
+        FakeTransport::text(200, "草稿一"),
+        FakeTransport::text(200, "缺少结论，需要补上\nPIGNEXT"),
+        FakeTransport::text(200, "草稿二：已补上结论"),
+        FakeTransport::text(200, "PIGEND"),
+    ]);
+    let (rt, _store) = runtime(transport.clone());
+    let result = completed(
+        Orchestrator::new()
+            .run(input(proto::Protocol::OpenAI), rt)
+            .await
+            .unwrap(),
+    );
+    assert_eq!(result.ended_with, EndedWith::PigEnd);
+    assert_eq!(
+        result.path,
+        vec![Pig::Pre, Pig::Executor, Pig::Post, Pig::Executor, Pig::Post]
+    );
+    assert!(!result.text.contains("PIGNEXT"));
+
+    let reqs = transport.requests.lock().unwrap();
+    assert_eq!(reqs.len(), 5);
+    let post1: serde_json::Value = serde_json::from_slice(&reqs[2].body).unwrap();
+    let exec2: serde_json::Value = serde_json::from_slice(&reqs[3].body).unwrap();
+    let post2: serde_json::Value = serde_json::from_slice(&reqs[4].body).unwrap();
+
+    let post1_messages = post1["messages"].as_array().unwrap();
+    let exec2_messages = exec2["messages"].as_array().unwrap();
+
+    // Post1 的最后一条 user 是核验提示。PIGNEXT 后必须把它和整个 Post transcript 都砍掉，
+    // 回到 Executor1 已执行完毕的 checkpoint。
+    let checkpoint_len = post1_messages.len() - 1;
+    assert_eq!(
+        &exec2_messages[..checkpoint_len],
+        &post1_messages[..checkpoint_len],
+        "PIGNEXT 后必须回到上一次 Executor 完成时的上下文截面"
+    );
+    assert_eq!(exec2_messages.len(), checkpoint_len + 1);
+    assert_eq!(exec2_messages[checkpoint_len]["role"], "user");
+    let next_instruction = exec2_messages[checkpoint_len]["content"].as_str().unwrap();
+    assert!(next_instruction.starts_with("以下是本任务的执行前分析："));
+    assert!(next_instruction.contains("缺少结论，需要补上"));
+    assert!(!next_instruction.contains("PIGNEXT"));
+    assert!(!next_instruction.contains("独立核验当前执行结果"));
+
+    let exec2_messages = exec2["messages"].as_array().unwrap();
+    let post2_messages = post2["messages"].as_array().unwrap();
+    assert_eq!(
+        &post2_messages[..exec2_messages.len()],
+        exec2_messages.as_slice(),
+        "第二次 Post 必须继续继承第二次 Executor 的完整前缀"
+    );
+    assert_eq!(post2_messages[exec2_messages.len()]["role"], "assistant");
+    assert_eq!(
+        post2_messages[exec2_messages.len()]["content"],
+        "草稿二：已补上结论"
+    );
+    assert_eq!(post2_messages[exec2_messages.len() + 1]["role"], "user");
+}
+
+#[tokio::test]
+async fn mode_b_pignext_discards_rejected_executor_and_commits_repair() {
+    let transport = fake(vec![
+        FakeTransport::text(200, "计划"),
+        FakeTransport::text(200, "错误草稿"),
+        FakeTransport::text(200, "需要修正\nPIGNEXT"),
+        FakeTransport::text(200, "修正后的最终答案"),
+        FakeTransport::text(200, "PIGEND"),
+    ]);
+    let (rt, _store) = runtime(transport);
+    let result = completed(
+        Orchestrator::new()
+            .run(input_mode(proto::Protocol::OpenAI, proto::PigsMode::B), rt)
+            .await
+            .unwrap(),
+    );
+    assert_eq!(result.text, "修正后的最终答案");
+    assert!(!result.text.contains("错误草稿"));
+    assert!(!result.text.contains("需要修正"));
+    assert_eq!(result.visible, vec!["修正后的最终答案"]);
+}
+
+#[tokio::test]
+async fn pignext_continue_budget_is_bounded() {
+    let mut responses = vec![
+        FakeTransport::text(200, "计划"),
+        FakeTransport::text(200, "草稿0"),
+    ];
+    for i in 0..=MAX_EXECUTOR_CONTINUES {
+        responses.push(FakeTransport::text(200, &format!("还要修{i}\nPIGNEXT")));
+        if i < MAX_EXECUTOR_CONTINUES {
+            responses.push(FakeTransport::text(200, &format!("草稿{}", i + 1)));
+        }
+    }
+    let transport = fake(responses);
+    let (rt, _store) = runtime(transport);
+    let err = Orchestrator::new()
+        .run(input(proto::Protocol::OpenAI), rt)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::Budget(m) if m.contains("Executor 继续修补次数")));
 }
 
 #[tokio::test]
@@ -762,11 +1067,45 @@ async fn anthropic_protocol_body_surgery() {
         serde_json::from_slice(&transport.requests.lock().unwrap()[0].body).unwrap();
     assert_eq!(strip_model(&body), "claude-x");
     let content = last_message_content(&body);
-    assert!(content.contains("帮我完成任务Z") && content.contains("执行前分析"));
+    assert!(
+        content.contains("帮我完成任务Z") && content.contains("本次需要你先思考以下问题的答案")
+    );
     // system / tools / tool_choice 一律原样
     assert_eq!(body["system"], "sys");
     assert_eq!(body["tools"][0]["name"], "Bash");
     assert_eq!(body["tool_choice"], json!({"type": "auto"}));
+}
+
+#[tokio::test]
+async fn mode_b_streaming_suppresses_unaccepted_business_text_deltas() {
+    let transport = fake_with_thinking(
+        vec![
+            FakeTransport::text(200, "内部分析"),
+            FakeTransport::text(200, "候选答案"),
+            FakeTransport::text(200, "PIGEND"),
+        ],
+        "内部思考",
+    );
+    let events: Arc<Mutex<Vec<PigEvent>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink: ProgressSink = {
+        let events = Arc::clone(&events);
+        Arc::new(move |event| events.lock().unwrap().push(event))
+    };
+    let rt = Runtime {
+        transport,
+        store: Arc::new(Mutex::new(ContinuationStore::default())),
+        progress: Some(sink),
+    };
+    let result = completed(
+        Orchestrator::new()
+            .run(input_mode(proto::Protocol::OpenAI, proto::PigsMode::B), rt)
+            .await
+            .unwrap(),
+    );
+    assert_eq!(result.text, "候选答案");
+    let events = events.lock().unwrap();
+    assert!(events.iter().all(|event| !matches!(event, PigEvent::Delta(_))));
+    assert!(events.iter().any(|event| matches!(event, PigEvent::Thought(_))));
 }
 
 /// 流式编排：增量逐字到达并被实时过滤；客户端实时内容 == 最终答复。
@@ -783,7 +1122,10 @@ async fn streaming_turn_pushes_filtered_deltas_as_they_arrive() {
         proto::Protocol::OpenAI,
         "gpt-x-pigs",
     )));
-    frames.lock().unwrap().push_str(&encoder.lock().unwrap().start());
+    frames
+        .lock()
+        .unwrap()
+        .push_str(&encoder.lock().unwrap().start());
     let events: Arc<Mutex<Vec<PigEvent>>> = Arc::new(Mutex::new(vec![]));
     let sink: ProgressSink = {
         let frames = Arc::clone(&frames);
@@ -797,7 +1139,9 @@ async fn streaming_turn_pushes_filtered_deltas_as_they_arrive() {
                 PigEvent::ThoughtSummary { item_id, text } => {
                     encoder.push_reasoning_summary(item_id, text)
                 }
-                PigEvent::ThoughtSignature(signature) => encoder.push_reasoning_signature(signature),
+                PigEvent::ThoughtSignature(signature) => {
+                    encoder.push_reasoning_signature(signature)
+                }
                 PigEvent::End(_) => encoder.end_pig(),
                 PigEvent::Start(_) => String::new(),
             };
@@ -841,7 +1185,10 @@ async fn streaming_turn_pushes_filtered_deltas_as_they_arrive() {
     );
     let streamed = proto::extract_sse_text(proto::Protocol::OpenAI, &frames.lock().unwrap())
         .unwrap_or_default();
-    assert_eq!(streamed, result.text, "客户端边收边拿到的必须与最终答复一致");
+    assert_eq!(
+        streamed, result.text,
+        "客户端边收边拿到的必须与最终答复一致"
+    );
     assert!(!streamed.contains("PIGFAIL") && !streamed.contains("PIGEND"));
 }
 
@@ -858,7 +1205,10 @@ async fn live_thinking_is_streamed_before_text() {
         proto::Protocol::Anthropic,
         "claude-x-pigs",
     )));
-    frames.lock().unwrap().push_str(&encoder.lock().unwrap().start());
+    frames
+        .lock()
+        .unwrap()
+        .push_str(&encoder.lock().unwrap().start());
     let events: Arc<Mutex<Vec<PigEvent>>> = Arc::new(Mutex::new(vec![]));
     let sink: ProgressSink = {
         let frames = Arc::clone(&frames);
@@ -872,7 +1222,9 @@ async fn live_thinking_is_streamed_before_text() {
                 PigEvent::ThoughtSummary { item_id, text } => {
                     encoder.push_reasoning_summary(item_id, text)
                 }
-                PigEvent::ThoughtSignature(signature) => encoder.push_reasoning_signature(signature),
+                PigEvent::ThoughtSignature(signature) => {
+                    encoder.push_reasoning_signature(signature)
+                }
                 PigEvent::End(_) => encoder.end_pig(),
                 PigEvent::Start(_) => String::new(),
             };
@@ -910,8 +1262,14 @@ async fn live_thinking_is_streamed_before_text() {
             PigEvent::End(_) => "end",
         })
         .collect();
-    let first_thought = order.iter().position(|k| *k == "thought").expect("没有思考事件");
-    let first_delta = order.iter().position(|k| *k == "delta").expect("没有文本事件");
+    let first_thought = order
+        .iter()
+        .position(|k| *k == "thought")
+        .expect("没有思考事件");
+    let first_delta = order
+        .iter()
+        .position(|k| *k == "delta")
+        .expect("没有文本事件");
     assert!(first_thought < first_delta, "思考必须先于文本: {order:?}");
     assert!(order.iter().any(|k| *k == "signature"), "签名要跟着走");
 
@@ -946,7 +1304,9 @@ async fn streaming_tool_pause_emits_text_then_native_calls() {
                 PigEvent::ThoughtSummary { item_id, text } => {
                     encoder.push_reasoning_summary(item_id, text)
                 }
-                PigEvent::ThoughtSignature(signature) => encoder.push_reasoning_signature(signature),
+                PigEvent::ThoughtSignature(signature) => {
+                    encoder.push_reasoning_signature(signature)
+                }
                 PigEvent::End(_) => encoder.end_pig(),
                 PigEvent::Start(_) => String::new(),
             };

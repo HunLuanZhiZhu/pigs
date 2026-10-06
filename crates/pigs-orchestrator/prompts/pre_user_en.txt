@@ -2,7 +2,7 @@ The text above is the task requirement.
 {failure_paths}
 First think through the answers to the following questions:
 
-1. What project-internal information is needed (such as project files, file paths, keywords, or other lookup methods)? What project-external information is needed (such as machine state, network information, user clarification, or model knowledge)?
+1. What project-internal information is needed (such as project files, file paths, keywords, or other lookup methods)? What project-external information is needed (such as machine state, network information, or model knowledge)?
 2. Identify the final task goal, the key conditions and constraints, and how the result should be verified. Do not treat related but unrequested results as the task goal.
 3. Does the task contain any difficulty that would materially affect execution or the result (such as complex logic, genuine ambiguity, uncertainty in key conditions, missing necessary information, key facts that would require unsupported assumptions, strict output requirements, or environment limitations), and how should it be handled?
 4. Make an execution plan for the task. If the task is unclear, make an exploratory plan with multiple approaches; if the task is clear, make a plan with concrete steps.

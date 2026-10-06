@@ -443,7 +443,7 @@ async fn pig_flow_full_orchestration_via_loopback() {
             .as_str()
             .unwrap();
         if i == 0 {
-            assert!(content.contains("帮我完成任务Z") && content.contains("执行前分析"));
+            assert!(content.contains("帮我完成任务Z") && content.contains("本次需要你先思考以下问题的答案"));
         } else if i == 1 {
             assert!(content.contains("分析：需要X"));
         } else {
@@ -459,7 +459,7 @@ async fn pig_flow_full_orchestration_via_loopback() {
             assert_eq!(msgs[exec_msgs.len()]["role"], "assistant");
             assert_eq!(msgs[exec_msgs.len()]["content"], "执行结果……");
             assert_eq!(msgs[exec_msgs.len() + 1]["role"], "user");
-            assert!(content.contains("验收"));
+            assert!(content.contains("独立核验当前执行结果"));
         }
     }
     // 会话头贯穿验证：Anthropic 协议 + 客户端自带会话头（录制模式，回 anthropic 形状响应）
@@ -485,6 +485,58 @@ async fn pig_flow_full_orchestration_via_loopback() {
     let binding = fu.requests.lock().unwrap();
     let (_p, _b, hdrs) = &binding.last().unwrap();
     assert_eq!(hdrs["h:x-opencode-session"], "client-session-1");
+}
+
+#[tokio::test]
+async fn pigsb_non_stream_returns_only_accepted_executor_text() {
+    let (_up, upstream_url, fu) = spawn_fake_upstream().await;
+    fu.responses.lock().unwrap().push(openai_text_response("内部分析"));
+    fu.responses.lock().unwrap().push(openai_text_response("最终业务答案"));
+    fu.responses.lock().unwrap().push(openai_text_response("核验通过\nPIGEND"));
+    let (_pigs, pigs_url) = spawn_pigs(&upstream_url).await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("{pigs_url}/chat/completions"))
+        .json(&openai_body("gpt-x-pigsb", false))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["model"], "gpt-x-pigsb");
+    assert_eq!(body["choices"][0]["message"]["content"], "最终业务答案");
+
+    let reqs = fu.requests.lock().unwrap();
+    assert_eq!(reqs.len(), 3);
+    for (_, upstream_body, _) in reqs.iter() {
+        assert_eq!(upstream_body["model"], "gpt-x", "上游必须使用剥离后的真实 model");
+    }
+}
+
+#[tokio::test]
+async fn pigsb_stream_buffers_business_text_until_post_accepts() {
+    let (_up, upstream_url, fu) = spawn_fake_upstream().await;
+    fu.responses.lock().unwrap().push(openai_sse_response("内部分析"));
+    fu.responses.lock().unwrap().push(openai_sse_response("最终业务答案"));
+    fu.responses.lock().unwrap().push(openai_sse_response("核验通过\nPIGEND"));
+    let (_pigs, pigs_url) = spawn_pigs(&upstream_url).await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("{pigs_url}/chat/completions"))
+        .json(&openai_body("gpt-x-pigsb", true))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let sse = resp.text().await.unwrap();
+    let text = pigs_protocol::extract_sse_text(pigs_protocol::Protocol::OpenAI, &sse)
+        .unwrap_or_default();
+    assert_eq!(text, "最终业务答案");
+    assert!(!text.contains("内部分析"));
+    assert!(!text.contains("核验通过"));
+    assert!(!sse.contains("PIGEND"));
 }
 
 #[tokio::test]
@@ -917,8 +969,8 @@ PIGEND"));
     assert_eq!(roles, vec!["system", "user", "assistant", "tool"]);
     assert_eq!(msgs[3]["content"], "文件列表", "工具结果原样带上");
     let phase_user = msgs[1]["content"].as_str().unwrap();
-    assert!(phase_user.contains("执行前分析"));
-    assert_eq!(phase_user.matches("执行前分析").count(), 1);
+    assert!(phase_user.contains("本次需要你先思考以下问题的答案"));
+    assert_eq!(phase_user.matches("本次需要你先思考以下问题的答案").count(), 1);
     assert!(sent.get("tools").is_some(), "tools 全程都在");
 }
 
@@ -1061,7 +1113,7 @@ async fn executor_resume_keeps_one_phase_prompt_upstream() {
     for body in [exec_first, exec_resume1, exec_resume2] {
         let user = body["messages"][1]["content"].as_str().unwrap();
         assert_eq!(
-            user.matches("完成对内部信息和外部信息的获取后").count(),
+            user.matches("以下是本任务的执行前分析：").count(),
             1,
             "同一 Executor pig 的阶段说明不能重复注入"
         );

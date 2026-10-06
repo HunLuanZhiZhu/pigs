@@ -1,6 +1,6 @@
 //! axum 服务：fallback 接住所有路径与方法，按需分流。
 //!
-//! -pigs 请求的两种情形：
+//! PIGS（-pigs / -pigsb）请求的两种情形：
 //! - 客户端的第一发 → 新开一轮编排；
 //! - 请求中包含当前 pending continuation 所等待的工具结果 → 接着被暂停的相位继续。
 
@@ -36,7 +36,7 @@ pub fn router(state: AppState) -> Router {
 
 /// 单一入口：所有路径、所有方法。
 /// - 回环子请求（带内部令牌）→ 直接透传（防递归）；
-/// - POST 三协议路径 + model 带 `-pigs` → 编排（新开或恢复）；
+/// - POST 三协议路径 + model 带 `-pigs` / `-pigsb` → 编排（新开或恢复）；
 /// - 其余一切 → 原样透传。
 async fn handle(
     State(state): State<AppState>,
@@ -60,7 +60,7 @@ async fn handle(
             .diagnostics
             .begin_exchange(internal, method.as_str(), &path, query, &headers, &body);
 
-    // 编排分支：POST 协议路径 + model 带 -pigs（回环子请求不走此分支）
+    // 编排分支：POST 协议路径 + model 带 -pigs / -pigsb（回环子请求不走此分支）
     if !internal && method == Method::POST {
         if let Some(protocol) = pigs_protocol::protocol_from_path(&path) {
             match serde_json::from_slice::<Value>(&body) {
@@ -70,7 +70,7 @@ async fn handle(
                         .and_then(|m| m.as_str())
                         .unwrap_or("")
                         .to_string();
-                    if let Some(real_model) = pigs_protocol::strip_pigs_suffix(&model) {
+                    if let Some((real_model, mode)) = pigs_protocol::parse_pigs_model(&model) {
                         // 唯一允许的字段改动：发给上游用真名，回客户端用原名
                         pigs_protocol::set_model(&mut parsed, &real_model);
                         return orchestrate(
@@ -78,6 +78,7 @@ async fn handle(
                             &headers,
                             parsed,
                             protocol,
+                            mode,
                             &model,
                             &real_model,
                             &path,
@@ -86,7 +87,7 @@ async fn handle(
                         )
                         .await;
                     }
-                    // 无 -pigs → 落到下面的透传
+                    // 无 PIGS 后缀 → 落到下面的透传
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "请求 body 不是合法 JSON");
@@ -100,7 +101,7 @@ async fn handle(
         }
     }
 
-    // 透传（含回环子请求、非 -pigs 主请求、models 等其他路径）
+    // 透传（含回环子请求、无 PIGS 后缀主请求、models 等其他路径）
     passthrough(&state, method, &path, query, &headers, body, exchange).await
 }
 
@@ -111,6 +112,7 @@ async fn orchestrate(
     headers: &HeaderMap,
     parsed: Value,
     protocol: pigs_protocol::Protocol,
+    mode: pigs_protocol::PigsMode,
     client_model: &str,
     real_model: &str,
     path: &str,
@@ -127,6 +129,7 @@ async fn orchestrate(
 
     let input = orch::TurnInput {
         protocol,
+        mode,
         body: parsed.clone(),
         path: path.to_string(),
         query: query.map(String::from),
@@ -145,6 +148,7 @@ async fn orchestrate(
 
     let mut decision_fields = vec![
         format!("model: {real_model}"),
+        format!("mode: {mode:?}"),
         format!("protocol: {protocol:?}"),
         format!("client_session: {client_session}"),
         format!("all_tool_result_ids: {all_result_ids:?}"),
@@ -157,16 +161,17 @@ async fn orchestrate(
             decision_fields.push(format!("pending_continuations: {}", summaries.len()));
             for summary in &summaries {
                 decision_fields.push(format!(
-                    "pending: id={} session={} phase={} tool_ids={:?} age_ms={}",
+                    "pending: id={} session={} mode={:?} phase={} tool_ids={:?} age_ms={}",
                     summary.id,
                     summary.session,
+                    summary.mode,
                     summary.phase.as_str(),
                     summary.pending,
                     summary.age_ms
                 ));
             }
 
-            if let Some(continuation) = store.take_match(&all_result_ids) {
+            if let Some(continuation) = store.take_match_for_mode(&all_result_ids, mode) {
                 let matched = continuation.pending.clone();
                 decision_fields.push(format!("matched_tool_result_ids: {matched:?}"));
                 decision_fields.push(format!("decision: resume {}", continuation.id));
@@ -210,6 +215,7 @@ async fn orchestrate(
     tracing::info!(
         model = %real_model,
         protocol = ?protocol,
+        mode = ?mode,
         streaming = client_wants_stream,
         tools = tool_count,
         resume = continuation.is_some(),
@@ -293,6 +299,7 @@ fn orchestrate_streaming(
         protocol,
         client_model.to_string(),
     )));
+    let output_mode = input.mode;
     // 起始帧：让客户端立刻拿到合法的流开头
     if let Ok(mut encoder) = encoder.lock() {
         let _ = tx.send(Ok(Bytes::from(encoder.start())));
@@ -350,7 +357,7 @@ fn orchestrate_streaming(
                     let tail: Vec<pigs_protocol::Part> = content
                         .parts
                         .iter()
-                        .filter(|part| !already_streamed(part))
+                        .filter(|part| !already_streamed(part, output_mode))
                         .cloned()
                         .collect();
                     let mut frames = encoder.push_parts(&tail);
@@ -405,13 +412,14 @@ fn orchestrate_streaming(
 
 /// 这条内容在实时阶段是否已经流给客户端了（避免收尾重复发）。
 ///
-/// - 文本：增量阶段逐段流过；
+/// - 文本：模式 A 在增量阶段逐段流过；模式 B 不流阶段正文，验收后收尾补发 committed text；
 /// - `reasoning_content`（Chat 思考字段）：增量阶段流过；
 /// - `thinking` 原生块：增量阶段按 thinking_delta 流过（签名单发）；
 /// - `redacted_thinking` 等完整块、以及工具调用：没法边到边流，收尾时给。
-fn already_streamed(part: &pigs_protocol::Part) -> bool {
+fn already_streamed(part: &pigs_protocol::Part, mode: pigs_protocol::PigsMode) -> bool {
     match part {
-        pigs_protocol::Part::Text(_) | pigs_protocol::Part::Reasoning(_) => true,
+        pigs_protocol::Part::Text(_) => mode == pigs_protocol::PigsMode::A,
+        pigs_protocol::Part::Reasoning(_) => true,
         pigs_protocol::Part::Native(block) => {
             block.get("type").and_then(|t| t.as_str()) == Some("thinking")
         }
