@@ -89,7 +89,7 @@ pigs 是一个 Rust 前置代理。普通请求走透传；只有同时满足以
 
 - `model` 使用客户端原始模型名（包括 `-pigs` 或 `-pigsb` 后缀）；
 - 模式 A（`-pigs`）：普通文本按执行顺序保留，控制标记会被过滤；
-- 模式 B（`-pigsb`）：Pre/Post 普通文本以及被 `PIGNEXT`/`PIGFAIL` 否决的 Executor 候选不会进入客户端业务正文。Simple Path 只提交 Pre 的最终答案；复杂路径只在 Post `PIGEND` 后提交当前 Executor candidate；
+- 模式 B（`-pigsb`）：Pre/Post 普通文本以及被 `PIGNEXT`/`PIGFAIL` 否决的 Executor 候选不会进入客户端业务正文。Simple Path 只提交 Pre 的最终答案；复杂路径通常只在 Post `PIGEND` 后提交当前 Executor candidate；若 `PIGNEXT` 修补预算或 `PIGFAIL→Pre` 重规划预算耗尽且已有 Executor 结果，则以 `BUDGET_FALLBACK` 结束并提交最近一次 Executor best-effort 正文；
 - thinking / reasoning、工具调用和其它已解析的原生块按 `Part` 序列尽量保留；
 - `stop_reason` / `finish_reason` 取最后一轮解析到的值；
 - 响应 id、时间戳、协议壳由 pigs 新生成；
@@ -145,13 +145,13 @@ Post：
 
 - Post 是纯核验器：可以用工具核验，但不自行继续执行、修改或重写任务结果；
 - `PIGEND` → 接受当前 Executor 结果并正常完成；仅输出一行 `PIGEND` 也合法；
-- `PIGNEXT` → 当前结果可继续修补；Post 应给出简短可执行反馈。系统砍回最近一次 Executor 完成时保存的 checkpoint，丢弃 Post 指令与 Post transcript，再用原 Executor 指令模板把 Post 反馈作为新的“执行前分析”交给 Executor。连续修补最多 3 次；
-- `PIGFAIL` → 当前执行路径需要重新规划，记录失败反馈并回 Pre；
+- `PIGNEXT` → 当前结果可继续修补；Post 应给出简短可执行反馈。系统砍回最近一次 Executor 完成时保存的 checkpoint，丢弃 Post 指令与 Post transcript，再用原 Executor 指令模板把 Post 反馈作为新的“执行前分析”交给 Executor。连续修补最多 3 次；模式 B 达到上限时不再继续评判，直接提交最近一次 Executor，并记为 `BUDGET_FALLBACK`；
+- `PIGFAIL` → 当前执行路径需要重新规划，记录失败反馈并回 Pre；模式 B 的重规划预算耗尽时，如果已经产生过 Executor 结果，则提交最近一次 Executor 并记为 `BUDGET_FALLBACK`；
 - 无标记 → 视为核验器协议未完成，留在 Post 重试，最多 3 次。
 
 任何相位只要上游停止原因明确表示生成 token 上限截断（当前识别 OpenAI Chat 的 `length`、Anthropic 的 `max_tokens`、Responses 的 `max_output_tokens`），就返回截断错误，不把部分文本当作完整 Pre/Executor/Post 产出继续推进。
 
-预算耗尽返回编排错误。proxy 对预算错误返回 422；其它编排错误（包括 token 截断）通常返回 502。
+预算耗尽并非全部返回编排错误：模式 B 的 `PIGNEXT` 修补上限和 `PIGFAIL→Pre` 重规划上限在存在 Executor 结果时会 best-effort 完成；从未产生 Executor 结果、模式 A、以及 Post 无控制标记超限仍返回预算错误。proxy 对这类预算错误返回 422；其它编排错误（包括 token 截断）通常返回 502。
 
 ## 配置与职责
 

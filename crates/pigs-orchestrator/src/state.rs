@@ -33,6 +33,8 @@ pub struct TurnState {
     pub failure_paths: Vec<String>,
     /// 模式 A 的各段可见文本；模式 B 只在最终提交时写入一段。
     pub visible: Vec<String>,
+    /// 最近一次 Executor 完成时产生的业务正文。用于模式 B 在控制预算耗尽时 best-effort 收尾。
+    pub last_executor_text: Option<String>,
     /// 模式 B：当前 Executor 候选正文。Post 未接受前不对客户端可见。
     pub candidate_text: String,
     /// 模式 B：已经提交的最终业务正文。
@@ -74,6 +76,7 @@ impl TurnState {
             pre_output: String::new(),
             failure_paths: Vec::new(),
             visible: Vec::new(),
+            last_executor_text: None,
             candidate_text: String::new(),
             committed_text: String::new(),
             parts: Vec::new(),
@@ -154,8 +157,9 @@ impl TurnState {
         self.stop_reason = output.stop_reason.clone();
     }
 
-    /// 模式 B：记录当前 Executor 候选正文。模式 A 无操作。
+    /// 记录最近一次 Executor 业务正文；模式 B 同时把它作为待验收 candidate。
     pub fn set_candidate(&mut self, text: String) {
+        self.last_executor_text = Some(text.clone());
         if self.mode == PigsMode::B {
             self.candidate_text = text;
         }
@@ -185,6 +189,19 @@ impl TurnState {
             let text = std::mem::take(&mut self.candidate_text);
             self.commit_text(text);
         }
+    }
+
+    /// 模式 B：控制预算耗尽时提交最近一次 Executor 结果。
+    /// 从未产生过 Executor 正文时返回 false，调用方仍应按预算错误处理。
+    pub fn commit_last_executor(&mut self) -> bool {
+        if self.mode != PigsMode::B {
+            return false;
+        }
+        let Some(text) = self.last_executor_text.clone() else {
+            return false;
+        };
+        self.commit_text(text);
+        true
     }
 
     /// 本相位到目前为止的原始文本（含标记）——路由判定用它。

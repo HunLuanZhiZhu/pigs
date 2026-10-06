@@ -34,7 +34,8 @@ pub const LOOPBACK_TOKEN_HEADER: &str = "x-pigs-loopback";
 /// - `MAX_PRE_REPLANS`：PIGFAIL 回到 Pre 重规划的次数上限；
 /// - `MAX_POST_ITERATIONS`：Post 无标记输出的连续重试次数上限；
 /// - `MAX_EXECUTOR_CONTINUES`：Post 通过 PIGNEXT 要求 Executor 继续修补的次数上限。
-/// 超预算一律判为本轮失败（绝不假装成功）。
+/// 模式 B 在 PIGNEXT / PIGFAIL 控制预算耗尽且已有 Executor 结果时，会 best-effort 提交最近一次 Executor；
+/// 没有 Executor 结果、模式 A、以及 Post 无标记协议超限仍按预算错误处理。
 const MAX_PRE_REPLANS: u32 = 2;
 const MAX_POST_ITERATIONS: u32 = 3;
 const MAX_EXECUTOR_CONTINUES: u32 = 3;
@@ -112,7 +113,7 @@ pub struct Runtime {
 /// 一轮编排的结果：跑完，或者被工具调用打断。
 #[derive(Debug, Clone)]
 pub enum Outcome {
-    /// 本轮完成（正常结束；预算耗尽仍然是 `Err`）。
+    /// 本轮完成（正常验收，或模式 B 的控制预算 fallback）。
     Completed(TurnResult),
     /// 模型要工具：调用已交给客户端，等它执行完带结果回来。
     Paused(PausedTurn),
@@ -161,6 +162,8 @@ pub enum EndedWith {
     SimplePath,
     /// Post 验收通过。
     PigEnd,
+    /// 模式 B 的控制循环达到预算上限，提交最近一次 Executor best-effort 结果。
+    BudgetFallback,
 }
 
 impl EndedWith {
@@ -168,6 +171,7 @@ impl EndedWith {
         match self {
             EndedWith::SimplePath => "SIMPLE_PATH",
             EndedWith::PigEnd => "PIGEND",
+            EndedWith::BudgetFallback => "BUDGET_FALLBACK",
         }
     }
 }
@@ -391,9 +395,15 @@ impl Orchestrator {
                         state.commit_text(strip_markers(&raw));
                         return Ok(Outcome::Completed(state.complete(EndedWith::SimplePath)))
                     }
-                    // 路径失败 → 记录，回 Pre 重规划（预算内）
+                    // 路径失败 → 记录，回 Pre 重规划（预算内）。若此前已经执行过 Executor，
+                    // 模式 B 在重规划预算耗尽时退化为最近一次 Executor best-effort 结果。
                     Some(Marker::Failed) => {
                         if state.pre_replans >= MAX_PRE_REPLANS {
+                            if state.commit_last_executor() {
+                                return Ok(Outcome::Completed(
+                                    state.complete(EndedWith::BudgetFallback),
+                                ));
+                            }
                             return Err(Error::Budget(format!(
                                 "Pre 重规划次数超过 {MAX_PRE_REPLANS} 次"
                             )));
@@ -443,8 +453,14 @@ impl Orchestrator {
                         return Ok(Outcome::Completed(state.complete(EndedWith::PigEnd)))
                     }
                     // 可修补 → Post 只给反馈，不自行执行；把完整现场交回 Executor 继续。
+                    // 模式 B 达到修补预算后不再做下一次评判，直接提交最近一次 Executor。
                     Some(Marker::Next) => {
                         if state.executor_continues >= MAX_EXECUTOR_CONTINUES {
+                            if state.commit_last_executor() {
+                                return Ok(Outcome::Completed(
+                                    state.complete(EndedWith::BudgetFallback),
+                                ));
+                            }
                             return Err(Error::Budget(format!(
                                 "Executor 继续修补次数超过 {MAX_EXECUTOR_CONTINUES} 次"
                             )));
@@ -464,8 +480,14 @@ impl Orchestrator {
                         state.phase_transcript.clear();
                     }
                     // 执行走偏 → 回 Pre 重规划（预算内）。这不是回滚，Pre 面对的是当前真实状态。
+                    // 模式 B 达到重规划预算后，提交最近一次 Executor，而不是把已有结果变成请求错误。
                     Some(Marker::Failed) => {
                         if state.pre_replans >= MAX_PRE_REPLANS {
+                            if state.commit_last_executor() {
+                                return Ok(Outcome::Completed(
+                                    state.complete(EndedWith::BudgetFallback),
+                                ));
+                            }
                             return Err(Error::Budget(format!(
                                 "Pre 重规划次数超过 {MAX_PRE_REPLANS} 次"
                             )));

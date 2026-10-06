@@ -939,7 +939,7 @@ async fn mode_b_pignext_discards_rejected_executor_and_commits_repair() {
 }
 
 #[tokio::test]
-async fn pignext_continue_budget_is_bounded() {
+async fn pignext_continue_budget_is_bounded_in_mode_a() {
     let mut responses = vec![
         FakeTransport::text(200, "计划"),
         FakeTransport::text(200, "草稿0"),
@@ -957,6 +957,31 @@ async fn pignext_continue_budget_is_bounded() {
         .await
         .unwrap_err();
     assert!(matches!(err, Error::Budget(m) if m.contains("Executor 继续修补次数")));
+}
+
+#[tokio::test]
+async fn mode_b_pignext_budget_falls_back_to_last_executor() {
+    let mut responses = vec![
+        FakeTransport::text(200, "计划"),
+        FakeTransport::text(200, "草稿0"),
+    ];
+    for i in 0..=MAX_EXECUTOR_CONTINUES {
+        responses.push(FakeTransport::text(200, &format!("还要修{i}\nPIGNEXT")));
+        if i < MAX_EXECUTOR_CONTINUES {
+            responses.push(FakeTransport::text(200, &format!("草稿{}", i + 1)));
+        }
+    }
+    let transport = fake(responses);
+    let (rt, _store) = runtime(transport);
+    let result = completed(
+        Orchestrator::new()
+            .run(input_mode(proto::Protocol::OpenAI, proto::PigsMode::B), rt)
+            .await
+            .unwrap(),
+    );
+    assert_eq!(result.ended_with, EndedWith::BudgetFallback);
+    assert_eq!(result.text, format!("草稿{MAX_EXECUTOR_CONTINUES}"));
+    assert!(!result.text.contains("还要修"));
 }
 
 #[tokio::test]
@@ -1006,7 +1031,7 @@ async fn post_without_marker_retries_post_until_budget() {
 }
 
 #[tokio::test]
-async fn pre_replan_budget_exhausted_is_an_error() {
+async fn pre_replan_budget_without_executor_is_still_an_error() {
     let transport = fake(vec![
         FakeTransport::text(200, "计划一\nPIGFAIL"),
         FakeTransport::text(200, "计划二\nPIGFAIL"),
@@ -1014,10 +1039,55 @@ async fn pre_replan_budget_exhausted_is_an_error() {
     ]);
     let (rt, _store) = runtime(transport);
     let err = Orchestrator::new()
-        .run(input(proto::Protocol::OpenAI), rt)
+        .run(input_mode(proto::Protocol::OpenAI, proto::PigsMode::B), rt)
         .await
         .unwrap_err();
     assert!(matches!(err, Error::Budget(m) if m.contains("Pre 重规划")));
+}
+
+#[tokio::test]
+async fn mode_b_pigfail_replan_budget_falls_back_to_last_executor() {
+    let transport = fake(vec![
+        FakeTransport::text(200, "计划一"),
+        FakeTransport::text(200, "候选一"),
+        FakeTransport::text(200, "路径一根本错误\nPIGFAIL"),
+        FakeTransport::text(200, "计划二"),
+        FakeTransport::text(200, "候选二"),
+        FakeTransport::text(200, "路径二根本错误\nPIGFAIL"),
+        FakeTransport::text(200, "计划三"),
+        FakeTransport::text(200, "候选三"),
+        FakeTransport::text(200, "路径三仍错误\nPIGFAIL"),
+    ]);
+    let (rt, _store) = runtime(transport);
+    let result = completed(
+        Orchestrator::new()
+            .run(input_mode(proto::Protocol::OpenAI, proto::PigsMode::B), rt)
+            .await
+            .unwrap(),
+    );
+    assert_eq!(result.ended_with, EndedWith::BudgetFallback);
+    assert_eq!(result.text, "候选三");
+    assert!(!result.text.contains("路径三仍错误"));
+}
+
+#[tokio::test]
+async fn mode_b_pre_replan_budget_preserves_previous_executor_fallback() {
+    let transport = fake(vec![
+        FakeTransport::text(200, "初始计划"),
+        FakeTransport::text(200, "最后可用候选"),
+        FakeTransport::text(200, "需要重规划\nPIGFAIL"),
+        FakeTransport::text(200, "重规划仍失败\nPIGFAIL"),
+        FakeTransport::text(200, "再次重规划仍失败\nPIGFAIL"),
+    ]);
+    let (rt, _store) = runtime(transport);
+    let result = completed(
+        Orchestrator::new()
+            .run(input_mode(proto::Protocol::OpenAI, proto::PigsMode::B), rt)
+            .await
+            .unwrap(),
+    );
+    assert_eq!(result.ended_with, EndedWith::BudgetFallback);
+    assert_eq!(result.text, "最后可用候选");
 }
 
 #[tokio::test]

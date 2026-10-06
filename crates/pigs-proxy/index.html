@@ -71,6 +71,6 @@ table{border-collapse:collapse;width:100%}th,td{border:1px solid var(--line);pad
 
 <h2>错误状态</h2>
 <div class="note">
-<p>非法协议 JSON 返回 400；工具结果找不到 continuation 返回 409；预算耗尽的非流式编排返回 422；其它非流式编排错误（包括 orchestrator 识别出的 token 截断）通常返回 502。流式响应一旦已经开始，后续错误只能编码在 SSE 流内。</p>
+<p>非法协议 JSON 返回 400；工具结果找不到 continuation 返回 409；真正以 <code>Error::Budget</code> 结束的非流式编排返回 422；其它非流式编排错误（包括 orchestrator 识别出的 token 截断）通常返回 502。模式 B 的 PIGNEXT/PIGFAIL 控制预算耗尽在已有 Executor 结果时会由 orchestrator 以 <code>BUDGET_FALLBACK</code> 正常完成，因此不会走 422。流式响应一旦已经开始，后续错误只能编码在 SSE 流内。</p>
 </div>
 </div></body></html>

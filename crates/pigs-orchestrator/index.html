@@ -22,11 +22,11 @@ code{background:#eef1f6;border-radius:4px;padding:1px 6px;font-family:Consolas,m
 <tr><td>Pre</td><td>无控制标记</td><td>保存为 <code>pre_output</code>，进入 Executor。</td></tr>
 <tr><td>Executor</td><td>任意正常输出</td><td>不按 PIG 标记路由；完整物化 Executor 会话现场，并在末尾追加 Post 的 user 指令后进入 Post。</td></tr>
 <tr><td>Post</td><td><code>PIGEND</code>（可单独一行）</td><td>接受当前 Executor 结果并正常完成。</td></tr>
-<tr><td>Post</td><td><code>PIGNEXT</code></td><td>当前结果可修补：砍回最近一次 Executor 完成时的 checkpoint，丢弃 Post 指令与 Post transcript，再用原 Executor 指令模板把 Post 反馈作为新的执行前分析；连续修补预算为 3。</td></tr>
-<tr><td>Post</td><td><code>PIGFAIL</code></td><td>记录根本问题，回 Pre 重规划；不表示回滚外部状态。</td></tr>
+<tr><td>Post</td><td><code>PIGNEXT</code></td><td>当前结果可修补：砍回最近一次 Executor 完成时的 checkpoint，丢弃 Post 指令与 Post transcript，再用原 Executor 指令模板把 Post 反馈作为新的执行前分析；连续修补预算为 3。模式 B 达到上限时不再继续评判，提交最近一次 Executor，并以 <code>BUDGET_FALLBACK</code> 完成。</td></tr>
+<tr><td>Post</td><td><code>PIGFAIL</code></td><td>记录根本问题，回 Pre 重规划；不表示回滚外部状态。模式 B 的重规划预算耗尽且已有 Executor 结果时，提交最近一次 Executor，并以 <code>BUDGET_FALLBACK</code> 完成。</td></tr>
 <tr><td>Post</td><td>无控制标记</td><td>视为核验协议未完成，继续在同一 Post 对话现场重试；无标记重试预算为 3。</td></tr>
 </table>
-<p>Pre 使用严格标记检测，Post 使用只看最后非空行的终止标记检测。Post 只负责核验和路由，不自行执行修补；需要修补时用 <code>PIGNEXT</code> 把控制权交回 Executor。任何相位若 <code>stop_reason</code> 明确表示 token 上限截断（<code>length</code> / <code>max_tokens</code> / <code>max_output_tokens</code>），会返回 <code>Error::OutputTruncated</code>，不会把半截文本继续交给下一相位。预算耗尽返回 <code>Error::Budget</code>；非流式 proxy 会把预算错误映射为 HTTP 422，其它编排错误通常为 502。</p>
+<p>Pre 使用严格标记检测，Post 使用只看最后非空行的终止标记检测。Post 只负责核验和路由，不自行执行修补；需要修补时用 <code>PIGNEXT</code> 把控制权交回 Executor。任何相位若 <code>stop_reason</code> 明确表示 token 上限截断（<code>length</code> / <code>max_tokens</code> / <code>max_output_tokens</code>），会返回 <code>Error::OutputTruncated</code>，不会把半截文本继续交给下一相位。预算耗尽通常返回 <code>Error::Budget</code>；例外是模式 B 的 PIGNEXT 修补上限或 PIGFAIL 重规划上限：只要已有 Executor 结果，就以 <code>BUDGET_FALLBACK</code> 提交最近一次 Executor。Post 无标记超限仍是预算错误。非流式 proxy 会把真正的预算错误映射为 HTTP 422，其它编排错误通常为 502。</p>
 </div>
 
 <h2>子请求如何组装</h2>
@@ -88,7 +88,7 @@ resume 同一相位</pre>
 <p>当父请求 body 的 <code>stream</code> 为 true 时，orchestrator 使用 transport 的 streaming 路径。上游 SSE 被增量解析并通过 <code>ProgressSink</code> 产生事件。</p>
 <ul>
 <li>模式 A（<code>-pigs</code>）的文本增量经过 <code>MarkerFilter</code> 后实时发送；</li>
-<li>模式 B（<code>-pigsb</code>）的普通文本在 Pre/Executor/Post 生成时不发送。Simple Path 只有 Pre <code>PIGEND</code> 后提交 Pre 答案；复杂路径把 Executor 普通文本先存为 candidate，只有随后 Post <code>PIGEND</code> 才提交；<code>PIGNEXT</code>/<code>PIGFAIL</code> 会丢弃当前 candidate；</li>
+<li>模式 B（<code>-pigsb</code>）的普通文本在 Pre/Executor/Post 生成时不发送。Simple Path 只有 Pre <code>PIGEND</code> 后提交 Pre 答案；复杂路径把 Executor 普通文本先存为 candidate，通常只有随后 Post <code>PIGEND</code> 才提交；系统同时保留最近一次 Executor 正文作为 fallback，在 PIGNEXT/PIGFAIL 控制预算耗尽时可 best-effort 提交；</li>
 <li>thinking、reasoning summary、signature 等使用带类型事件传给 proxy 的 <code>StreamEncoder</code>；</li>
 <li>一轮结束时，无法实时还原的原生块由收尾逻辑补发。</li>
 </ul>
@@ -97,7 +97,7 @@ resume 同一相位</pre>
 
 <h2>最终内容与 usage</h2>
 <div class="card">
-<p>模式 A 中，<code>TurnState</code> 继续按执行顺序保留各阶段普通文本。模式 B 中，Pre/Post 普通文本不进入客户端业务正文；<code>candidate_text</code> 保存当前 Executor 候选，<code>committed_text</code> 只保存最终被接受的业务正文。thinking/reasoning 与工具调用不受正文隐藏规则影响。流式 B 因此只延迟普通业务正文；reasoning 与工具事件仍可实时发生。</p>
+<p>模式 A 中，<code>TurnState</code> 继续按执行顺序保留各阶段普通文本。模式 B 中，Pre/Post 普通文本不进入客户端业务正文；<code>candidate_text</code> 保存当前待验收 Executor 候选，<code>last_executor_text</code> 保留最近一次 Executor best-effort 正文，<code>committed_text</code> 保存最终实际提交的业务正文。正常验收由 Post <code>PIGEND</code> 提交 candidate；控制预算 fallback 则提交 <code>last_executor_text</code>。thinking/reasoning 与工具调用不受正文隐藏规则影响。</p>
 <p><code>stop_reason</code> 每一轮都会覆盖，最终保留最后一轮解析到的值。</p>
 <p><strong>usage 不累计。</strong>当前实现比较 <code>usage.input_tokens</code>，保留该值最大的那一轮完整 usage 对象；平局保留旧对象。OpenAI Chat 若只提供 <code>prompt_tokens</code> 而没有 <code>input_tokens</code>，比较值按 0 处理。</p>
 <div class="note">工具暂停时，状态现场本身仍包含已记录的 usage；但 proxy 的 Paused 响应明确使用 <code>usage: None</code>，所以客户端不会收到“截至暂停点的累计 usage”。</div>
