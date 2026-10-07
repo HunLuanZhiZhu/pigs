@@ -375,7 +375,7 @@ async fn happy_path_three_pigs_with_pigend() {
                 "Executor 指令要带 Pre 分析"
             );
         } else {
-            assert!(content.contains("根据任务要求和任务目标"));
+            assert!(content.contains("根据任务目标和任务要求"));
             assert_eq!(
                 roles(&body),
                 vec!["system", "user", "assistant", "user"],

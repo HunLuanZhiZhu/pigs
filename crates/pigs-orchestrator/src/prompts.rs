@@ -120,7 +120,10 @@ mod tests {
     #[test]
     fn post_instruction_is_pure_template() {
         let p = post_instruction(Lang::Zh);
-        assert!(p.starts_with("根据任务要求和任务目标，独立核验当前执行结果"));
+        assert!(p.starts_with("根据任务目标和任务要求，独立核验当前执行结果"));
+        assert!(p.contains("已有充分依据后停止核验"));
+        assert!(p.contains("现有上下文和可自主获取的信息已经不足"));
+        assert!(p.contains("已经发生无法修改的错误"));
         assert!(p.contains("PIGEND") && p.contains("PIGNEXT") && p.contains("PIGFAIL"));
         assert!(!p.contains("执行结果：") && !p.contains("以下是需要验收"));
     }
