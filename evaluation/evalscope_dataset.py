@@ -16,6 +16,7 @@ def run_dataset(dataset: str, evalscope_name: str, full_size: int, display_name:
     parser = argparse.ArgumentParser(description=f'Run {display_name} Base/PIGS evaluation.')
     add_common_args(parser, dataset)
     parser.add_argument('--evalscope', type=Path, default=DEFAULT_EVALSCOPE)
+    parser.add_argument('--eval-type', default='openai_api', choices=['openai_api', 'openai_responses_api', 'anthropic_api'])
     parser.add_argument('--seed', type=int, default=20261001)
     parser.add_argument('--temperature', type=float, default=0.0)
     parser.add_argument('--sample-retries', type=int, default=1, help='Retry failed/missing samples after the first full pass (default: 1).')
@@ -37,6 +38,7 @@ def run_dataset(dataset: str, evalscope_name: str, full_size: int, display_name:
     run_id, root, jobs, store = prepare(args, dataset, expected, models, {
         'harness': 'EvalScope',
         'evalscope': str(args.evalscope),
+        'eval_type': args.eval_type,
         'evalscope_dataset': evalscope_name,
         'official_full_size': full_size,
         'limit': args.limit,
@@ -64,7 +66,7 @@ def run_dataset(dataset: str, evalscope_name: str, full_size: int, display_name:
             '--model-args', json.dumps({'max_retries': 0}, separators=(',', ':')),
             '--api-url', args.base_url,
             '--api-key', args.api_key,
-            '--eval-type', 'openai_api',
+            '--eval-type', args.eval_type,
             '--datasets', evalscope_name,
             '--eval-batch-size', str(args.sample_workers),
             '--generation-config', json.dumps(generation, separators=(',', ':')),
