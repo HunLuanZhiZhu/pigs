@@ -30,7 +30,11 @@ class ModelSpec:
 class Job:
     job_id: str; dataset: str; model_label: str; arm: str; model: str
     expected_samples: int; output_dir: str; session_id: str
-    status: str = 'queued'; completed_samples: int = 0
+    status: str = 'queued'; stage: str = 'queued'; completed_samples: int = 0
+    failed_samples: int = 0; failed_sample_ids: list[str] | None = None
+    attempt: int = 0; max_attempts: int = 1
+    first_attempt_successes: int | None = None; first_attempt_failures: int | None = None
+    archive_phase: str | None = None; archive_done: int = 0; archive_total: int = 0; archive_exchanges: int = 0
     exit_code: int | None = None; started_at: str | None = None; finished_at: str | None = None
     command: list[str] | None = None
     thinking_effort: str | None = None
@@ -80,12 +84,35 @@ class ProgressStore:
         self.root=root; self.run_id=run_id; self.dataset=dataset; self.jobs=jobs; self.lock=threading.Lock()
     def write(self)->None:
         with self.lock:
-            updated=now(); total=sum(j.expected_samples for j in self.jobs); done=sum(min(j.completed_samples,j.expected_samples) for j in self.jobs)
-            write_json(self.root/'progress.json', {'schema_version':2,'run_id':self.run_id,'dataset':self.dataset,'updated_at':updated,'total_expected_samples':total,'total_completed_samples':done,'jobs':[asdict(j) for j in self.jobs]})
-            lines=[f'PIGS evaluation: {self.dataset}',f'run: {self.run_id}',f'updated: {updated}','',f'Overall {bar(done,total)} {done}/{total} {(100*done/total if total else 0):6.2f}%','']
+            updated=now(); total=sum(j.expected_samples for j in self.jobs); success=sum(min(j.completed_samples,j.expected_samples) for j in self.jobs)
+            failed=sum(max(j.failed_samples,0) for j in self.jobs)
+            write_json(self.root/'progress.json', {
+                'schema_version':3,'run_id':self.run_id,'dataset':self.dataset,'updated_at':updated,
+                'total_expected_samples':total,'total_successful_samples':success,'total_failed_samples':failed,
+                'jobs':[asdict(j) for j in self.jobs],
+            })
+            lines=[
+                f'PIGS evaluation: {self.dataset}',f'run: {self.run_id}',f'updated: {updated}','',
+                f'Overall success {bar(success,total)} {success}/{total} {(100*success/total if total else 0):6.2f}% | known failures {failed}',''
+            ]
             for j in self.jobs:
                 n=min(j.completed_samples,j.expected_samples); p=100*n/j.expected_samples if j.expected_samples else 0
-                lines.append(f'{j.model_label:24s} {j.arm:4s} {bar(n,j.expected_samples)} {n:5d}/{j.expected_samples:<5d} {p:6.2f}% {j.status.upper()}')
+                attempt=f' attempt {j.attempt}/{j.max_attempts}' if j.attempt else ''
+                failures=f' | failed {j.failed_samples}' if j.failed_samples else ''
+                if j.failed_sample_ids:
+                    shown=','.join(j.failed_sample_ids[:12]); suffix='...' if len(j.failed_sample_ids)>12 else ''
+                    failures += f' [{shown}{suffix}]'
+                first=''
+                if j.first_attempt_successes is not None:
+                    first=f' | first-pass {j.first_attempt_successes}/{j.expected_samples} ok, {j.first_attempt_failures or 0} failed'
+                archive=''
+                if j.stage == 'archiving' and j.archive_phase:
+                    archive=f' | archive {j.archive_phase} {j.archive_done}/{j.archive_total}'
+                    if j.archive_exchanges: archive += f' exchanges={j.archive_exchanges}'
+                lines.append(
+                    f'{j.model_label:24s} {j.arm:4s} {bar(n,j.expected_samples)} '
+                    f'{n:5d}/{j.expected_samples:<5d} {p:6.2f}% {j.stage.upper()}{attempt}{failures}{first}{archive}'
+                )
             atomic_write(self.root/'progress.txt','\n'.join(lines)+'\n')
 
 def add_common_args(p:argparse.ArgumentParser, dataset:str)->None:
@@ -152,33 +179,37 @@ def prepare(args:argparse.Namespace,dataset:str,expected:int,models:list[ModelSp
 def redact(cmd:list[str], secrets:Iterable[str])->list[str]:
     s={x for x in secrets if x}; return ['[REDACTED]' if x in s else x for x in cmd]
 
-def archive_pigs_session_logs(source:Path, session_id:str, dest:Path)->int:
+def archive_pigs_session_logs(source:Path, session_id:str, dest:Path, progress:Callable[[str,int,int,int],None]|None=None)->int:
     dest.mkdir(parents=True,exist_ok=True)
     if not source.exists():
         write_json(dest/'archive.json',{'source':str(source),'session_id':session_id,'matched_exchanges':0,'files':0})
         return 0
     paths=[p for p in source.glob('*.txt') if p.is_file()]
-    exchange_ids=set()
-    for path in paths:
+    total=len(paths); exchange_ids=set()
+    if progress: progress('scan',0,total,0)
+    for idx,path in enumerate(paths,1):
         try:
             if session_id in path.read_text(encoding='utf-8',errors='replace'):
                 exchange_ids.add(path.name.split('.',1)[0])
         except OSError:
             pass
-    copied=0
-    for path in paths:
-        if path.name.split('.',1)[0] not in exchange_ids:
-            continue
+        if progress and (idx==total or idx%250==0): progress('scan',idx,total,len(exchange_ids))
+    matched=[p for p in paths if p.name.split('.',1)[0] in exchange_ids]
+    copied=0; copy_total=len(matched)
+    if progress: progress('copy',0,copy_total,len(exchange_ids))
+    for idx,path in enumerate(matched,1):
         try:
             shutil.copy2(path,dest/path.name); copied+=1
         except OSError:
             pass
+        if progress and (idx==copy_total or idx%250==0): progress('copy',idx,copy_total,len(exchange_ids))
     write_json(dest/'archive.json',{'source':str(source),'session_id':session_id,'matched_exchanges':len(exchange_ids),'files':copied,'archived_at':now()})
+    if progress: progress('done',copied,copy_total,len(exchange_ids))
     return copied
 
-def run_job(job:Job, cmd:list[str], store:ProgressStore, counter:Callable[[Path],int], interval:float, env:dict[str,str]|None=None, cwd:Path|None=None, secrets:Iterable[str]=(), pigs_log_source:Path|None=None)->int:
+def run_job(job:Job, cmd:list[str], store:ProgressStore, counter:Callable[[Path],int], interval:float, env:dict[str,str]|None=None, cwd:Path|None=None, secrets:Iterable[str]=(), pigs_log_source:Path|None=None, stage:str='running')->int:
     out=Path(job.output_dir); out.mkdir(parents=True,exist_ok=True)
-    job.command=redact(cmd,secrets); job.status='running'; job.started_at=now(); store.write()
+    job.command=redact(cmd,secrets); job.status='running'; job.stage=stage; job.attempt=max(job.attempt,1); job.started_at=job.started_at or now(); store.write()
     e=os.environ.copy(); e.update(env or {}); e['PIGS_SESSION_ID']=job.session_id
     with (out/'runner.log').open('a',encoding='utf-8') as log:
         log.write(
@@ -191,12 +222,17 @@ def run_job(job:Job, cmd:list[str], store:ProgressStore, counter:Callable[[Path]
         while proc.poll() is None:
             job.completed_samples=min(counter(out),job.expected_samples); store.write(); time.sleep(interval)
         code=int(proc.returncode or 0); seen=min(counter(out),job.expected_samples)
-        job.completed_samples=job.expected_samples if code==0 else seen
+        job.completed_samples=seen
+        job.failed_samples=max(job.expected_samples-seen,0)
         job.exit_code=code; job.finished_at=now(); job.status='done' if code==0 else 'failed'
+        job.stage='archiving' if pigs_log_source is not None else job.status
         log.write(f'END {job.finished_at} exit_code={code}\n')
+    store.write()
     if pigs_log_source is not None:
-        archive_pigs_session_logs(Path(pigs_log_source),job.session_id,out/'pigs-http')
-    store.write(); return code
+        def archive_progress(phase:str,done:int,total:int,exchanges:int)->None:
+            job.archive_phase=phase; job.archive_done=done; job.archive_total=total; job.archive_exchanges=exchanges; store.write()
+        archive_pigs_session_logs(Path(pigs_log_source),job.session_id,out/'pigs-http',archive_progress)
+    job.stage=job.status; store.write(); return code
 
 def run_pipelines(models:list[ModelSpec], arms:list[str], jobs:list[Job], workers:int, run_one:Callable[[Job],int])->bool:
     idx={(j.model_label,j.arm):j for j in jobs}
@@ -219,13 +255,38 @@ def finalize(root:Path,jobs:list[Job])->None:
     p=root/'run_manifest.json'; m=json.loads(p.read_text())
     m['jobs']=[asdict(j) for j in jobs]; m['finished_at']=now(); write_json(p,m)
 
-def count_evalscope(root:Path)->int:
-    n=0
-    for p in root.rglob('*.jsonl') if root.exists() else []:
+def latest_evalscope_output(root:Path)->Path|None:
+    if not root.exists(): return None
+    dirs=[]
+    for cfg in root.glob('*/configs/task_config.yaml'):
+        if cfg.is_file(): dirs.append(cfg.parent.parent)
+    if not dirs and (root/'configs'/'task_config.yaml').is_file(): dirs.append(root)
+    return max(dirs,key=lambda p:(p.stat().st_mtime,p.name)) if dirs else None
+
+def evalscope_prediction_ids(root:Path)->set[str]:
+    run=latest_evalscope_output(root)
+    if run is None: return set()
+    ids=set()
+    for p in run.rglob('*.jsonl'):
         if 'predictions' not in p.parts: continue
-        try: n+=sum(1 for line in p.open(encoding='utf-8',errors='replace') if line.strip())
+        try:
+            for line in p.open(encoding='utf-8',errors='replace'):
+                if not line.strip(): continue
+                try: row=json.loads(line)
+                except json.JSONDecodeError: continue
+                sid=row.get('index',row.get('id'))
+                if sid is not None: ids.add(str(sid))
         except OSError: pass
-    return n
+    return ids
+
+def missing_evalscope_ids(root:Path, expected:int)->list[str]:
+    ids=evalscope_prediction_ids(root)
+    if not ids: return [str(i) for i in range(expected)]
+    expected_ids={str(i) for i in range(expected)}
+    return sorted(expected_ids-ids,key=lambda x:int(x))
+
+def count_evalscope(root:Path)->int:
+    return len(evalscope_prediction_ids(root))
 
 def count_bfcl(root:Path)->int:
     n=0; rr=root/'results'

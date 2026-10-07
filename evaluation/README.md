@@ -81,6 +81,16 @@ launcher_log=.../_launch/<run_id>.log
 watch -n 2 cat <run_dir>/progress.txt
 ```
 
+`progress.txt` 现在区分执行阶段，而不再把“成功 prediction 数不足 expected”一律显示成 RUNNING。每个 job 会显示当前 `RUNNING / RETRYING / ARCHIVING / DONE / FAILED`、attempt 编号、当前成功数、已知失败数和失败 sample ID；首轮结束后还会保留 `first-pass` 成功/失败统计。归档阶段额外显示 `archive scan x/y` / `archive copy x/y` 和已匹配 exchange 数。
+
+GSM8K / IFEval 默认在首轮全部样本结束后，对缺失/失败 prediction 自动补跑 1 次：
+
+```bash
+--sample-retries 1
+```
+
+补跑使用 EvalScope 的 sample cache，只重新执行缺失 sample；首轮成功 prediction 不会再次请求模型。可用 `--sample-retries 0` 禁用。控制 benchmark 的 API generation timeout 当前为 1800 秒，以避免现代 reasoning model 的长生成被 10 分钟超时人为截断。
+
 每个 run 同时保存：
 
 - `progress.txt`：人类可读总体进度；
