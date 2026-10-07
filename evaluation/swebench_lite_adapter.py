@@ -17,6 +17,12 @@ def main()->int:
     inference=args.output_dir/'inference'; inference.mkdir(parents=True,exist_ok=True)
     override=args.output_dir/'model_override.yaml'
     override.write_text(
+        'agent:\n'
+        '  # cost_limit: 3.\n'
+        '  cost_limit: 1000000000.0\n'
+        'environment:\n'
+        '  # timeout: 60\n'
+        '  timeout: 1000000\n'
         'model:\n'
         f'  model_name: "openai/{args.wire_model}"\n'
         '  model_kwargs:\n'
