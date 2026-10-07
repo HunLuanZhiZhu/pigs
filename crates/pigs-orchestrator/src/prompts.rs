@@ -102,9 +102,12 @@ mod tests {
     #[test]
     fn executor_instruction_fills_pre_output() {
         let p = executor_instruction(Lang::Zh, "计划X");
-        assert!(p.contains("计划X"));
-        assert!(p.starts_with("以下是本任务的执行前分析："));
-        assert!(p.trim_end().ends_with("完成任务目标并自主核验最终结果。"));
+        assert!(p.starts_with("计划X\n\n"));
+        assert!(p
+            .trim_end()
+            .ends_with("以上是本任务的执行前分析，可在执行过程中根据实际情况调整。"));
+        assert!(!p.contains("自主核验") && !p.contains("完成任务目标"));
+        assert!(!p.contains("多种合理理解") && !p.contains("简单、直观"));
         // 不含用户问题（问题留在原 user 消息里，由 body 手术追加）
         assert!(!p.contains("帮我完成任务"));
         // 不再有 legacy 之外的自造块

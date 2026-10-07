@@ -1232,7 +1232,8 @@ async fn executor_resume_keeps_one_phase_prompt_upstream() {
     for body in [exec_first, exec_resume1, exec_resume2] {
         let user = body["messages"][1]["content"].as_str().unwrap();
         assert_eq!(
-            user.matches("以下是本任务的执行前分析：").count(),
+            user.matches("以上是本任务的执行前分析，可在执行过程中根据实际情况调整。")
+                .count(),
             1,
             "同一 Executor pig 的阶段说明不能重复注入"
         );

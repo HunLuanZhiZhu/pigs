@@ -761,7 +761,8 @@ async fn executor_tool_resumes_keep_one_phase_prompt() {
     for body in [&exec_first, &exec_resume1, &exec_resume2] {
         let user = body["messages"][1]["content"].as_str().unwrap();
         assert_eq!(
-            user.matches("以下是本任务的执行前分析：").count(),
+            user.matches("以上是本任务的执行前分析，可在执行过程中根据实际情况调整。")
+                .count(),
             1,
             "Executor 阶段说明在同一 pig 中必须只有一份"
         );
@@ -896,8 +897,8 @@ async fn post_pignext_returns_to_executor_with_feedback_then_rechecks() {
     assert_eq!(exec2_messages.len(), checkpoint_len + 1);
     assert_eq!(exec2_messages[checkpoint_len]["role"], "user");
     let next_instruction = exec2_messages[checkpoint_len]["content"].as_str().unwrap();
-    assert!(next_instruction.starts_with("以下是本任务的执行前分析："));
-    assert!(next_instruction.contains("缺少结论，需要补上"));
+    assert!(next_instruction.starts_with("缺少结论，需要补上"));
+    assert!(next_instruction.contains("以上是本任务的执行前分析，可在执行过程中根据实际情况调整。"));
     assert!(!next_instruction.contains("PIGNEXT"));
     assert!(!next_instruction.contains("独立核验当前执行结果"));
 
