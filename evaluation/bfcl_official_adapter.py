@@ -20,7 +20,10 @@ def main() -> int:
     p.add_argument('--threads', type=int, default=1)
     p.add_argument('--temperature', type=float, default=0.001)
     p.add_argument('--thinking-effort', default='low')
+    p.add_argument('--request-timeout', type=float, default=1800.0)
     args = p.parse_args()
+    if args.request_timeout <= 0:
+        raise SystemExit('--request-timeout must be positive')
 
     os.environ['OPENAI_BASE_URL'] = args.base_url
     os.environ['OPENAI_API_KEY'] = args.api_key
@@ -33,6 +36,12 @@ def main() -> int:
 
     class EvaluationOpenAICompletionsHandler(OpenAICompletionsHandler):
         evaluation_reasoning_effort = args.thinking_effort
+        evaluation_request_timeout = args.request_timeout
+
+        def _build_client_kwargs(self):
+            kwargs = super()._build_client_kwargs()
+            kwargs['timeout'] = self.evaluation_request_timeout
+            return kwargs
 
         def generate_with_backoff(self, **kwargs):
             kwargs['reasoning_effort'] = self.evaluation_reasoning_effort

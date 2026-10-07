@@ -229,7 +229,7 @@ DeepSeek → DeepSeek + PIGS
 - `--sample-workers` 控制 benchmark 内部并发；
 - 每个入口支持 `--background`，并持续写 `progress.txt` / `progress.json`；进度文件区分 RUNNING / RETRYING / ARCHIVING / DONE / FAILED，并记录首轮成功数、失败数和失败 sample ID；
 - GSM8K / IFEval 首轮全部样本结束后，对缺失 prediction 默认补跑 1 次（`--sample-retries 1`），使用 EvalScope sample cache，仅重试失败样本；首轮失败率仍单独保留，不用 retry 掩盖 first-attempt reliability；
-- GSM8K / IFEval 的单请求 timeout 为 1800 秒；mini-proxy upstream total timeout 同步提高为 1800 秒；
+- GSM8K / IFEval 的单请求 timeout 为 1800 秒；BFCL OpenAI-compatible client 的单请求 timeout 也显式设为 1800 秒；mini-proxy upstream total timeout 同步提高为 1800 秒；
 - runner 不再设置 `max_tokens`、`max_output_tokens` 或 `max_completion_tokens`，避免评测层主动截断模型输出。
 
 ## 6.2 Reasoning budget

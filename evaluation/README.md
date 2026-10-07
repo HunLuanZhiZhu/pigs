@@ -89,7 +89,7 @@ GSM8K / IFEval 默认在首轮全部样本结束后，对缺失/失败 predictio
 --sample-retries 1
 ```
 
-补跑使用 EvalScope 的 sample cache，只重新执行缺失 sample；首轮成功 prediction 不会再次请求模型。可用 `--sample-retries 0` 禁用。控制 benchmark 的 API generation timeout 当前为 1800 秒，以避免现代 reasoning model 的长生成被 10 分钟超时人为截断。
+补跑使用 EvalScope 的 sample cache，只重新执行缺失 sample；首轮成功 prediction 不会再次请求模型。可用 `--sample-retries 0` 禁用。GSM8K / IFEval 的 EvalScope API generation timeout 当前为 1800 秒；BFCL adapter 也显式把 OpenAI-compatible client 的单请求 timeout 设为 1800 秒，避免现代 reasoning model 的长生成被 SDK 默认 600 秒超时人为截断。
 
 每个 run 同时保存：
 
@@ -191,7 +191,7 @@ python /mnt/d/AIWorkSpace/pigs/evaluation/run_bfcl_multiturn.py --background
 - `multi_turn_miss_param`
 - `multi_turn_long_context`
 
-共 800 题。`bfcl_official_adapter.py` 只负责把任意 OpenAI-compatible 模型临时注册到官方 handler；不修改 BFCL 的 agent loop、工具环境或 scorer。
+共 800 题。`bfcl_official_adapter.py` 只负责把任意 OpenAI-compatible 模型临时注册到官方 handler，并设置评测侧请求参数；不修改 BFCL 的 agent loop、工具环境或 scorer。BFCL 单请求 timeout 默认 1800 秒，可用 `--request-timeout SECONDS` 调整，并会写入 run manifest。
 
 ### SWE-bench Lite
 
