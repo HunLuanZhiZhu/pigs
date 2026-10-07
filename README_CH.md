@@ -4,7 +4,7 @@
 
 **以协议兼容的 Rust 前置代理，实现自适应 LLM 编排。**
 
-[English](./README.md) · [架构说明](./index.html) · [MIT License](./LICENSE)
+[English](./README.md) · [架构说明](./index.html) · [正式评测](./evaluation/README_CH.md) · [MIT License](./LICENSE)
 
 ![Rust 2021](https://img.shields.io/badge/Rust-2021-000000?logo=rust&logoColor=white)
 ![Version](https://img.shields.io/badge/version-0.1.0-4f46e5)
@@ -64,10 +64,10 @@ model-x-pigs  → PIGS 编排 → 上游实际收到的仍是 model-x
                           │
                           ▼
                          Post
-                    ┌─────┴─────┐
-                  PIGEND      PIGFAIL
-                    │             │
-                  完成           重规划
+                ┌──────┼──────┐
+              PIGEND PIGNEXT PIGFAIL
+                │       │       │
+              完成     修补     重规划
 ```
 
 ### 1. Pre —— 理解任务并选择路径
@@ -102,11 +102,12 @@ Executor 接收 Pre 的分析并完成任务本身。
 
 Post 直接继承 Executor 已形成的完整协议上下文，对执行结果进行独立核验。
 
-- `PIGEND` → 任务完成；
-- `PIGFAIL` → 回到 Pre 重新规划；
-- 没有控制标记 → 在预算内继续 Post。
+- `PIGEND` → 接受当前结果；也包括任务已经无法可靠继续改进、且当前结果如实反映这一终止状态的情况；
+- `PIGNEXT` → 当前执行路径仍可修补；Post 给出简短核验反馈，系统砍回最近一次 Executor checkpoint 再运行下一次 Executor；
+- `PIGFAIL` → 当前执行路径存在根本性错误，回到 Pre 重新规划；
+- 没有控制标记 → 视为核验器协议未完成，在独立的 Post 协议重试预算内重试。
 
-与 Pre 不同，Post 可以合法地只输出 `PIGEND` 或只输出 `PIGFAIL`，因为真正的任务结果已经存在于 Executor 上下文中。
+Post 只负责核验和路由。它可以使用工具验证事实或实际状态，但不会自行继续执行、修改结果或重写答案。
 
 ### Token 上限截断
 

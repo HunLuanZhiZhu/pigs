@@ -4,7 +4,7 @@
 
 **Adaptive LLM orchestration, delivered as a protocol-compatible Rust proxy.**
 
-[简体中文](./README_CH.md) · [Architecture Docs](./index.html) · [MIT License](./LICENSE)
+[简体中文](./README_CH.md) · [Architecture Docs](./index.html) · [Evaluation](./evaluation/README.md) · [MIT License](./LICENSE)
 
 ![Rust 2021](https://img.shields.io/badge/Rust-2021-000000?logo=rust&logoColor=white)
 ![Version](https://img.shields.io/badge/version-0.1.0-4f46e5)
@@ -64,10 +64,10 @@ Client ───────► PIGS ──────────────�
                            │
                            ▼
                           Post
-                     ┌─────┴─────┐
-                   PIGEND      PIGFAIL
-                     │             │
-                  complete       re-plan
+                 ┌──────┼──────┐
+               PIGEND PIGNEXT PIGFAIL
+                 │       │       │
+              complete repair  re-plan
 ```
 
 ### 1. Pre — understand and route
@@ -102,11 +102,12 @@ It can span multiple tool round-trips. PIGS itself does **not** execute client t
 
 Post inherits the complete Executor protocol context and independently checks whether the task is complete.
 
-- `PIGEND` → complete;
-- `PIGFAIL` → return to Pre for replanning;
-- no control marker → continue Post within the iteration budget.
+- `PIGEND` → accept the current result, including a truthful terminal state that cannot be reliably improved further;
+- `PIGNEXT` → the current path is repairable; return concise verifier feedback and run another Executor from the last Executor checkpoint;
+- `PIGFAIL` → the current execution path is fundamentally wrong; return to Pre for replanning;
+- no control marker → retry Post as verifier-protocol incompletion within the separate Post retry budget.
 
-Unlike Pre, Post may legally return only `PIGEND` or only `PIGFAIL`, because the task result already exists in the inherited Executor context.
+Post is verification/routing only. It may use tools to verify facts or state, but it does not continue execution, modify the result, or rewrite the answer itself.
 
 ### Token-limit truncation
 
