@@ -17,14 +17,20 @@ DEFAULT_BASE_URL = 'http://127.0.0.1:3927'
 DEFAULT_API_KEY = 'local-eval-placeholder'
 DEFAULT_MODELS = ['mimo-v2.6-flash', 'deepseek-v4.1-flash']
 DEFAULT_THINKING_EFFORT = 'low'
-ARMS = ['base', 'pigs']
+ARMS = ['base', 'pigs', 'pigsb']
 
 @dataclass(frozen=True)
 class ModelSpec:
     label: str
     base_model: str
     def wire(self, arm: str) -> str:
-        return self.base_model if arm == 'base' else f'{self.base_model}-pigs'
+        if arm == 'base':
+            return self.base_model
+        if arm == 'pigs':
+            return f'{self.base_model}-pigs'
+        if arm == 'pigsb':
+            return f'{self.base_model}-pigsb'
+        raise ValueError(f'unsupported arm: {arm}')
 
 @dataclass
 class Job:

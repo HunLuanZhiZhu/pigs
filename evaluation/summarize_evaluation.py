@@ -728,7 +728,7 @@ def summarize_run(run_root: Path, pigs_log_dir: Path | None = None, write_files:
         row["official_metrics"] = metrics
         row["headline_metric"] = headline_metric(dataset, metrics)
 
-        if row["arm"] == "pigs":
+        if row["arm"] in {"pigs", "pigsb"}:
             local = job_dir / "pigs-http"
             selected = local if any(local.glob("*.txt")) else global_log_dir
             row["orchestration_log_dir"] = str(selected)
