@@ -30,12 +30,10 @@ pub const SESSION_HEADER: &str = "x-opencode-session";
 /// 回环内部令牌头（proxy 验证后跳过 -pigs 分流，防递归）。
 pub const LOOPBACK_TOKEN_HEADER: &str = "x-pigs-loopback";
 
-/// 编排次数常量（刻意不进配置——它们是编排语义的一部分）。
-/// - `MAX_EXECUTOR_RUNS`：一轮任务最多允许多少次高层 Executor 执行；工具暂停/恢复不重复计数。
-///   达到上限的那次 Executor 完成后直接结束，不再进入 Post。
-/// - `MAX_POST_PROTOCOL_RETRIES`：Post 没有给控制标记时的协议重试上限；它不属于任务执行次数。
-const MAX_EXECUTOR_RUNS: u32 = 4;
-const MAX_POST_PROTOCOL_RETRIES: u32 = 3;
+/// 默认编排次数；部署配置可以覆盖。
+/// 工具暂停/恢复不重复计入 Executor 执行次数。
+pub const DEFAULT_MAX_EXECUTOR_RUNS: u32 = 4;
+pub const DEFAULT_MAX_POST_PROTOCOL_RETRIES: u32 = 3;
 
 /// 单只 pig（一个相位）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -190,13 +188,32 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// 编排器。无状态，可全局共享。
-#[derive(Debug, Clone, Default)]
-pub struct Orchestrator;
+/// 编排器。只持有本轮控制次数配置，可全局共享。
+#[derive(Debug, Clone)]
+pub struct Orchestrator {
+    max_executor_runs: u32,
+    max_post_protocol_retries: u32,
+}
+
+impl Default for Orchestrator {
+    fn default() -> Self {
+        Self {
+            max_executor_runs: DEFAULT_MAX_EXECUTOR_RUNS,
+            max_post_protocol_retries: DEFAULT_MAX_POST_PROTOCOL_RETRIES,
+        }
+    }
+}
 
 impl Orchestrator {
     pub fn new() -> Self {
-        Self
+        Self::default()
+    }
+
+    pub fn with_limits(max_executor_runs: u32, max_post_protocol_retries: u32) -> Self {
+        Self {
+            max_executor_runs,
+            max_post_protocol_retries,
+        }
     }
 
     /// 开一轮新编排（客户端的第一发请求）。
@@ -207,7 +224,7 @@ impl Orchestrator {
             .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
         let lang = lang::detect_lang(&proto::extract_last_user_text(&input.body, input.protocol));
         let state = TurnState::new_with_mode(lang, session, input.body.clone(), input.mode);
-        Self::drive(input, rt, state).await
+        self.drive(input, rt, state).await
     }
 
     /// 接着被工具调用打断的那只 pig 继续（客户端带工具结果回来了）。
@@ -230,7 +247,7 @@ impl Orchestrator {
         let resume_items =
             proto::continuation_resume_items(input.protocol, &input.body, &continuation.pending);
         continuation.state.phase_transcript.extend(resume_items);
-        Self::drive(input, rt, continuation.state).await
+        self.drive(input, rt, continuation.state).await
     }
 
     /// 为新进入的 pig 构造一次基础请求。阶段提示在这里注入，之后整个 pig 都复用它。
@@ -306,7 +323,7 @@ impl Orchestrator {
     }
 
     /// 状态机主循环：每轮发一次子请求，按"有没有工具调用"决定暂停还是推进相位。
-    async fn drive(input: TurnInput, rt: Runtime, mut state: TurnState) -> Result<Outcome> {
+    async fn drive(&self, input: TurnInput, rt: Runtime, mut state: TurnState) -> Result<Outcome> {
         let ctx = Ctx {
             input,
             transport: Arc::clone(&rt.transport),
@@ -419,7 +436,7 @@ impl Orchestrator {
 
                     // 所有执行预算统一按 Executor 高层执行次数计算。最后一次允许的 Executor
                     // 完成后直接结束；此时再做 Post 已没有任何后续执行机会，因此没有意义。
-                    if state.executor_runs >= MAX_EXECUTOR_RUNS {
+                    if state.executor_runs >= self.max_executor_runs {
                         state.commit_candidate();
                         return Ok(Outcome::Completed(
                             state.complete(EndedWith::ExecutorLimit),
@@ -475,9 +492,10 @@ impl Orchestrator {
                     }
                     // 无控制标记 → 视为核验器协议未完成，留在 Post 重试；不让 Post 自行执行任务
                     None => {
-                        if state.post_protocol_retries >= MAX_POST_PROTOCOL_RETRIES {
+                        if state.post_protocol_retries >= self.max_post_protocol_retries {
                             return Err(Error::Budget(format!(
-                                "Post 无标记协议重试次数超过 {MAX_POST_PROTOCOL_RETRIES} 次"
+                                "Post 无标记协议重试次数超过 {} 次",
+                                self.max_post_protocol_retries
                             )));
                         }
                         state.post_protocol_retries += 1;

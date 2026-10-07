@@ -228,11 +228,16 @@ async fn orchestrate(
         self_url: state.self_url.as_str().to_string(),
         token: state.loopback_token.as_str().to_string(),
     });
+    let orchestrator = orch::Orchestrator::with_limits(
+        state.config.orchestration.max_executor_runs,
+        state.config.orchestration.max_post_protocol_retries,
+    );
 
     if client_wants_stream {
         return orchestrate_streaming(
             transport,
             store,
+            orchestrator,
             input,
             continuation,
             protocol,
@@ -246,7 +251,6 @@ async fn orchestrate(
         store,
         progress: None,
     };
-    let orchestrator = orch::Orchestrator::new();
     let outcome = match continuation {
         Some(continuation) => orchestrator.resume(input, rt, continuation).await,
         None => orchestrator.run(input, rt).await,
@@ -288,6 +292,7 @@ async fn orchestrate(
 fn orchestrate_streaming(
     transport: Arc<dyn orch::transport::Transport>,
     store: Arc<Mutex<orch::state::ContinuationStore>>,
+    orchestrator: orch::Orchestrator,
     input: orch::TurnInput,
     continuation: Option<orch::state::Continuation>,
     protocol: pigs_protocol::Protocol,
@@ -338,7 +343,6 @@ fn orchestrate_streaming(
             store,
             progress: Some(progress),
         };
-        let orchestrator = orch::Orchestrator::new();
         let outcome = match continuation {
             Some(continuation) => orchestrator.resume(input, rt, continuation).await,
             None => orchestrator.run(input, rt).await,

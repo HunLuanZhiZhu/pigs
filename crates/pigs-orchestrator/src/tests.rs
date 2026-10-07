@@ -944,7 +944,7 @@ async fn mode_a_last_executor_skips_post_at_execution_limit() {
         FakeTransport::text(200, "计划"),
         FakeTransport::text(200, "草稿1"),
     ];
-    for i in 1..MAX_EXECUTOR_RUNS {
+    for i in 1..DEFAULT_MAX_EXECUTOR_RUNS {
         responses.push(FakeTransport::text(200, &format!("还要修{i}\nPIGNEXT")));
         responses.push(FakeTransport::text(200, &format!("草稿{}", i + 1)));
     }
@@ -957,10 +957,12 @@ async fn mode_a_last_executor_skips_post_at_execution_limit() {
             .unwrap(),
     );
     assert_eq!(result.ended_with, EndedWith::ExecutorLimit);
-    assert!(result.text.contains(&format!("草稿{MAX_EXECUTOR_RUNS}")));
+    assert!(result
+        .text
+        .contains(&format!("草稿{DEFAULT_MAX_EXECUTOR_RUNS}")));
     assert_eq!(
         transport.requests.lock().unwrap().len(),
-        (MAX_EXECUTOR_RUNS as usize) * 2,
+        (DEFAULT_MAX_EXECUTOR_RUNS as usize) * 2,
         "最后一次 Executor 后不应再发送 Post"
     );
 }
@@ -971,7 +973,7 @@ async fn mode_b_last_executor_skips_post_at_execution_limit() {
         FakeTransport::text(200, "计划"),
         FakeTransport::text(200, "草稿1"),
     ];
-    for i in 1..MAX_EXECUTOR_RUNS {
+    for i in 1..DEFAULT_MAX_EXECUTOR_RUNS {
         responses.push(FakeTransport::text(200, &format!("还要修{i}\nPIGNEXT")));
         responses.push(FakeTransport::text(200, &format!("草稿{}", i + 1)));
     }
@@ -984,13 +986,53 @@ async fn mode_b_last_executor_skips_post_at_execution_limit() {
             .unwrap(),
     );
     assert_eq!(result.ended_with, EndedWith::ExecutorLimit);
-    assert_eq!(result.text, format!("草稿{MAX_EXECUTOR_RUNS}"));
+    assert_eq!(
+        result.text,
+        format!("草稿{DEFAULT_MAX_EXECUTOR_RUNS}")
+    );
     assert!(!result.text.contains("还要修"));
     assert_eq!(
         transport.requests.lock().unwrap().len(),
-        (MAX_EXECUTOR_RUNS as usize) * 2,
+        (DEFAULT_MAX_EXECUTOR_RUNS as usize) * 2,
         "模式 B 同样必须在最后一次 Executor 后直接结束"
     );
+}
+
+#[tokio::test]
+async fn custom_executor_run_limit_is_honored() {
+    let transport = fake(vec![
+        FakeTransport::text(200, "计划"),
+        FakeTransport::text(200, "草稿1"),
+        FakeTransport::text(200, "继续修\nPIGNEXT"),
+        FakeTransport::text(200, "草稿2"),
+    ]);
+    let (rt, _store) = runtime(transport.clone());
+    let result = completed(
+        Orchestrator::with_limits(2, DEFAULT_MAX_POST_PROTOCOL_RETRIES)
+            .run(input_mode(proto::Protocol::OpenAI, proto::PigsMode::B), rt)
+            .await
+            .unwrap(),
+    );
+    assert_eq!(result.ended_with, EndedWith::ExecutorLimit);
+    assert_eq!(result.text, "草稿2");
+    assert_eq!(transport.requests.lock().unwrap().len(), 4);
+}
+
+#[tokio::test]
+async fn custom_post_protocol_retry_limit_is_honored() {
+    let transport = fake(vec![
+        FakeTransport::text(200, "计划"),
+        FakeTransport::text(200, "草稿"),
+        FakeTransport::text(200, "没有控制标记"),
+        FakeTransport::text(200, "还是没有控制标记"),
+    ]);
+    let (rt, _store) = runtime(transport.clone());
+    let err = Orchestrator::with_limits(DEFAULT_MAX_EXECUTOR_RUNS, 1)
+        .run(input(proto::Protocol::OpenAI), rt)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::Budget(m) if m.contains("超过 1 次")));
+    assert_eq!(transport.requests.lock().unwrap().len(), 4);
 }
 
 #[tokio::test]
@@ -1035,7 +1077,7 @@ async fn post_without_marker_retries_post_until_budget() {
     assert!(matches!(err, Error::Budget(m) if m.contains("Post 无标记协议重试")));
     assert_eq!(
         transport.requests.lock().unwrap().len(),
-        MAX_POST_PROTOCOL_RETRIES as usize + 3
+        DEFAULT_MAX_POST_PROTOCOL_RETRIES as usize + 3
     );
 }
 

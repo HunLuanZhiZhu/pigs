@@ -17,7 +17,7 @@ use axum::serve as axum_serve;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 
-pub use config::{Config, LogDetail, LoggingConfig, Upstreams};
+pub use config::{Config, LogDetail, LoggingConfig, OrchestrationConfig, Upstreams};
 
 /// 启动服务（阻塞直到进程退出）。
 pub async fn serve(config: Config) -> anyhow::Result<()> {
@@ -48,6 +48,8 @@ fn build(config: Config, addr: std::net::SocketAddr) -> axum::Router {
         openai = %config.upstream.openai,
         responses = %config.upstream.responses,
         anthropic = %config.upstream.anthropic,
+        max_executor_runs = config.orchestration.max_executor_runs,
+        max_post_protocol_retries = config.orchestration.max_post_protocol_retries,
         "pigs 已启动"
     );
     println!("═══════════════════════════════════════════");
@@ -57,6 +59,10 @@ fn build(config: Config, addr: std::net::SocketAddr) -> axum::Router {
         config.upstream.openai, config.upstream.responses, config.upstream.anthropic
     );
     println!("  -pigs(A) / -pigsb(B) 编排：Pre → Executor → Post");
+    println!(
+        "  编排次数：Executor 最多 {} 次；Post 无标记协议重试最多 {} 次",
+        config.orchestration.max_executor_runs, config.orchestration.max_post_protocol_retries
+    );
     println!(
         "  HTTP 诊断日志：{:?} → {}",
         config.logging.detail, config.logging.directory

@@ -19,13 +19,13 @@ code{background:#eef1f6;border-radius:4px;padding:1px 6px;font-family:Consolas,m
 <tr><th>相位</th><th>模型输出</th><th>下一步</th></tr>
 <tr><td>Pre</td><td>实质正文后的末尾 <code>PIGEND</code></td><td>简单路径完成，不进入 Executor/Post；只有控制标记而没有正文仍无效。</td></tr>
 <tr><td>Pre</td><td><code>PIGFAIL</code> / <code>PIGNEXT</code> / 无控制标记</td><td>都作为复杂计划保存为 <code>pre_output</code> 并进入 Executor；Pre 不维护独立的重规划次数。</td></tr>
-<tr><td>Executor</td><td>任意正常输出</td><td>不按 PIG 标记路由；统一增加一次 <code>executor_runs</code>。若这是第 4 次 Executor，则直接完成，不再进入 Post；否则物化 Executor checkpoint 并进入 Post。</td></tr>
+<tr><td>Executor</td><td>任意正常输出</td><td>不按 PIG 标记路由；统一增加一次 <code>executor_runs</code>。若已达到配置的 Executor 执行上限，则直接完成，不再进入 Post；否则物化 Executor checkpoint 并进入 Post。默认上限为 4。</td></tr>
 <tr><td>Post</td><td><code>PIGEND</code>（可单独一行）</td><td>接受当前 Executor 结果并正常完成。</td></tr>
 <tr><td>Post</td><td><code>PIGNEXT</code></td><td>当前结果可修补：砍回最近一次 Executor 完成时的 checkpoint，丢弃 Post 指令与 Post transcript，再用原 Executor 指令模板把 Post 反馈作为新的执行前分析交给下一次 Executor；不单独统计修补次数。</td></tr>
 <tr><td>Post</td><td><code>PIGFAIL</code></td><td>记录根本问题并回 Pre，为下一次 Executor 重规划；不表示回滚外部状态，也不单独统计重规划次数。</td></tr>
-<tr><td>Post</td><td>无控制标记</td><td>视为核验协议未完成，继续在同一 Post 对话现场做协议重试；最多 3 次。这个计数不属于任务执行次数。</td></tr>
+<tr><td>Post</td><td>无控制标记</td><td>视为核验协议未完成，继续在同一 Post 对话现场做协议重试；上限由 <code>[orchestration].max_post_protocol_retries</code> 配置，默认 3。这个计数不属于任务执行次数。</td></tr>
 </table>
-<p>Pre 使用严格标记检测，Post 使用只看最后非空行的终止标记检测。Post 只负责核验和路由，不自行执行修补。任务执行预算统一按 Executor 高层执行次数统计，当前上限为 4；同一 Executor 内部的工具暂停/恢复不重复计数。第 4 次 Executor 完成后直接结束，因此不会再发送一个没有后续执行价值的 Post。<code>PIGNEXT</code> 与 <code>PIGFAIL→Pre→Executor</code> 都只会推动下一次 Executor，不维护各自的次数预算。任何相位若 <code>stop_reason</code> 明确表示 token 上限截断（<code>length</code> / <code>max_tokens</code> / <code>max_output_tokens</code>），会返回 <code>Error::OutputTruncated</code>。Post 无控制标记的协议重试若超限仍返回 <code>Error::Budget</code>；非流式 proxy 会把真正的预算错误映射为 HTTP 422，其它编排错误通常为 502。</p>
+<p>Pre 使用严格标记检测，Post 使用只看最后非空行的终止标记检测。Post 只负责核验和路由，不自行执行修补。任务执行预算统一按 Executor 高层执行次数统计，上限由 <code>[orchestration].max_executor_runs</code> 配置，默认 4；同一 Executor 内部的工具暂停/恢复不重复计数。最后一次允许的 Executor 完成后直接结束，因此不会再发送一个没有后续执行价值的 Post。<code>PIGNEXT</code> 与 <code>PIGFAIL→Pre→Executor</code> 都只会推动下一次 Executor，不维护各自的次数预算。任何相位若 <code>stop_reason</code> 明确表示 token 上限截断（<code>length</code> / <code>max_tokens</code> / <code>max_output_tokens</code>），会返回 <code>Error::OutputTruncated</code>。Post 无控制标记的协议重试若超限仍返回 <code>Error::Budget</code>；非流式 proxy 会把真正的预算错误映射为 HTTP 422，其它编排错误通常为 502。</p>
 </div>
 
 <h2>子请求如何组装</h2>

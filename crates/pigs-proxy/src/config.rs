@@ -15,6 +15,9 @@ pub struct Config {
     /// HTTP 诊断日志。内部测试阶段默认 max。
     #[serde(default)]
     pub logging: LoggingConfig,
+    /// PIGS 编排次数控制。
+    #[serde(default)]
+    pub orchestration: OrchestrationConfig,
     /// 三个协议各一个上游地址：base + 客户端原样路径 = 上游 URL。
     pub upstream: Upstreams,
 }
@@ -69,6 +72,33 @@ fn default_http_log_dir() -> String {
     "logs/http".into()
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OrchestrationConfig {
+    /// 一轮任务最多允许多少次高层 Executor 执行；工具暂停/恢复不重复计数。
+    #[serde(default = "default_max_executor_runs")]
+    pub max_executor_runs: u32,
+    /// Post 没有输出控制标记时，最多额外重试多少次协议响应。
+    #[serde(default = "default_max_post_protocol_retries")]
+    pub max_post_protocol_retries: u32,
+}
+
+impl Default for OrchestrationConfig {
+    fn default() -> Self {
+        Self {
+            max_executor_runs: default_max_executor_runs(),
+            max_post_protocol_retries: default_max_post_protocol_retries(),
+        }
+    }
+}
+
+fn default_max_executor_runs() -> u32 {
+    pigs_orchestrator::DEFAULT_MAX_EXECUTOR_RUNS
+}
+
+fn default_max_post_protocol_retries() -> u32 {
+    pigs_orchestrator::DEFAULT_MAX_POST_PROTOCOL_RETRIES
+}
+
 /// 三协议各自的上游前缀。
 ///
 /// 路径约定：chat `/chat/completions`、responses `/responses` 不带版本段
@@ -99,7 +129,16 @@ impl Config {
     /// 从当前目录的 config.toml 加载。
     pub fn load(path: &str) -> anyhow::Result<Self> {
         let raw = std::fs::read_to_string(path)?;
-        Ok(toml::from_str(&raw)?)
+        let config: Self = toml::from_str(&raw)?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    fn validate(&self) -> anyhow::Result<()> {
+        if self.orchestration.max_executor_runs == 0 {
+            anyhow::bail!("orchestration.max_executor_runs 必须大于 0");
+        }
+        Ok(())
     }
 
     /// 默认配置（首次运行生成用）。
@@ -127,6 +166,34 @@ anthropic = "http://c"
         .unwrap();
         assert_eq!(config.logging.detail, LogDetail::Max);
         assert_eq!(config.logging.directory, "logs/http");
+        assert_eq!(
+            config.orchestration,
+            OrchestrationConfig {
+                max_executor_runs: pigs_orchestrator::DEFAULT_MAX_EXECUTOR_RUNS,
+                max_post_protocol_retries:
+                    pigs_orchestrator::DEFAULT_MAX_POST_PROTOCOL_RETRIES,
+            }
+        );
+    }
+
+    #[test]
+    fn orchestration_values_are_configurable() {
+        let config: Config = toml::from_str(
+            r#"
+listen = "127.0.0.1:3927"
+key = ""
+[orchestration]
+max_executor_runs = 6
+max_post_protocol_retries = 1
+[upstream]
+openai = "http://a"
+responses = "http://b"
+anthropic = "http://c"
+"#,
+        )
+        .unwrap();
+        assert_eq!(config.orchestration.max_executor_runs, 6);
+        assert_eq!(config.orchestration.max_post_protocol_retries, 1);
     }
 
     #[test]

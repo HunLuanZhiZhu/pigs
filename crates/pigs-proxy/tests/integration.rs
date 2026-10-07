@@ -186,6 +186,7 @@ async fn spawn_pigs(upstream_url: &str) -> (tokio::task::JoinHandle<()>, String)
             detail: pigs_proxy::LogDetail::Off,
             ..Default::default()
         },
+        orchestration: pigs_proxy::OrchestrationConfig::default(),
         upstream: Upstreams::same(upstream_url),
     };
     let listener = pigs_proxy::bind_listener(&config.listen).await.unwrap();
@@ -702,6 +703,7 @@ async fn max_http_diagnostics_write_separate_plaintext_exchange_files() {
             detail: pigs_proxy::LogDetail::Max,
             directory: dir.to_string_lossy().into_owned(),
         },
+        orchestration: pigs_proxy::OrchestrationConfig::default(),
         upstream: Upstreams::same(&upstream_url),
     };
     let listener = pigs_proxy::bind_listener(&config.listen).await.unwrap();
@@ -773,6 +775,7 @@ async fn diagnostics_explain_pending_turn_started_new_round() {
             detail: pigs_proxy::LogDetail::Max,
             directory: dir.to_string_lossy().into_owned(),
         },
+        orchestration: pigs_proxy::OrchestrationConfig::default(),
         upstream: Upstreams::same(&upstream_url),
     };
     let listener = pigs_proxy::bind_listener(&config.listen).await.unwrap();
@@ -1296,6 +1299,7 @@ async fn spawn_pigs_with_bases(upstream_url: &str) -> (tokio::task::JoinHandle<(
             detail: pigs_proxy::LogDetail::Off,
             ..Default::default()
         },
+        orchestration: pigs_proxy::OrchestrationConfig::default(),
         upstream: Upstreams {
             openai: format!("{upstream_url}/oa"),
             responses: format!("{upstream_url}/rs"),
