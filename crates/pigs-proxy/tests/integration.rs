@@ -977,6 +977,122 @@ PIGEND"));
     assert!(sent.get("tools").is_some(), "tools 全程都在");
 }
 
+/// 回归：resume 已匹配到 continuation 后若编排失败，旧现场必须 rollback 保留；
+/// 客户端重发同一批 tool result 应能再次恢复，而不是永久 409。
+#[tokio::test]
+async fn failed_resume_rolls_back_continuation_for_retry() {
+    let (_up, upstream_url, fu) = spawn_fake_upstream().await;
+    {
+        let mut q = fu.responses.lock().unwrap();
+        q.push(openai_text_response("计划"));
+        q.push(openai_tool_call_response("call_retry"));
+        // 第一次 resume 的 Executor 收到非法 JSON，触发编排 502。
+        q.push(("application/json", Bytes::from_static(b"not-json")));
+        // 第二次发送相同 tool result 时，应从同一 continuation 再次恢复并完成。
+        q.push(openai_text_response("恢复后执行完成"));
+        q.push(openai_text_response("PIGEND"));
+    }
+    let (_pigs, pigs_url) = spawn_pigs(&upstream_url).await;
+    let client = reqwest::Client::new();
+
+    let first = client
+        .post(format!("{pigs_url}/chat/completions"))
+        .json(&openai_body("gpt-x-pigs", false))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(first.status(), 200);
+    let first_body: Value = first.json().await.unwrap();
+    assert_eq!(
+        first_body["choices"][0]["message"]["tool_calls"][0]["id"],
+        "call_retry"
+    );
+
+    let mut resume = openai_body("gpt-x-pigs", false);
+    append_openai_tool_result(&mut resume, "call_retry");
+
+    let failed = client
+        .post(format!("{pigs_url}/chat/completions"))
+        .json(&resume)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(failed.status(), 502, "第一次 resume 应暴露编排失败");
+
+    let retried = client
+        .post(format!("{pigs_url}/chat/completions"))
+        .json(&resume)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        retried.status(),
+        200,
+        "相同 tool result 重试必须重新命中 rollback 后的 continuation，而不是 409"
+    );
+    let body: Value = retried.json().await.unwrap();
+    assert!(body["choices"][0]["message"]["content"]
+        .as_str()
+        .unwrap()
+        .contains("恢复后执行完成"));
+}
+
+/// 流式回归：resume 的后台状态机失败后也必须 rollback claim；
+/// 下一次相同 tool result 不能因为旧 continuation 被提前消费而 409。
+#[tokio::test]
+async fn streaming_failed_resume_rolls_back_continuation_for_retry() {
+    let (_up, upstream_url, fu) = spawn_fake_upstream().await;
+    {
+        let mut q = fu.responses.lock().unwrap();
+        q.push(openai_sse_response("计划"));
+        q.push(openai_tool_call_response("call_stream_retry"));
+        q.push(("application/json", Bytes::from_static(b"not-json")));
+        q.push(openai_sse_response("恢复后执行完成"));
+        q.push(openai_sse_response("PIGEND"));
+    }
+    let (_pigs, pigs_url) = spawn_pigs(&upstream_url).await;
+    let client = reqwest::Client::new();
+
+    let first = client
+        .post(format!("{pigs_url}/chat/completions"))
+        .json(&openai_body("gpt-x-pigs", true))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(first.status(), 200);
+    let first_sse = first.text().await.unwrap();
+    assert!(first_sse.contains("call_stream_retry"));
+
+    let mut resume = openai_body("gpt-x-pigs", true);
+    append_openai_tool_result(&mut resume, "call_stream_retry");
+
+    let failed = client
+        .post(format!("{pigs_url}/chat/completions"))
+        .json(&resume)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(failed.status(), 200, "流式响应已启动，只能在 SSE 内报告后续错误");
+    let failed_sse = failed.text().await.unwrap();
+    assert!(failed_sse.contains("编排失败"));
+
+    let retried = client
+        .post(format!("{pigs_url}/chat/completions"))
+        .json(&resume)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(retried.status(), 200);
+    let retried_sse = retried.text().await.unwrap();
+    let retried_text =
+        pigs_protocol::extract_sse_text(pigs_protocol::Protocol::OpenAI, &retried_sse).unwrap();
+    assert!(
+        retried_text.contains("恢复后执行完成"),
+        "流式 retry 应重新命中 rollback 后的 continuation；实际文本={retried_text:?}"
+    );
+    assert!(retried_sse.contains("data: [DONE]"));
+}
+
 /// 流式多轮工具回归：每次暂停只发本轮新调用；最终完成后不得重放任何历史调用。
 #[tokio::test]
 async fn streaming_tool_rounds_do_not_replay_consumed_calls() {

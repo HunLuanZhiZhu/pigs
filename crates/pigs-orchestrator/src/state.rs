@@ -7,6 +7,7 @@ use crate::lang::Lang;
 use crate::Pig;
 use pigs_protocol::{Part, PigsMode};
 use serde_json::Value;
+use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 /// 一轮编排的现场（跨暂停保留）。
@@ -243,6 +244,18 @@ pub struct ContinuationSummary {
     pub phase: Pig,
     pub pending: Vec<String>,
     pub age_ms: u128,
+    pub in_flight: bool,
+}
+
+/// continuation claim 的匹配结果。
+#[derive(Debug, Clone)]
+pub enum ClaimMatch {
+    /// 已原子占用该 continuation；调用方必须在 resume 结束后 commit 或 rollback。
+    Claimed(Continuation),
+    /// 最新匹配现场已被另一个 resume 请求占用，不能并发恢复同一现场。
+    InFlight(String),
+    /// 没有任何匹配现场。
+    NoMatch,
 }
 
 /// 内存 continuation 存储：容量与 TTL 有界，按客户端请求中出现的工具结果 id 匹配；真实 proxy 恢复还限定 A/B 模式一致。
@@ -252,6 +265,8 @@ pub struct ContinuationSummary {
 #[derive(Debug)]
 pub struct ContinuationStore {
     entries: Vec<Continuation>,
+    /// 正在被某个 resume 请求占用、但尚未成功消费的 continuation id。
+    in_flight: HashSet<String>,
     max: usize,
     ttl: Duration,
     counter: u64,
@@ -267,6 +282,7 @@ impl ContinuationStore {
     pub fn new(max: usize, ttl: Duration) -> Self {
         Self {
             entries: Vec::new(),
+            in_flight: HashSet::new(),
             max: max.max(1),
             ttl,
             counter: 0,
@@ -281,41 +297,90 @@ impl ContinuationStore {
         continuation.id = id.clone();
         continuation.created = Instant::now();
         self.entries.push(continuation);
+        // 正在恢复中的现场绝不能因为另一个新 continuation 插入而被容量淘汰。
+        // 若所有旧现场都处于 in-flight，允许短暂超过 max；resume 收尾后会恢复到正常容量。
         while self.entries.len() > self.max {
-            self.entries.remove(0);
+            let Some(index) = self
+                .entries
+                .iter()
+                .position(|entry| !self.in_flight.contains(&entry.id))
+            else {
+                break;
+            };
+            self.entries.remove(index);
         }
         id
     }
 
-    /// 按请求中出现的工具结果 id 找并**取出**匹配的 continuation（取出即独占）。
-    pub fn take_match(&mut self, result_ids: &[String]) -> Option<Continuation> {
-        self.take_match_inner(result_ids, None)
+    /// 原子占用匹配的 continuation，但不删除。resume 成功后调用 [`commit_claim`]，
+    /// 失败则调用 [`rollback_claim`]，避免瞬时上游错误把现场永久销毁。
+    pub fn claim_match_for_mode(&mut self, result_ids: &[String], mode: PigsMode) -> ClaimMatch {
+        self.claim_match_inner(result_ids, Some(mode))
     }
 
-    /// 与 [`take_match`] 相同，但额外要求 A/B 模式一致，供 proxy 的真实恢复路径使用。
-    pub fn take_match_for_mode(
-        &mut self,
-        result_ids: &[String],
-        mode: PigsMode,
-    ) -> Option<Continuation> {
-        self.take_match_inner(result_ids, Some(mode))
-    }
-
-    fn take_match_inner(
-        &mut self,
-        result_ids: &[String],
-        mode: Option<PigsMode>,
-    ) -> Option<Continuation> {
+    fn claim_match_inner(&mut self, result_ids: &[String], mode: Option<PigsMode>) -> ClaimMatch {
         self.evict_expired();
-        let index = self.entries.iter().rposition(|entry| {
+        let Some(index) = self.entries.iter().rposition(|entry| {
             mode.map(|expected| entry.state.mode == expected).unwrap_or(true)
                 && !entry.pending.is_empty()
                 && entry
                     .pending
                     .iter()
                     .all(|id| result_ids.iter().any(|got| got == id))
-        })?;
-        Some(self.entries.remove(index))
+        }) else {
+            return ClaimMatch::NoMatch;
+        };
+
+        let id = self.entries[index].id.clone();
+        if self.in_flight.contains(&id) {
+            return ClaimMatch::InFlight(id);
+        }
+        self.in_flight.insert(id);
+        ClaimMatch::Claimed(self.entries[index].clone())
+    }
+
+    /// resume 成功：正式消费已 claim 的旧 continuation。
+    pub fn commit_claim(&mut self, id: &str) -> bool {
+        if !self.in_flight.remove(id) {
+            return false;
+        }
+        if let Some(index) = self.entries.iter().position(|entry| entry.id == id) {
+            self.entries.remove(index);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// resume 失败：仅解除占用，原 continuation 保留，允许相同工具结果再次恢复。
+    pub fn rollback_claim(&mut self, id: &str) -> bool {
+        self.in_flight.remove(id)
+    }
+
+    /// 测试/低层调用兼容接口：claim 后立即 commit，保持旧的 destructive-take 语义。
+    pub fn take_match(&mut self, result_ids: &[String]) -> Option<Continuation> {
+        match self.claim_match_inner(result_ids, None) {
+            ClaimMatch::Claimed(continuation) => {
+                self.commit_claim(&continuation.id);
+                Some(continuation)
+            }
+            ClaimMatch::InFlight(_) | ClaimMatch::NoMatch => None,
+        }
+    }
+
+    /// 测试/低层调用兼容接口；proxy 的真实恢复路径必须使用 claim/commit/rollback。
+    pub fn take_match_for_mode(
+        &mut self,
+        result_ids: &[String],
+        mode: PigsMode,
+    ) -> Option<Continuation> {
+        match self.claim_match_for_mode(result_ids, mode) {
+            ClaimMatch::Claimed(continuation) => {
+                self.commit_claim(&continuation.id);
+                Some(continuation)
+            }
+            ClaimMatch::InFlight(_) | ClaimMatch::NoMatch => None,
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -334,13 +399,18 @@ impl ContinuationStore {
                 phase: entry.state.phase,
                 pending: entry.pending.clone(),
                 age_ms: entry.created.elapsed().as_millis(),
+                in_flight: self.in_flight.contains(&entry.id),
             })
             .collect()
     }
 
     fn evict_expired(&mut self) {
         let ttl = self.ttl;
-        self.entries.retain(|entry| entry.created.elapsed() < ttl);
+        let in_flight = &self.in_flight;
+        self.entries
+            .retain(|entry| in_flight.contains(&entry.id) || entry.created.elapsed() < ttl);
+        let live_ids: HashSet<String> = self.entries.iter().map(|entry| entry.id.clone()).collect();
+        self.in_flight.retain(|id| live_ids.contains(id));
     }
 }
 
@@ -432,6 +502,68 @@ mod tests {
         assert!(store
             .take_match(&["call_1".into(), "call_2".into()])
             .is_none());
+    }
+
+    #[test]
+    fn claim_keeps_continuation_until_commit_and_rollback_restores_it() {
+        let mut store = ContinuationStore::new(4, Duration::from_secs(60));
+        let id = store.insert(Continuation {
+            id: String::new(),
+            pending: vec!["call_1".into()],
+            state: state(),
+            created: Instant::now(),
+        });
+
+        let claimed = match store.claim_match_for_mode(&["call_1".into()], PigsMode::A) {
+            ClaimMatch::Claimed(continuation) => continuation,
+            other => panic!("首次应 claim 成功，实际 {other:?}"),
+        };
+        assert_eq!(claimed.id, id);
+        assert_eq!(store.len(), 1, "claim 只占用，不得提前删除现场");
+        assert!(matches!(
+            store.claim_match_for_mode(&["call_1".into()], PigsMode::A),
+            ClaimMatch::InFlight(ref got) if got == &id
+        ));
+
+        assert!(store.rollback_claim(&id));
+        let claimed_again = match store.claim_match_for_mode(&["call_1".into()], PigsMode::A) {
+            ClaimMatch::Claimed(continuation) => continuation,
+            other => panic!("rollback 后应允许再次 claim，实际 {other:?}"),
+        };
+        assert_eq!(claimed_again.id, id);
+        assert!(store.commit_claim(&id));
+        assert_eq!(store.len(), 0, "只有成功 commit 才真正删除旧现场");
+        assert!(matches!(
+            store.claim_match_for_mode(&["call_1".into()], PigsMode::A),
+            ClaimMatch::NoMatch
+        ));
+    }
+
+    #[test]
+    fn claimed_continuation_is_not_evicted_by_capacity_pressure() {
+        let mut store = ContinuationStore::new(1, Duration::from_secs(60));
+        let claimed_id = store.insert(Continuation {
+            id: String::new(),
+            pending: vec!["call_1".into()],
+            state: state(),
+            created: Instant::now(),
+        });
+        assert!(matches!(
+            store.claim_match_for_mode(&["call_1".into()], PigsMode::A),
+            ClaimMatch::Claimed(_)
+        ));
+
+        store.insert(Continuation {
+            id: String::new(),
+            pending: vec!["call_2".into()],
+            state: state(),
+            created: Instant::now(),
+        });
+        assert!(matches!(
+            store.claim_match_for_mode(&["call_1".into()], PigsMode::A),
+            ClaimMatch::InFlight(ref got) if got == &claimed_id
+        ));
+        assert!(store.rollback_claim(&claimed_id));
     }
 
     #[test]

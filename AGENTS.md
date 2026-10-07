@@ -35,7 +35,9 @@ pigs 是一个 Rust 前置代理。普通请求走透传；只有同时满足以
 - 工具调用按三协议各自的原生形状交给客户端执行；ToolCall 只属于当前 Paused 响应，不进入持久 TurnState；
 - `ContinuationStore` 在进程内存保存现场，默认最多 64 条，TTL 30 分钟；
 - 客户端把工具结果接回历史后再次请求，pigs 会在整份请求中查找当前 pending continuation 所等待的工具结果 id；结果后即使还有 reminder / 普通 user 消息，也仍可恢复；
-- 若 id 与某个 continuation 的全部 pending 调用匹配，且 A/B 模式与当前请求一致，则取出该现场并继续同一只 pig；A/B 不会互相消费 continuation；
+- 若 id 与某个 continuation 的全部 pending 调用匹配，且 A/B 模式与当前请求一致，则先原子 claim 该现场并继续同一只 pig；A/B 不会互相消费 continuation；
+- claim 不会立即删除现场：resume 成功后才 commit 删除；resume 因上游/协议/超时等错误失败时 rollback，解除 in-flight 并保留原 continuation，使客户端重发同一批工具结果仍可恢复；
+- 同一 continuation 处于 in-flight 时不会被第二个并发恢复请求再次 claim，也不会被容量/TTL 清理；
 - 同一 pig 可以经历任意多轮“工具调用 → 客户端执行 → 工具结果回填”；每次暂停只返回本轮新产生的工具调用，不重放已经消费过的历史调用；
 - 工具调用被结果匹配并恢复后即视为已消费；最终 Completed 响应不得再次包含这些历史 ToolCall；
 - 有工具结果但找不到匹配现场时返回 HTTP 409，不重新跑整轮；
@@ -185,7 +187,7 @@ Post：
 - 流式响应会完整捕获实际经过 proxy 的 SSE；正常读到流末尾写 `capture_complete: true`，若连接/Body 在中途被丢弃则写 `false`；
 - gzip / deflate / brotli 响应在写日志时尽量解压成明文，不改变实际转发字节；
 - `authorization`、`x-api-key`、cookie、内部 loopback token 等敏感头会自动打码，query 中常见 key/token/secret/auth/password 参数也会打码；
-- `orchestration-decision` 会记录客户端会话、请求中全部工具结果 id、尾部连续工具结果 id、当时所有 pending continuation（id / phase / pending tool ids / age）、实际命中的工具结果以及最终路由判定；尾部集合只用于诊断，不再决定是否恢复；`orchestration-outcome` 会记录完成或暂停、continuation id 和本轮 tool call ids；
+- `orchestration-decision` 会记录客户端会话、请求中全部工具结果 id、尾部连续工具结果 id、当时所有 pending continuation（id / phase / pending tool ids / age / in_flight）、实际命中的工具结果以及最终路由判定；尾部集合只用于诊断，不再决定是否恢复；`orchestration-outcome` 会记录完成或暂停、continuation id 和本轮 tool call ids；
 - **请求/响应 body 不做语义脱敏**，因此 `max` 日志可能包含用户 prompt、工具结果和模型输出，只适合受控测试环境。
 
 crate 职责：

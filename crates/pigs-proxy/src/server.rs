@@ -161,43 +161,63 @@ async fn orchestrate(
             decision_fields.push(format!("pending_continuations: {}", summaries.len()));
             for summary in &summaries {
                 decision_fields.push(format!(
-                    "pending: id={} session={} mode={:?} phase={} tool_ids={:?} age_ms={}",
+                    "pending: id={} session={} mode={:?} phase={} tool_ids={:?} age_ms={} in_flight={}",
                     summary.id,
                     summary.session,
                     summary.mode,
                     summary.phase.as_str(),
                     summary.pending,
-                    summary.age_ms
+                    summary.age_ms,
+                    summary.in_flight
                 ));
             }
 
-            if let Some(continuation) = store.take_match_for_mode(&all_result_ids, mode) {
-                let matched = continuation.pending.clone();
-                decision_fields.push(format!("matched_tool_result_ids: {matched:?}"));
-                decision_fields.push(format!("decision: resume {}", continuation.id));
-                tracing::info!(
-                    model = %real_model,
-                    continuation = %continuation.id,
-                    results = matched.len(),
-                    "继续被工具调用暂停的相位"
-                );
-                Some(continuation)
-            } else if trailing_result_ids.is_empty() {
-                decision_fields.push("decision: start_new_no_matching_tool_results".into());
-                None
-            } else {
-                decision_fields.push("decision: conflict_no_matching_continuation".into());
-                exchange.write_event("orchestration-decision", &decision_fields);
-                tracing::warn!(
-                    model = %real_model,
-                    results = ?trailing_result_ids,
-                    "带工具结果，但没有匹配的编排现场"
-                );
-                return logged_error_response(
-                    &exchange,
-                    StatusCode::CONFLICT,
-                    "找不到与这批工具结果对应的编排现场（可能已过期或服务重启过），请重新发起该轮请求",
-                );
+            match store.claim_match_for_mode(&all_result_ids, mode) {
+                orch::state::ClaimMatch::Claimed(continuation) => {
+                    let matched = continuation.pending.clone();
+                    decision_fields.push(format!("matched_tool_result_ids: {matched:?}"));
+                    decision_fields.push(format!("decision: resume {}", continuation.id));
+                    tracing::info!(
+                        model = %real_model,
+                        continuation = %continuation.id,
+                        results = matched.len(),
+                        "继续被工具调用暂停的相位"
+                    );
+                    Some(continuation)
+                }
+                orch::state::ClaimMatch::InFlight(id) => {
+                    decision_fields.push(format!("decision: conflict_continuation_in_flight {id}"));
+                    exchange.write_event("orchestration-decision", &decision_fields);
+                    tracing::warn!(
+                        model = %real_model,
+                        continuation = %id,
+                        results = ?trailing_result_ids,
+                        "匹配的编排现场正在被另一个请求恢复"
+                    );
+                    return logged_error_response(
+                        &exchange,
+                        StatusCode::CONFLICT,
+                        "与这批工具结果匹配的编排现场正在恢复中，请稍后重试",
+                    );
+                }
+                orch::state::ClaimMatch::NoMatch if trailing_result_ids.is_empty() => {
+                    decision_fields.push("decision: start_new_no_matching_tool_results".into());
+                    None
+                }
+                orch::state::ClaimMatch::NoMatch => {
+                    decision_fields.push("decision: conflict_no_matching_continuation".into());
+                    exchange.write_event("orchestration-decision", &decision_fields);
+                    tracing::warn!(
+                        model = %real_model,
+                        results = ?trailing_result_ids,
+                        "带工具结果，但没有匹配的编排现场"
+                    );
+                    return logged_error_response(
+                        &exchange,
+                        StatusCode::CONFLICT,
+                        "找不到与这批工具结果对应的编排现场（可能已过期或服务重启过），请重新发起该轮请求",
+                    );
+                }
             }
         }
         Err(_) => {
@@ -211,6 +231,7 @@ async fn orchestrate(
         }
     };
     exchange.write_event("orchestration-decision", &decision_fields);
+    let continuation_claim_id = continuation.as_ref().map(|item| item.id.clone());
 
     tracing::info!(
         model = %real_model,
@@ -240,6 +261,7 @@ async fn orchestrate(
             orchestrator,
             input,
             continuation,
+            continuation_claim_id,
             protocol,
             client_model.to_string(),
             exchange,
@@ -258,6 +280,15 @@ async fn orchestrate(
 
     match outcome {
         Ok(outcome) => {
+            if let Some(id) = continuation_claim_id.as_deref() {
+                if let Ok(mut store) = state.store.lock() {
+                    if !store.commit_claim(id) {
+                        tracing::warn!(continuation = %id, "resume 成功，但 continuation claim 提交失败");
+                    }
+                } else {
+                    tracing::warn!(continuation = %id, "resume 成功，但 continuation 存储不可用，无法提交 claim");
+                }
+            }
             let content = final_content(client_model, &outcome);
             log_outcome(&outcome, &exchange);
             let body = pigs_protocol::synthesize_json(protocol, &content).to_string();
@@ -274,6 +305,15 @@ async fn orchestrate(
             resp
         }
         Err(e) => {
+            if let Some(id) = continuation_claim_id.as_deref() {
+                if let Ok(mut store) = state.store.lock() {
+                    if !store.rollback_claim(id) {
+                        tracing::warn!(continuation = %id, "resume 失败，但 continuation claim 回滚失败");
+                    }
+                } else {
+                    tracing::warn!(continuation = %id, "resume 失败，且 continuation 存储不可用，无法回滚 claim");
+                }
+            }
             tracing::warn!(error = %e, "编排失败");
             let status = if matches!(e, orch::Error::Budget(_)) {
                 StatusCode::UNPROCESSABLE_ENTITY
@@ -295,6 +335,7 @@ fn orchestrate_streaming(
     orchestrator: orch::Orchestrator,
     input: orch::TurnInput,
     continuation: Option<orch::state::Continuation>,
+    continuation_claim_id: Option<String>,
     protocol: pigs_protocol::Protocol,
     client_model: String,
     exchange: ExchangeLog,
@@ -338,6 +379,7 @@ fn orchestrate_streaming(
 
     let outcome_exchange = exchange.clone();
     tokio::spawn(async move {
+        let claim_store = Arc::clone(&store);
         let rt = orch::Runtime {
             transport,
             store,
@@ -347,6 +389,20 @@ fn orchestrate_streaming(
             Some(continuation) => orchestrator.resume(input, rt, continuation).await,
             None => orchestrator.run(input, rt).await,
         };
+        if let Some(id) = continuation_claim_id.as_deref() {
+            if let Ok(mut claim_store) = claim_store.lock() {
+                let finalized = if outcome.is_ok() {
+                    claim_store.commit_claim(id)
+                } else {
+                    claim_store.rollback_claim(id)
+                };
+                if !finalized {
+                    tracing::warn!(continuation = %id, success = outcome.is_ok(), "continuation claim 收尾失败");
+                }
+            } else {
+                tracing::warn!(continuation = %id, success = outcome.is_ok(), "continuation 存储不可用，claim 无法收尾");
+            }
+        }
         let frames = match encoder.lock() {
             Ok(mut encoder) => match &outcome {
                 Ok(outcome) => {
