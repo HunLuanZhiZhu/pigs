@@ -17,7 +17,7 @@ code{background:#eef1f6;border-radius:4px;padding:1px 6px;font-family:Consolas,m
 <li>启动时优先读取 <code>config.local.toml</code>；不存在时读取 <code>config.toml</code>；两者都不存在才把内嵌模板写成 <code>config.toml</code> 后继续启动。<code>config.local.toml</code> 用于本机私有配置并由 Git 忽略。</li>
 <li><code>--listen</code> 临时覆盖监听地址；<code>--base-url</code> 临时把三个协议 upstream 都设成同一地址；<code>--log-detail</code> / <code>--log-dir</code> 覆盖 HTTP 抓包配置。</li>
 <li>校验 <code>upstream.openai</code>、<code>upstream.responses</code>、<code>upstream.anthropic</code> 都非空。</li>
-<li>初始化控制台 + 按天滚动文件日志，然后启动 proxy。</li>
+<li>初始化控制台 + 按天滚动文件日志，然后启动 proxy；流式 Responses 的最终协议收尾由 proxy/协议层保证，终止对象会包含已提交正文。</li>
 </ol></div>
 
 <h2>命令行</h2>

@@ -293,7 +293,7 @@ python /mnt/d/AIWorkSpace/pigs/evaluation/summarize_evaluation.py \
 - fixed benchmark denominator（适用时）；
 - prediction / malformed / execution failure / final missing；
 - latency、TTFT、TPOT；
-- endpoint-reported input/output/reasoning/cache token；正式评测时 PIGS 必须使用 `[orchestration].usage_mode = "sum"`，使一次外层 PIGS API 请求返回其内部所有真实模型调用的逐字段总消耗；普通 coding agent 日常接入则使用默认 `max`；
+- endpoint-reported input/output/reasoning/cache token；正式评测时 PIGS 必须使用 `[orchestration].usage_mode = "sum"`，使一次外层 PIGS API 请求返回其内部所有真实模型调用的逐字段总消耗；普通 coding agent 日常接入则使用默认 `max`；OpenAI Responses 流式评测的终止 `response.completed.response.output` 必须包含已提交正文，当前 runtime 会在收尾时自动关闭仍打开的 message item，保证 EvalScope 能恢复最终答案；
 - PIGS Simple Path / Full Path / Pig 数 / replan / tool call；
 - Base ↔ PIGS task-level paired comparison；
 - fixes / breaks；

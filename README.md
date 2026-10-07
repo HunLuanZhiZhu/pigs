@@ -286,6 +286,7 @@ When the client sends `"stream": true`, PIGS uses the streaming orchestration pa
 - visible text passes through `MarkerFilter`, keeping `PIGEND` / `PIGFAIL` internal;
 - reasoning/thinking events are forwarded when the source protocol exposes them;
 - tool/native blocks that cannot be reconstructed incrementally may be emitted during finalization;
+- finalization closes any still-open protocol block before emitting the terminal event; for Responses this guarantees `response.completed.response.output` contains the committed text even if the last phase did not emit a separate end event;
 - after client SSE has started, later orchestration errors must be represented inside the stream because the HTTP status can no longer be changed.
 
 For non-streaming requests, PIGS reads a complete upstream JSON/SSE phase response and synthesizes the final client response after orchestration.

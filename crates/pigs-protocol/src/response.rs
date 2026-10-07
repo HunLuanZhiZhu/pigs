@@ -744,9 +744,13 @@ impl StreamEncoder {
 
     /// 发协议终止帧（成功的完整序列）。
     pub fn finish(&mut self) -> String {
-        let pending_thinking = self.end_thinking();
-        let frames = self.finish_frames();
-        format!("{pending_thinking}{frames}")
+        // finish() 是最终协议收尾点，不能依赖调用方一定先收到/发送 PigEvent::End。
+        // 尤其 Responses 的 response.completed 会从 self.output 构造最终 output；
+        // 若最后一个 message item 仍 open，客户端即使收过 text delta，终止响应也会是空 output。
+        let mut pending = self.end_thinking();
+        pending.push_str(&self.end_pig());
+        pending.push_str(&self.finish_frames());
+        pending
     }
 
     fn finish_frames(&mut self) -> String {
@@ -1454,6 +1458,24 @@ mod tests {
                 assert!(seqs.len() > 10, "Responses 事件序列偏少: {}", seqs.len());
             }
         }
+    }
+
+    /// finish() 本身必须关闭仍打开的 Responses message item，并把文本写进
+    /// response.completed.response.output；调用方漏掉显式 End 也不能得到空终止响应。
+    #[test]
+    fn responses_finish_closes_open_item_and_populates_completed_output() {
+        let mut encoder = StreamEncoder::new(Protocol::Responses, "gpt-x-pigsb");
+        let mut frames = encoder.start();
+        frames.push_str(&encoder.push_text("最终答案 42"));
+        frames.push_str(&encoder.finish());
+
+        let completed = frame_data(&frames, "response.completed");
+        assert_eq!(
+            completed["response"]["output"][0]["content"][0]["text"],
+            "最终答案 42"
+        );
+        assert!(frames.contains("response.output_text.done"));
+        assert!(frames.contains("response.output_item.done"));
     }
 
     /// 流内错误帧不是成功终止帧，且 Anthropic/Responses 会先关掉打开的块。

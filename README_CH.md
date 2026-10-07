@@ -286,6 +286,7 @@ Phase 提示只在进入该 phase 时注入一次，工具暂停/恢复不会再
 - 用户可见文本经过 `MarkerFilter`，不会泄露内部 `PIGEND` / `PIGFAIL`；
 - 协议提供 reasoning/thinking 时，可以增量转发；
 - 无法实时完整还原的工具/native 块可能在收尾阶段补发；
+- 收尾时会先关闭任何仍打开的协议块再发送终止事件；对 Responses，这保证即使最后一个 phase 没有额外发送独立 End，`response.completed.response.output` 仍包含已经提交的正文；
 - 一旦客户端 SSE 已开始，后续编排错误只能写入流内，因为 HTTP 状态码已经无法改写。
 
 非流式请求则会读取完整 phase 响应，完成编排后再合成客户端 JSON 响应。

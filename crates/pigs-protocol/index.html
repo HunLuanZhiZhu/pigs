@@ -79,7 +79,7 @@ code{background:#eef1f6;border-radius:4px;padding:1px 6px;font-family:Consolas,m
 <h2>SSE 与实时流</h2>
 <div class="card">
 <p><code>SseTextStream</code> / 实时解析逻辑可以接受任意字节分块，逐步恢复三协议事件。<code>StreamEncoder</code> 则负责把统一事件写回客户端协议。</p>
-<p>它支持文本增量、reasoning/thinking、signature、工具调用及收尾事件。proxy 在编排流开始时先调用 <code>start()</code>，相位执行过程中持续 push，最后根据最终 stop_reason / usage 调用 finish。</p>
+<p>它支持文本增量、reasoning/thinking、signature、工具调用及收尾事件。proxy 在编排流开始时先调用 <code>start()</code>，相位执行过程中持续 push，最后根据最终 stop_reason / usage 调用 <code>finish()</code>。<code>finish()</code> 会先关闭任何仍打开的协议块；对 Responses，这保证 <code>response.completed.response.output</code> 包含已经提交的最终文本。</p>
 <p><code>synthesize_sse</code> 是把完整 <code>ResponseContent</code> 一次性经过同一编码器生成完整 SSE 文本的辅助路径。</p>
 </div>
 

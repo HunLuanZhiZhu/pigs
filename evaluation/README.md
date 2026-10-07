@@ -75,7 +75,7 @@ PIGS exposes two downstream usage modes:
 - `usage_mode = "max"` (default): return the complete usage JSON from the real upstream call with the largest `total_tokens`; intended for normal coding agents that use provider usage as a context-window signal.
 - `usage_mode = "sum"`: recursively add numeric usage fields across every real model call triggered by the current client API request; intended for evaluation and real-consumption accounting.
 
-Formal PIGS evaluation runs should use `sum`. Tool-pause responses close one client API request; when a continuation is resumed by a new client request, aggregation starts from zero, so physical model calls are not counted twice.
+Formal PIGS evaluation runs should use `sum`. Tool-pause responses close one client API request; when a continuation is resumed by a new client request, aggregation starts from zero, so physical model calls are not counted twice. For OpenAI Responses streaming runs, the terminal `response.completed` must contain the committed text in `response.output`; the runtime now closes any still-open message item during finalization so EvalScope can recover the final answer reliably.
 
 For OpenAI-compatible Chat responses, relevant observed fields include `prompt_tokens`, `completion_tokens`, `total_tokens`, `prompt_tokens_details.cached_tokens`, provider-specific cache-write detail when present, and `completion_tokens_details.reasoning_tokens`.
 

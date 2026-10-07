@@ -118,6 +118,7 @@ usage 的统计范围是**单次客户端 API 请求**。工具暂停响应也�
 - 模式 B 的普通业务文本不在阶段生成时转发：Simple 等 Pre `PIGEND` 后提交，Complex 等 Post `PIGEND` 后提交最后一次被接受的 Executor candidate；因此 `stream:true` 下业务正文是“验收后再以 SSE 发出”，不是 token 生成即提交；
 - thinking / reasoning 增量在 A/B 中都按协议实时转发；
 - 工具调用以及部分无法边到边还原的原生块在收尾阶段补发；
+- 流式收尾由 `StreamEncoder::finish()` 自身保证关闭仍打开的协议块后再发送终止事件；Responses 的 `response.completed.response.output` 因此会包含已经提交的最终正文，不依赖调用方额外先发 `PigEvent::End`；
 - 一旦客户端 SSE 已经开始，后续编排错误通过流内错误帧表达，HTTP 状态无法再改成错误码。
 
 客户端未请求流式时，各子请求按整体响应读取，最终合成 JSON。
