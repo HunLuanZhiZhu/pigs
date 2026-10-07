@@ -32,8 +32,7 @@ def main()->int:
         '    drop_params: true\n'
         '    parallel_tool_calls: true\n'
         '    extra_headers:\n'
-        f'      x-opencode-session: "{args.session_id}"\n'
-        '      User-Agent: "pigs-eval/1.0"\n', encoding='utf-8')
+        f'      x-opencode-session: "{args.session_id}"\n', encoding='utf-8')
     env=os.environ.copy(); env['OPENAI_API_KEY']=args.api_key; env['PIGS_SESSION_ID']=args.session_id
     infer_cmd=[str(args.mini_extra),'swebench','--subset','lite','--split','test','--output',str(inference),
                '--workers',str(args.workers),'--model',f'openai/{args.wire_model}',
