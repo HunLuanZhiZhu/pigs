@@ -89,7 +89,7 @@ pigs 是一个 Rust 前置代理。普通请求走透传；只有同时满足以
 
 - `model` 使用客户端原始模型名（包括 `-pigs` 或 `-pigsb` 后缀）；
 - 模式 A（`-pigs`）：普通文本按执行顺序保留，控制标记会被过滤；
-- 模式 B（`-pigsb`）：Pre/Post 普通文本以及被 `PIGNEXT`/`PIGFAIL` 否决的 Executor 候选不会进入客户端业务正文。Simple Path 只提交 Pre 的最终答案；复杂路径通常只在 Post `PIGEND` 后提交当前 Executor candidate；若 `PIGNEXT` 修补预算或 `PIGFAIL→Pre` 重规划预算耗尽且已有 Executor 结果，则以 `BUDGET_FALLBACK` 结束并提交最近一次 Executor best-effort 正文；
+- 模式 B（`-pigsb`）：Pre/Post 普通文本以及被 `PIGNEXT`/`PIGFAIL` 否决的 Executor 候选不会进入客户端业务正文。Simple Path 只提交 Pre 的最终答案；复杂路径通常只在 Post `PIGEND` 后提交当前 Executor candidate；若当前 Executor 已是本轮允许的最后一次执行，则该 Executor 完成后直接提交，不再进入 Post；
 - thinking / reasoning、工具调用和其它已解析的原生块按 `Part` 序列尽量保留；
 - `stop_reason` / `finish_reason` 取最后一轮解析到的值；
 - 响应 id、时间戳、协议壳由 pigs 新生成；
@@ -133,25 +133,28 @@ Pre：
 
 - Pre 提示会要求总结任务目标和会影响结果的关键条件，并把题意不清、多种合理解释或关键条件存在较大不确定性视为难点，供简单/复杂路径判断；
 - `PIGEND` 使用严格检测：标记前必须已有非控制标记的实质文本，防止简单路径只有控制词而没有用户答案；满足后通常简单路径结束，但初次 Pre 若存在可用客户端 `tools`（且未显式 `tool_choice = none`），则把 Pre 输出保存为计划并进入 Executor；
-- `PIGFAIL` → 记录失败路径并留在 Pre，最多重规划 2 次；
-- 无标记 → 进入 Executor。
+- Pre 不维护独立的重规划次数。除简单路径 `PIGEND` 外，`PIGFAIL`、`PIGNEXT` 或无标记输出都作为复杂计划进入 Executor；
+- 失败反馈由此前 Post 的 `PIGFAIL` 写入 `failure_paths`，供下一次 Pre 规划使用。
 
 Executor：
 
 - 不解析控制标记；
-- 结束后进入 Post。
+- 一轮任务的执行次数只按高层 Executor 相位计数；同一 Executor 内因工具调用发生的暂停/恢复不重复计数；
+- 当前上限为 4 次 Executor 执行；第 4 次 Executor 完成后直接结束，不再进入 Post；
+- 尚未达到执行次数上限时，Executor 结束后进入 Post。
 
 Post：
 
 - Post 是纯核验器：可以用工具核验，但不自行继续执行、修改或重写任务结果；
 - `PIGEND` → 接受当前 Executor 结果并正常完成；仅输出一行 `PIGEND` 也合法；
-- `PIGNEXT` → 当前结果可继续修补；Post 应给出简短可执行反馈。系统砍回最近一次 Executor 完成时保存的 checkpoint，丢弃 Post 指令与 Post transcript，再用原 Executor 指令模板把 Post 反馈作为新的“执行前分析”交给 Executor。连续修补最多 3 次；模式 B 达到上限时不再继续评判，直接提交最近一次 Executor，并记为 `BUDGET_FALLBACK`；
-- `PIGFAIL` → 当前执行路径需要重新规划，记录失败反馈并回 Pre；模式 B 的重规划预算耗尽时，如果已经产生过 Executor 结果，则提交最近一次 Executor 并记为 `BUDGET_FALLBACK`；
-- 无标记 → 视为核验器协议未完成，留在 Post 重试，最多 3 次。
+- `PIGNEXT` → 当前结果可继续修补；Post 应给出简短可执行反馈。系统砍回最近一次 Executor 完成时保存的 checkpoint，丢弃 Post 指令与 Post transcript，再用原 Executor 指令模板把 Post 反馈作为新的“执行前分析”交给下一次 Executor；
+- `PIGFAIL` → 当前执行路径需要重新规划，记录失败反馈并回 Pre，由 Pre 为下一次 Executor 形成新计划；
+- `PIGNEXT` 与 `PIGFAIL→Pre→Executor` 不再维护各自的次数预算，二者统一消耗同一个 Executor 执行次数上限；
+- 无标记 → 视为核验器协议未完成，留在 Post 做协议重试，最多 3 次；这个协议重试计数不属于任务执行次数。
 
 任何相位只要上游停止原因明确表示生成 token 上限截断（当前识别 OpenAI Chat 的 `length`、Anthropic 的 `max_tokens`、Responses 的 `max_output_tokens`），就返回截断错误，不把部分文本当作完整 Pre/Executor/Post 产出继续推进。
 
-预算耗尽并非全部返回编排错误：模式 B 的 `PIGNEXT` 修补上限和 `PIGFAIL→Pre` 重规划上限在存在 Executor 结果时会 best-effort 完成；从未产生 Executor 结果、模式 A、以及 Post 无控制标记超限仍返回预算错误。proxy 对这类预算错误返回 422；其它编排错误（包括 token 截断）通常返回 502。
+任务执行预算不再按 `PIGNEXT` 修补次数或 `PIGFAIL` 重规划次数分别统计，而只按 Executor 实际执行次数统计。达到 Executor 执行上限时，最后一次 Executor 直接结束，因此不会再因为“最后一个 Post 判定不通过”而产生 422。Post 无控制标记的协议重试若单独超限，仍返回预算错误；proxy 对这类预算错误返回 422，其它编排错误（包括 token 截断）通常返回 502。
 
 ## 配置与职责
 

@@ -30,15 +30,12 @@ pub const SESSION_HEADER: &str = "x-opencode-session";
 /// 回环内部令牌头（proxy 验证后跳过 -pigs 分流，防递归）。
 pub const LOOPBACK_TOKEN_HEADER: &str = "x-pigs-loopback";
 
-/// 预算常量（legacy 默认值；刻意不进配置——它们是编排语义的一部分）。
-/// - `MAX_PRE_REPLANS`：PIGFAIL 回到 Pre 重规划的次数上限；
-/// - `MAX_POST_ITERATIONS`：Post 无标记输出的连续重试次数上限；
-/// - `MAX_EXECUTOR_CONTINUES`：Post 通过 PIGNEXT 要求 Executor 继续修补的次数上限。
-/// 模式 B 在 PIGNEXT / PIGFAIL 控制预算耗尽且已有 Executor 结果时，会 best-effort 提交最近一次 Executor；
-/// 没有 Executor 结果、模式 A、以及 Post 无标记协议超限仍按预算错误处理。
-const MAX_PRE_REPLANS: u32 = 2;
-const MAX_POST_ITERATIONS: u32 = 3;
-const MAX_EXECUTOR_CONTINUES: u32 = 3;
+/// 编排次数常量（刻意不进配置——它们是编排语义的一部分）。
+/// - `MAX_EXECUTOR_RUNS`：一轮任务最多允许多少次高层 Executor 执行；工具暂停/恢复不重复计数。
+///   达到上限的那次 Executor 完成后直接结束，不再进入 Post。
+/// - `MAX_POST_PROTOCOL_RETRIES`：Post 没有给控制标记时的协议重试上限；它不属于任务执行次数。
+const MAX_EXECUTOR_RUNS: u32 = 4;
+const MAX_POST_PROTOCOL_RETRIES: u32 = 3;
 
 /// 单只 pig（一个相位）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,7 +110,7 @@ pub struct Runtime {
 /// 一轮编排的结果：跑完，或者被工具调用打断。
 #[derive(Debug, Clone)]
 pub enum Outcome {
-    /// 本轮完成（正常验收，或模式 B 的控制预算 fallback）。
+    /// 本轮完成（正常验收，或最后一次 Executor 直接完成）。
     Completed(TurnResult),
     /// 模型要工具：调用已交给客户端，等它执行完带结果回来。
     Paused(PausedTurn),
@@ -162,8 +159,8 @@ pub enum EndedWith {
     SimplePath,
     /// Post 验收通过。
     PigEnd,
-    /// 模式 B 的控制循环达到预算上限，提交最近一次 Executor best-effort 结果。
-    BudgetFallback,
+    /// 已达到 Executor 执行次数上限；最后一次 Executor 完成后直接结束，未再进入 Post。
+    ExecutorLimit,
 }
 
 impl EndedWith {
@@ -171,7 +168,7 @@ impl EndedWith {
         match self {
             EndedWith::SimplePath => "SIMPLE_PATH",
             EndedWith::PigEnd => "PIGEND",
-            EndedWith::BudgetFallback => "BUDGET_FALLBACK",
+            EndedWith::ExecutorLimit => "EXECUTOR_LIMIT",
         }
     }
 }
@@ -322,8 +319,16 @@ impl Orchestrator {
             let first_entry = state.path.last() != Some(&phase);
             if first_entry {
                 state.path.push(phase);
+                if phase == Pig::Executor {
+                    state.executor_runs += 1;
+                }
             }
-            tracing::info!(pig = phase.as_str(), first_entry, "pig round");
+            tracing::info!(
+                pig = phase.as_str(),
+                first_entry,
+                executor_runs = state.executor_runs,
+                "pig round"
+            );
 
             // 每个 pig 的阶段提示只在第一次进入时注入一次。之后的工具往返只追加
             // phase_transcript，绝不在工具结果尾部重新放一条阶段 user 提示。
@@ -395,33 +400,11 @@ impl Orchestrator {
                         state.commit_text(strip_markers(&raw));
                         return Ok(Outcome::Completed(state.complete(EndedWith::SimplePath)))
                     }
-                    // 路径失败 → 记录，回 Pre 重规划（预算内）。若此前已经执行过 Executor，
-                    // 模式 B 在重规划预算耗尽时退化为最近一次 Executor best-effort 结果。
-                    Some(Marker::Failed) => {
-                        if state.pre_replans >= MAX_PRE_REPLANS {
-                            if state.commit_last_executor() {
-                                return Ok(Outcome::Completed(
-                                    state.complete(EndedWith::BudgetFallback),
-                                ));
-                            }
-                            return Err(Error::Budget(format!(
-                                "Pre 重规划次数超过 {MAX_PRE_REPLANS} 次"
-                            )));
-                        }
-                        state.failure_paths.push(strip_markers(&raw));
-                        state.pre_replans += 1;
-                        state.pre_output.clear();
-                        state.post_iterations = 0;
-                        state.executor_continues = 0;
-                        state.phase_raw.clear();
-                        state.reset_phase_conversation();
-                    }
-                    // PIGNEXT 只对 Post 有路由语义；若 Pre 意外输出它，按普通复杂计划进入 Executor。
-                    // 正常无标记计划同样进入 Executor。
-                    Some(Marker::Next) | None => {
+                    // Pre 只负责给下一次 Executor 形成计划；PIGFAIL/PIGNEXT 在 Pre 没有独立的次数语义。
+                    // 除简单路径 PIGEND 外，其余输出都按复杂计划进入 Executor。
+                    Some(Marker::Failed) | Some(Marker::Next) | None => {
                         state.pre_output = strip_markers(&raw);
-                        state.post_iterations = 0;
-                        state.executor_continues = 0;
+                        state.post_protocol_retries = 0;
                         state.executor_checkpoint_body = None;
                         state.discard_candidate();
                         state.phase_raw.clear();
@@ -431,15 +414,24 @@ impl Orchestrator {
                 },
                 // ---------------- Executor：执行 ----------------
                 Pig::Executor => {
-                    // 不解析标记：Executor 之后总是进 Post 验收。
-                    // 模式 B 先把本次 Executor 的普通文本保存为候选，但尚不提交给客户端。
+                    // 不解析标记。模式 B 先把本次 Executor 的普通文本保存为候选。
                     state.set_candidate(strip_markers(&raw));
-                    // 再保存“Executor 已完成”的上下文截面；Post 只是在该截面后临时追加核验指令。
+
+                    // 所有执行预算统一按 Executor 高层执行次数计算。最后一次允许的 Executor
+                    // 完成后直接结束；此时再做 Post 已没有任何后续执行机会，因此没有意义。
+                    if state.executor_runs >= MAX_EXECUTOR_RUNS {
+                        state.commit_candidate();
+                        return Ok(Outcome::Completed(
+                            state.complete(EndedWith::ExecutorLimit),
+                        ));
+                    }
+
+                    // 尚有下一次执行机会时才保存 checkpoint 并进入 Post 核验。
                     let checkpoint = Self::build_executor_checkpoint(&ctx.input, &state)?;
                     let post_base =
                         Self::build_post_base_from_checkpoint(&ctx.input, &state, &checkpoint)?;
                     state.executor_checkpoint_body = Some(checkpoint);
-                    state.post_iterations = 0;
+                    state.post_protocol_retries = 0;
                     state.phase_raw.clear();
                     state.phase = Pig::Post;
                     state.phase_base_body = Some(post_base);
@@ -452,52 +444,29 @@ impl Orchestrator {
                         state.commit_candidate();
                         return Ok(Outcome::Completed(state.complete(EndedWith::PigEnd)))
                     }
-                    // 可修补 → Post 只给反馈，不自行执行；把完整现场交回 Executor 继续。
-                    // 模式 B 达到修补预算后不再做下一次评判，直接提交最近一次 Executor。
+                    // 可修补 → Post 只给反馈，不自行执行；把完整现场交回下一次 Executor。
+                    // 是否还能继续不在这里单独计数；统一由下一次 Executor 的 executor_runs 判断。
                     Some(Marker::Next) => {
-                        if state.executor_continues >= MAX_EXECUTOR_CONTINUES {
-                            if state.commit_last_executor() {
-                                return Ok(Outcome::Completed(
-                                    state.complete(EndedWith::BudgetFallback),
-                                ));
-                            }
-                            return Err(Error::Budget(format!(
-                                "Executor 继续修补次数超过 {MAX_EXECUTOR_CONTINUES} 次"
-                            )));
-                        }
                         let feedback = strip_markers(&raw);
                         let executor_base = Self::build_executor_base_from_checkpoint(
                             &ctx.input,
                             &state,
                             &feedback,
                         )?;
-                        state.executor_continues += 1;
-                        state.post_iterations = 0;
+                        state.post_protocol_retries = 0;
                         state.discard_candidate();
                         state.phase_raw.clear();
                         state.phase = Pig::Executor;
                         state.phase_base_body = Some(executor_base);
                         state.phase_transcript.clear();
                     }
-                    // 执行走偏 → 回 Pre 重规划（预算内）。这不是回滚，Pre 面对的是当前真实状态。
-                    // 模式 B 达到重规划预算后，提交最近一次 Executor，而不是把已有结果变成请求错误。
+                    // 执行路径根本错误 → 记录反馈并回 Pre 形成下一次 Executor 的计划。
+                    // 同样不维护独立的“重规划次数”；唯一执行预算是 executor_runs。
                     Some(Marker::Failed) => {
-                        if state.pre_replans >= MAX_PRE_REPLANS {
-                            if state.commit_last_executor() {
-                                return Ok(Outcome::Completed(
-                                    state.complete(EndedWith::BudgetFallback),
-                                ));
-                            }
-                            return Err(Error::Budget(format!(
-                                "Pre 重规划次数超过 {MAX_PRE_REPLANS} 次"
-                            )));
-                        }
                         let text = strip_markers(&raw);
                         state.failure_paths.push(text);
-                        state.pre_replans += 1;
                         state.pre_output.clear();
-                        state.post_iterations = 0;
-                        state.executor_continues = 0;
+                        state.post_protocol_retries = 0;
                         state.executor_checkpoint_body = None;
                         state.discard_candidate();
                         state.phase_raw.clear();
@@ -506,12 +475,12 @@ impl Orchestrator {
                     }
                     // 无控制标记 → 视为核验器协议未完成，留在 Post 重试；不让 Post 自行执行任务
                     None => {
-                        if state.post_iterations >= MAX_POST_ITERATIONS {
+                        if state.post_protocol_retries >= MAX_POST_PROTOCOL_RETRIES {
                             return Err(Error::Budget(format!(
-                                "Post 无标记重试次数超过 {MAX_POST_ITERATIONS} 次"
+                                "Post 无标记协议重试次数超过 {MAX_POST_PROTOCOL_RETRIES} 次"
                             )));
                         }
-                        state.post_iterations += 1;
+                        state.post_protocol_retries += 1;
                         state.phase_raw.clear();
                     }
                 },
