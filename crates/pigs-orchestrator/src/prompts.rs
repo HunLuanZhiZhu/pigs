@@ -90,9 +90,12 @@ mod tests {
         assert!(p.contains("本次需要你先思考以下问题的答案"));
         assert!(!p.contains("曾失败过"));
         assert!(p.contains("PIGEND"));
+        assert!(p.contains("计划中可以加入本任务需要的执行原则"));
+        assert!(p.contains("在输出给用户前会被删除"));
+        assert!(!p.contains("按通常语义直接执行"));
         assert!(p
             .trim_end()
-            .ends_with("输出为所要求思考的问题的回答以及判定理由。"));
+            .ends_with("输出以上问题的思考答案以及判定理由。"));
 
         let p = pre_instruction(Lang::Zh, &[String::from("第一次尝试报告")]);
         assert!(p.contains("曾失败过"));
