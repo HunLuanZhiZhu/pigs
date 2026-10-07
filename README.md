@@ -394,9 +394,10 @@ Streaming captures include `capture_complete` so interrupted body capture can be
 These are deliberate documentation of the current Rust implementation, not promises of features that do not exist yet.
 
 - Continuations live only in process memory and do not survive restart.
-- PIGS does not currently accumulate token usage across orchestration phases.
-- The retained usage object is selected using `usage.input_tokens`; OpenAI Chat payloads that only expose `prompt_tokens` therefore do not participate in that comparison as a cumulative total.
-- Paused tool-call responses return no accumulated usage.
+- Orchestration usage reporting is configurable with `[orchestration].usage_mode`.
+- `max` (default) returns the complete upstream usage object from the real call with the largest `total_tokens` value; if `total_tokens` is absent, PIGS falls back to the protocol's main input + output token fields. This mode is intended for coding agents that use the latest response usage as a context-window signal.
+- `sum` recursively adds numeric fields from every real upstream call triggered by the current client API request, including nested cache/reasoning details. This mode is intended for evaluation and real-consumption accounting.
+- Tool-call pause responses also report usage. When a continuation is resumed by a new client API request, usage aggregation starts from zero again so the same physical model calls are not counted twice.
 - Transport/parser errors stop the current orchestration; there is no generic orchestrator-level automatic retry.
 - The internal `x-pigs-loopback` header is currently not stripped before the real upstream forwarding step and may reach the upstream.
 - `legacy/` is historical reference code; the Rust workspace and current docs define the active behavior.

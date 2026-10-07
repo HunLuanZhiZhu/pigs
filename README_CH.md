@@ -394,9 +394,10 @@ HTTP 抓包可以记录：
 以下内容是对当前 Rust 实现的如实说明，不代表已经实现尚不存在的能力。
 
 - continuation 只存在进程内存中，服务重启后不会恢复。
-- 当前不会跨 Pre / Executor / Post 累加 token usage。
-- usage 选择逻辑比较 `usage.input_tokens`；如果 OpenAI Chat 只提供 `prompt_tokens`，它不会被当作累计总量参与该比较。
-- 工具暂停响应当前不返回截至暂停点的累计 usage。
+- 编排响应的 usage 由 `[orchestration].usage_mode` 控制。
+- `max`（默认）返回 `total_tokens` 最大的一次真实上游调用的完整 usage；若上游没有 `total_tokens`，则用协议主输入字段 + 主输出字段回退计算。该模式用于普通 coding agent 判断上下文占用。
+- `sum` 将本次客户端 API 请求触发的所有真实上游调用 usage 按 JSON 路径递归聚合，数值字段逐项相加，包括嵌套的缓存和 reasoning 明细。该模式用于模型评测和真实消耗统计。
+- 工具暂停响应也会返回 usage；客户端回填工具结果并恢复 continuation 时，从零重新统计新一发客户端请求的 usage，避免重复计费。
 - transport / parser 错误会终止当前编排，目前没有通用的 orchestrator 自动重试。
 - 内部 `x-pigs-loopback` header 当前没有在真实上游转发前被过滤，因此可能到达上游。
 - `legacy/` 仅作为历史参考；当前 Rust workspace 与当前文档描述的是实际实现。

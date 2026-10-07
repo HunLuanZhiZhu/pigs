@@ -102,19 +102,12 @@ pigs 是一个 Rust 前置代理。普通请求走透传；只有同时满足以
 
 ## usage 的当前策略
 
-当前代码**不做跨相位 token 累加**。
+`[orchestration].usage_mode` 控制编排响应的 usage 语义，默认 `max`：
 
-`TurnState::record_round` 会比较每个子请求的 `usage.input_tokens`：
+- `max`：比较每次真实上游调用的 `total_tokens`，缺失时用主输入字段（`input_tokens` / `prompt_tokens`）+ 主输出字段（`output_tokens` / `completion_tokens`）回退计算；返回总 token 最大的那次调用的**完整原始 usage JSON**。用于普通 coding agent 判断当前上下文占用。
+- `sum`：将本次客户端 API 请求实际触发的所有上游调用 usage 按 JSON 路径递归聚合，数值字段逐项相加；只在某次调用出现的字段原样保留。用于评测统计真实模型消耗。
 
-- 没有历史 usage 时直接保存；
-- 新 usage 的 `input_tokens` 更大时，用该 **完整 usage 对象原值** 替换；
-- 相等或更小时保留已有对象。
-
-最终完成响应使用这个被选中的 usage 对象。
-
-注意：OpenAI Chat 常见字段名是 `prompt_tokens`，当前选择逻辑只读取 `input_tokens`。因此这类 usage 若没有 `input_tokens`，比较值会按 0 处理，通常会保留最先记录到的完整 usage 对象。
-
-工具调用导致暂停时，proxy 在构造暂停响应时传入 `usage: None`。因此工具暂停响应不会返回“截至目前的累计 usage”。
+usage 的统计范围是**单次客户端 API 请求**。工具暂停响应也会返回截至该响应的聚合 usage；客户端回填工具结果并恢复 continuation 时，usage 从零开始重新统计，避免 `sum` 重复计费，也避免 `max` 沿用上一发响应的上下文快照。
 
 ## 流式行为
 
@@ -170,6 +163,7 @@ Post：
 - `[logging].directory`：HTTP 抓包目录，默认 `logs/http`
 - `[orchestration].max_executor_runs`：Executor 高层执行次数上限，默认 `4`
 - `[orchestration].max_post_protocol_retries`：Post 无控制标记时的协议重试次数上限，默认 `3`
+- `[orchestration].usage_mode`：`max` / `sum`，默认 `max`
 - `[upstream].openai`
 - `[upstream].responses`
 - `[upstream].anthropic`

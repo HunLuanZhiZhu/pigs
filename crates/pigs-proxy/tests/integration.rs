@@ -179,6 +179,13 @@ async fn spawn_fake_upstream() -> FakeUpstream {
 
 /// 起 pigs（127.0.0.1 随机端口，上游指向假上游），返回 (任务, base_url)。
 async fn spawn_pigs(upstream_url: &str) -> (tokio::task::JoinHandle<()>, String) {
+    spawn_pigs_with_usage_mode(upstream_url, pigs_proxy::UsageMode::Max).await
+}
+
+async fn spawn_pigs_with_usage_mode(
+    upstream_url: &str,
+    usage_mode: pigs_proxy::UsageMode,
+) -> (tokio::task::JoinHandle<()>, String) {
     let config = Config {
         listen: "127.0.0.1:0".into(),
         key: String::new(),
@@ -186,7 +193,10 @@ async fn spawn_pigs(upstream_url: &str) -> (tokio::task::JoinHandle<()>, String)
             detail: pigs_proxy::LogDetail::Off,
             ..Default::default()
         },
-        orchestration: pigs_proxy::OrchestrationConfig::default(),
+        orchestration: pigs_proxy::OrchestrationConfig {
+            usage_mode,
+            ..Default::default()
+        },
         upstream: Upstreams::same(upstream_url),
     };
     let listener = pigs_proxy::bind_listener(&config.listen).await.unwrap();
@@ -231,6 +241,27 @@ fn openai_text_response(text: &str) -> (&'static str, Bytes) {
         Bytes::from(
             json!({"choices":[{"message":{"role":"assistant","content":text},"finish_reason":"stop"}]})
                 .to_string(),
+        ),
+    )
+}
+
+fn openai_text_response_with_usage(
+    text: &str,
+    prompt_tokens: u64,
+    completion_tokens: u64,
+) -> (&'static str, Bytes) {
+    (
+        "application/json",
+        Bytes::from(
+            json!({
+                "choices":[{"message":{"role":"assistant","content":text},"finish_reason":"stop"}],
+                "usage": {
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "total_tokens": prompt_tokens + completion_tokens
+                }
+            })
+            .to_string(),
         ),
     )
 }
@@ -373,6 +404,37 @@ async fn passthrough_echo_mode_forwards_auth_and_body() {
     assert_eq!(echo["h:authorization"], "Bearer client-key");
     // body 原样透传
     assert_eq!(echo["body"], body.to_string());
+}
+
+#[tokio::test]
+async fn sum_usage_mode_adds_all_phase_usage_before_returning() {
+    let (_up, upstream_url, fu) = spawn_fake_upstream().await;
+    fu.responses
+        .lock()
+        .unwrap()
+        .push(openai_text_response_with_usage("分析：需要X", 10, 1));
+    fu.responses
+        .lock()
+        .unwrap()
+        .push(openai_text_response_with_usage("执行结果", 20, 2));
+    fu.responses
+        .lock()
+        .unwrap()
+        .push(openai_text_response_with_usage("核验通过\nPIGEND", 30, 3));
+    let (_pigs, pigs_url) =
+        spawn_pigs_with_usage_mode(&upstream_url, pigs_proxy::UsageMode::Sum).await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("{pigs_url}/chat/completions"))
+        .json(&openai_body("gpt-x-pigs", false))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["usage"]["prompt_tokens"], 60);
+    assert_eq!(body["usage"]["completion_tokens"], 6);
+    assert_eq!(body["usage"]["total_tokens"], 66);
 }
 
 #[tokio::test]
@@ -913,8 +975,8 @@ async fn tool_pause_and_resume_round_trip() {
     fu.responses
         .lock()
         .unwrap()
-        .push(openai_text_response("答案是 4
-PIGEND"));
+        .push(openai_text_response_with_usage("答案是 4
+PIGEND", 8, 4));
     let (_pigs, pigs_url) = spawn_pigs(&upstream_url).await;
     let client = reqwest::Client::new();
 
@@ -934,6 +996,7 @@ PIGEND"));
     assert_eq!(call["function"]["arguments"], "{\"command\":\"ls\"}");
     assert_eq!(body["choices"][0]["finish_reason"], "tool_calls");
     assert_eq!(body["model"], "gpt-x-pigs", "回客户端的是它请求的名字");
+    assert_eq!(body["usage"]["total_tokens"], 10, "工具暂停响应也必须汇报本次请求 usage");
 
     // 第二发：客户端把工具结果接回历史后再发（真实 agent 就是这么干的）
     let mut resume = openai_body("gpt-x-pigs", false);
@@ -960,8 +1023,8 @@ PIGEND"));
         body["choices"][0]["message"].get("tool_calls").is_none(),
         "工具已经消费完成，最终响应不能重放历史 tool_calls"
     );
-    // usage 是上游给的真值（不是 0）
-    assert_eq!(body["usage"]["total_tokens"], 10);
+    // 恢复请求从零重新聚合 usage，不能把上一发工具暂停的 10 tokens 再算进来。
+    assert_eq!(body["usage"]["total_tokens"], 12);
 
     // 第二次子请求：阶段提示仍固定在最初 user 消息；工具结果保持在尾部；tools 仍在。
     let reqs = fu.requests.lock().unwrap();

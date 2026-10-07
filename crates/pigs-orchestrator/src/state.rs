@@ -4,7 +4,7 @@
 //! 直到模型这一轮不再要工具，相位才算产出。跨越这段等待的现场就存在 [`Continuation`] 里。
 
 use crate::lang::Lang;
-use crate::Pig;
+use crate::{Pig, UsageMode};
 use pigs_protocol::{Part, PigsMode};
 use serde_json::Value;
 use std::collections::HashSet;
@@ -50,7 +50,7 @@ pub struct TurnState {
     pub lang: Lang,
     /// 会话标识（所有子请求共用）。
     pub session: String,
-    /// 上游 usage 原对象：整轮里 input_tokens 最大的那只子请求的原值（零合成）。
+    /// 本次客户端 API 请求按 usage 模式聚合后的 usage。
     pub usage: Option<Value>,
     /// 最后一个相位给的停止原因（原样回传）。
     pub stop_reason: Option<String>,
@@ -124,7 +124,12 @@ impl TurnState {
     }
 
     /// 记一轮模型输出：文本/思考等持久化；ToolCall 只属于暂停响应，不进入 continuation / 最终 Completed。
-    pub fn record_round(&mut self, raw_text: &str, output: &crate::proto::ModelOutput) {
+    pub fn record_round(
+        &mut self,
+        raw_text: &str,
+        output: &crate::proto::ModelOutput,
+        usage_mode: UsageMode,
+    ) {
         self.phase_raw.push(raw_text.to_string());
         let visible = crate::markers::strip_markers(raw_text);
         if self.mode == PigsMode::A && !visible.is_empty() {
@@ -137,15 +142,21 @@ impl TurnState {
                 .filter(|part| !matches!(part, Part::ToolCall(_))),
         );
         if let Some(usage) = &output.usage {
-            // 整对象选择：input_tokens 最大的那只子请求原样胜出（缺失按 0，平局保持现有）
-            // ——不做任何跨相位相加，回传的每个数都是上游真实产生过的。
-            let input = |u: &Value| u.get("input_tokens").and_then(Value::as_u64).unwrap_or(0);
-            let larger = match &self.usage {
-                None => true,
-                Some(current) => input(usage) > input(current),
-            };
-            if larger {
-                self.usage = Some(usage.clone());
+            match usage_mode {
+                UsageMode::Max => {
+                    // 只比较一次真实调用的总 token；胜出的 usage 整对象原样返回，不拼字段。
+                    let larger = match &self.usage {
+                        None => true,
+                        Some(current) => usage_total_tokens(usage) > usage_total_tokens(current),
+                    };
+                    if larger {
+                        self.usage = Some(usage.clone());
+                    }
+                }
+                UsageMode::Sum => match &mut self.usage {
+                    None => self.usage = Some(usage.clone()),
+                    Some(current) => sum_usage_json(current, usage),
+                },
             }
         }
         // 以**最后一轮**的值为准：工具暂停那一轮的 tool_calls 不该残留到最终答复
@@ -220,6 +231,54 @@ impl TurnState {
             usage: self.usage,
             stop_reason: self.stop_reason,
         }
+    }
+}
+
+/// 一次真实上游调用的总 token。优先使用协议直接给出的 total_tokens；
+/// 缺失时只用主输入/输出字段回退计算，缓存与 reasoning 详情都是其子集，不重复相加。
+fn usage_total_tokens(usage: &Value) -> u64 {
+    if let Some(total) = usage.get("total_tokens").and_then(Value::as_u64) {
+        return total;
+    }
+    let input = usage
+        .get("input_tokens")
+        .or_else(|| usage.get("prompt_tokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let output = usage
+        .get("output_tokens")
+        .or_else(|| usage.get("completion_tokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    input.saturating_add(output)
+}
+
+/// sum 模式：同路径的数值字段逐项相加；对象递归合并；只在某次调用出现的字段原样保留。
+/// usage 正常只有数值/对象字段；若遇到同路径的非数值元数据，保留第一份，避免伪造语义。
+fn sum_usage_json(current: &mut Value, next: &Value) {
+    match (current, next) {
+        (Value::Object(current), Value::Object(next)) => {
+            for (key, next_value) in next {
+                match current.get_mut(key) {
+                    Some(current_value) => sum_usage_json(current_value, next_value),
+                    None => {
+                        current.insert(key.clone(), next_value.clone());
+                    }
+                }
+            }
+        }
+        (Value::Number(current), Value::Number(next)) => {
+            if let (Some(a), Some(b)) = (current.as_u64(), next.as_u64()) {
+                *current = serde_json::Number::from(a.saturating_add(b));
+            } else if let (Some(a), Some(b)) = (current.as_i64(), next.as_i64()) {
+                *current = serde_json::Number::from(a.saturating_add(b));
+            } else if let (Some(a), Some(b)) = (current.as_f64(), next.as_f64()) {
+                if let Some(sum) = serde_json::Number::from_f64(a + b) {
+                    *current = sum;
+                }
+            }
+        }
+        _ => {}
     }
 }
 
@@ -436,46 +495,89 @@ mod tests {
     }
 
     #[test]
-    fn usage_keeps_the_largest_input_object_verbatim() {
-        // input 最大的那只子请求整对象胜出；字段一个不改，也不做任何相加。
+    fn usage_max_keeps_largest_total_object_verbatim() {
+        // max 只按 total_tokens 选一次真实调用，胜出的整个 JSON 原样返回。
         let mut state = state();
         state.record_round(
             "第一轮",
-            &output_with_usage(
-                json!({"input_tokens": 10, "output_tokens": 2, "cache": {"read": 5}}),
-            ),
+            &output_with_usage(json!({
+                "prompt_tokens": 20,
+                "completion_tokens": 30,
+                "total_tokens": 50,
+                "prompt_tokens_details": {"cached_tokens": 10}
+            })),
+            UsageMode::Max,
         );
         state.record_round(
             "第二轮",
-            &output_with_usage(
-                json!({"input_tokens": 3, "output_tokens": 4, "cache": {"read": 1, "write": 7}}),
-            ),
+            &output_with_usage(json!({
+                "prompt_tokens": 55,
+                "completion_tokens": 5,
+                "total_tokens": 60,
+                "prompt_tokens_details": {"cached_tokens": 40, "cache_write_tokens": 7}
+            })),
+            UsageMode::Max,
         );
         let usage = state.usage.expect("应有 usage");
-        assert_eq!(usage["input_tokens"], 10);
-        assert_eq!(usage["output_tokens"], 2);
-        assert_eq!(usage["cache"]["read"], 5);
-        assert!(
-            usage["cache"].get("write").is_none(),
-            "整对象透传，不许混入其它子请求的字段"
-        );
+        assert_eq!(usage["total_tokens"], 60);
+        assert_eq!(usage["prompt_tokens"], 55);
+        assert_eq!(usage["completion_tokens"], 5);
+        assert_eq!(usage["prompt_tokens_details"]["cached_tokens"], 40);
+        assert_eq!(usage["prompt_tokens_details"]["cache_write_tokens"], 7);
     }
 
     #[test]
-    fn usage_max_survives_when_the_last_phase_is_smaller() {
-        // 边界：最后一轮 input 更小（重规划/恢复后常见），最大者仍是更早那只的原值。
+    fn usage_max_falls_back_to_input_plus_output_when_total_is_missing() {
         let mut state = state();
         state.record_round(
             "第一轮",
-            &output_with_usage(json!({"input_tokens": 9, "output_tokens": 1})),
+            &output_with_usage(json!({"input_tokens": 40, "output_tokens": 10})),
+            UsageMode::Max,
         );
         state.record_round(
-            "最后一轮",
-            &output_with_usage(json!({"input_tokens": 4, "output_tokens": 8})),
+            "第二轮",
+            &output_with_usage(json!({"input_tokens": 30, "output_tokens": 30})),
+            UsageMode::Max,
         );
         let usage = state.usage.expect("应有 usage");
-        assert_eq!(usage["input_tokens"], 9);
-        assert_eq!(usage["output_tokens"], 1);
+        assert_eq!(usage["input_tokens"], 30);
+        assert_eq!(usage["output_tokens"], 30);
+    }
+
+    #[test]
+    fn usage_sum_adds_all_numeric_json_fields_recursively() {
+        let mut state = state();
+        state.record_round(
+            "第一轮",
+            &output_with_usage(json!({
+                "prompt_tokens": 20,
+                "completion_tokens": 3,
+                "total_tokens": 23,
+                "prompt_tokens_details": {"cached_tokens": 12, "cache_write_tokens": 2},
+                "completion_tokens_details": {"reasoning_tokens": 1}
+            })),
+            UsageMode::Sum,
+        );
+        state.record_round(
+            "第二轮",
+            &output_with_usage(json!({
+                "prompt_tokens": 30,
+                "completion_tokens": 7,
+                "total_tokens": 37,
+                "prompt_tokens_details": {"cached_tokens": 25, "cache_write_tokens": 4},
+                "completion_tokens_details": {"reasoning_tokens": 5},
+                "provider_extra": 9
+            })),
+            UsageMode::Sum,
+        );
+        let usage = state.usage.expect("应有 usage");
+        assert_eq!(usage["prompt_tokens"], 50);
+        assert_eq!(usage["completion_tokens"], 10);
+        assert_eq!(usage["total_tokens"], 60);
+        assert_eq!(usage["prompt_tokens_details"]["cached_tokens"], 37);
+        assert_eq!(usage["prompt_tokens_details"]["cache_write_tokens"], 6);
+        assert_eq!(usage["completion_tokens_details"]["reasoning_tokens"], 6);
+        assert_eq!(usage["provider_extra"], 9);
     }
 
     #[test]
@@ -656,14 +758,14 @@ mod tests {
             text: "第一轮\nPIGFAIL".into(),
             ..Default::default()
         };
-        st.record_round("第一轮\nPIGFAIL", &first);
+        st.record_round("第一轮\nPIGFAIL", &first, UsageMode::Max);
         let second = crate::proto::ModelOutput {
             text: "第二轮".into(),
             stop_reason: Some("end_turn".into()),
             usage: Some(json!({"input_tokens": 1})),
             ..Default::default()
         };
-        st.record_round("第二轮", &second);
+        st.record_round("第二轮", &second, UsageMode::Max);
 
         assert_eq!(st.phase_raw_text(), "第一轮\nPIGFAIL\n\n第二轮");
         assert_eq!(st.final_text(), "第一轮\n\n第二轮");

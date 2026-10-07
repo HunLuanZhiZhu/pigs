@@ -35,6 +35,21 @@ pub const LOOPBACK_TOKEN_HEADER: &str = "x-pigs-loopback";
 pub const DEFAULT_MAX_EXECUTOR_RUNS: u32 = 4;
 pub const DEFAULT_MAX_POST_PROTOCOL_RETRIES: u32 = 3;
 
+/// 最终向下游汇报 usage 的语义。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UsageMode {
+    /// 返回 total_tokens 最大的那次真实上游调用的完整 usage 对象，用于 coding agent 判断上下文占用。
+    Max,
+    /// 将本次客户端请求触发的所有真实上游调用 usage 按 JSON 数值字段逐项相加，用于评测统计真实消耗。
+    Sum,
+}
+
+impl Default for UsageMode {
+    fn default() -> Self {
+        Self::Max
+    }
+}
+
 /// 单只 pig（一个相位）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pig {
@@ -144,6 +159,8 @@ pub struct PausedTurn {
     pub text: String,
     /// 暂停响应的内容序列：持久内容 + 本轮一次性的工具调用，顺序权威。
     pub parts: Vec<Part>,
+    /// 按当前 usage 模式聚合后的本次客户端请求 usage。
+    pub usage: Option<serde_json::Value>,
     /// 这一轮的停止原因（上游原话，通常是 tool_calls / tool_use）。
     pub stop_reason: Option<String>,
     /// 恢复句柄（proxy 存自己手里，客户端不感知）。
@@ -193,6 +210,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub struct Orchestrator {
     max_executor_runs: u32,
     max_post_protocol_retries: u32,
+    usage_mode: UsageMode,
 }
 
 impl Default for Orchestrator {
@@ -200,6 +218,7 @@ impl Default for Orchestrator {
         Self {
             max_executor_runs: DEFAULT_MAX_EXECUTOR_RUNS,
             max_post_protocol_retries: DEFAULT_MAX_POST_PROTOCOL_RETRIES,
+            usage_mode: UsageMode::Max,
         }
     }
 }
@@ -213,6 +232,19 @@ impl Orchestrator {
         Self {
             max_executor_runs,
             max_post_protocol_retries,
+            usage_mode: UsageMode::Max,
+        }
+    }
+
+    pub fn with_limits_and_usage(
+        max_executor_runs: u32,
+        max_post_protocol_retries: u32,
+        usage_mode: UsageMode,
+    ) -> Self {
+        Self {
+            max_executor_runs,
+            max_post_protocol_retries,
+            usage_mode,
         }
     }
 
@@ -247,6 +279,9 @@ impl Orchestrator {
         let resume_items =
             proto::continuation_resume_items(input.protocol, &input.body, &continuation.pending);
         continuation.state.phase_transcript.extend(resume_items);
+        // usage 属于单次客户端 API 响应。上一发工具暂停时已经向客户端汇报，
+        // 恢复请求必须从零重新统计，避免 sum 模式重复计费、max 模式沿用旧上下文快照。
+        continuation.state.usage = None;
         self.drive(input, rt, continuation.state).await
     }
 
@@ -371,7 +406,7 @@ impl Orchestrator {
                 parts.extend(state.client_parts_for_round(&output));
                 Some(parts)
             };
-            state.record_round(&output.text, &output);
+            state.record_round(&output.text, &output, self.usage_mode);
             state.phase_transcript.extend(round_transcript);
 
             // 模型要工具 → 暂停，把调用原样交给客户端（相位不结束）
@@ -388,6 +423,7 @@ impl Orchestrator {
                 );
                 let text = state.final_text();
                 let parts = paused_parts.unwrap_or_else(|| state.parts.clone());
+                let usage = state.usage.clone();
                 let continuation_id = ctx
                     .store
                     .lock()
@@ -402,6 +438,7 @@ impl Orchestrator {
                     tool_calls: output.tool_calls,
                     text,
                     parts,
+                    usage,
                     stop_reason: output.stop_reason,
                     continuation_id,
                 }));

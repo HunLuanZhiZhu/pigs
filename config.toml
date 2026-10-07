@@ -9,13 +9,15 @@ key = ""
 detail = "max"
 directory = "logs/http"
 
-# PIGS 编排次数。
+# PIGS 编排与 usage 汇报。
 # Executor 高层执行默认最多 4 次；同一次 Executor 内工具暂停/恢复不重复计数。
 # 达到配置上限的最后一次 Executor 完成后直接结束，不再进入 Post。
 [orchestration]
 max_executor_runs = 4
 # Post 没有输出 PIGEND / PIGNEXT / PIGFAIL 时的协议重试次数；不计入 Executor 执行次数。
 max_post_protocol_retries = 3
+# 下游 usage 语义：max = 返回 total_tokens 最大的一次真实调用（普通 coding agent）；sum = 各真实调用 usage 数值字段逐项相加（模型评测）。
+usage_mode = "max"
 
 # 三个协议各一个上游地址：base + 客户端原样路径 = 上游 URL。
 # chat / responses 的路径不带 /v1（版本段属于 base）；

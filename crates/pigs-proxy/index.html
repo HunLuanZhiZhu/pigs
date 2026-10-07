@@ -42,7 +42,7 @@ table{border-collapse:collapse;width:100%}th,td{border:1px solid var(--line);pad
 <h2><code>-pigs</code> / <code>-pigsb</code> 编排</h2>
 <div class="card">
 <p>proxy 解析 model 后缀：<code>-pigs</code> 选择模式 A，<code>-pigsb</code> 选择模式 B；随后去掉后缀写入真实上游 model，并把模式放入 <code>TurnInput</code>。客户端是否流式由原 body 的 <code>stream</code> 布尔值决定。</p>
-<p>编排次数从当前生效配置的 <code>[orchestration]</code> 读取：<code>max_executor_runs</code> 默认 4，<code>max_post_protocol_retries</code> 默认 3。A/B 共用同一组次数配置。</p>
+<p>编排配置从当前生效的 <code>[orchestration]</code> 读取：<code>max_executor_runs</code> 默认 4，<code>max_post_protocol_retries</code> 默认 3，<code>usage_mode</code> 默认 <code>max</code>。<code>usage_mode = "max"</code> 返回总 token 最大的一次真实调用 usage；<code>sum</code> 对本次客户端请求触发的真实调用 usage 数值字段逐项求和。A/B 共用同一组配置。</p>
 <p>proxy 会扫描当前请求中的全部工具结果 id，并从 <code>ContinuationStore</code> 中寻找其 pending id 已全部出现的现场；匹配成功后先 claim 并标记 in-flight，再恢复同一只 pig，不要求工具结果处于请求绝对尾部。resume 成功后才 commit 删除旧 continuation；resume 失败则 rollback 保留旧现场，客户端可以重发同一批工具结果。若匹配现场正在被另一个请求恢复则返回 409 提示稍后重试；若确实找不到现场也返回 409。每次 Paused 响应只返回当前这轮新产生的工具调用，已消费的历史 ToolCall 不会跟着 continuation 进入下一次响应。</p>
 <p>非流式编排完成后调用 <code>synthesize_json</code>；流式请求则立即返回 SSE body，后台运行状态机并通过 <code>StreamEncoder</code> 持续发帧。</p>
 <p>模式 A 会把普通文本增量实时交给 <code>StreamEncoder</code>。模式 B 会抑制阶段 ordinary-text delta，直到 Simple 的 Pre 或 Complex 的 Executor 被正式接受后，才在收尾阶段把最终业务正文写入 SSE；thinking/reasoning 和工具调用仍按原协议发送。</p>
@@ -59,7 +59,7 @@ table{border-collapse:collapse;width:100%}th,td{border:1px solid var(--line);pad
 <h2>编排响应</h2>
 <div class="card">
 <p>编排路径不会把最后一个上游响应直接交给客户端。proxy 构造 <code>ResponseContent</code>，其中 model 使用客户端原始 PIGS 名称（包括 <code>-pigs</code> / <code>-pigsb</code>），再由 protocol 层生成新的 JSON/SSE 协议壳。</p>
-<p>Completed 使用状态机最终选中的 usage；Paused 明确传 <code>usage: None</code>。停止原因使用状态机记录的最后一轮值。模式 A 的 Completed parts 保留各阶段普通文本；模式 B 的 Completed parts 只加入最终 committed business text，同时继续保留已解析的 reasoning/native 非文本块。已经执行完成的历史 ToolCall 不会重放。<code>PIGEND</code>/<code>PIGNEXT</code>/<code>PIGFAIL</code> 都不会成为客户端业务正文。</p>
+<p>Completed 与 Paused 都返回本次客户端 API 请求按 <code>usage_mode</code> 聚合后的 usage。工具结果回填并恢复 continuation 时，新一发客户端请求从零重新统计 usage。停止原因使用状态机记录的最后一轮值。模式 A 的 Completed parts 保留各阶段普通文本；模式 B 的 Completed parts 只加入最终 committed business text，同时继续保留已解析的 reasoning/native 非文本块。已经执行完成的历史 ToolCall 不会重放。<code>PIGEND</code>/<code>PIGNEXT</code>/<code>PIGFAIL</code> 都不会成为客户端业务正文。</p>
 </div>
 
 <h2>HTTP 诊断抓包</h2>

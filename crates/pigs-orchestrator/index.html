@@ -98,8 +98,8 @@ resume 同一相位</pre>
 <div class="card">
 <p>模式 A 中，<code>TurnState</code> 继续按执行顺序保留各阶段普通文本。模式 B 中，Pre/Post 普通文本不进入客户端业务正文；<code>candidate_text</code> 保存当前待验收 Executor 候选，<code>committed_text</code> 保存最终实际提交的业务正文。正常验收由 Post <code>PIGEND</code> 提交 candidate；若达到 Executor 执行次数上限，则最后一次 Executor 的 candidate 直接提交。thinking/reasoning 与工具调用不受正文隐藏规则影响。</p>
 <p><code>stop_reason</code> 每一轮都会覆盖，最终保留最后一轮解析到的值。</p>
-<p><strong>usage 不累计。</strong>当前实现比较 <code>usage.input_tokens</code>，保留该值最大的那一轮完整 usage 对象；平局保留旧对象。OpenAI Chat 若只提供 <code>prompt_tokens</code> 而没有 <code>input_tokens</code>，比较值按 0 处理。</p>
-<div class="note">工具暂停时，状态现场本身仍包含已记录的 usage；但 proxy 的 Paused 响应明确使用 <code>usage: None</code>，所以客户端不会收到“截至暂停点的累计 usage”。</div>
+<p><strong>usage 有两种语义。</strong><code>max</code>（默认）比较每次真实上游调用的 <code>total_tokens</code>，缺失时以协议主输入字段 + 主输出字段回退计算，并返回最大者的完整原始 usage JSON；<code>sum</code> 则递归合并本次客户端 API 请求触发的所有真实调用 usage，对同路径数值字段逐项相加。</p>
+<div class="note">工具暂停响应也会带上本次客户端请求已经聚合的 usage。客户端执行工具并发起恢复请求后，continuation 继续保留相位现场，但 usage 会清零并只统计新一发客户端请求，避免 sum 重复计费或 max 沿用旧快照。</div>
 </div>
 
 <h2>错误处理</h2>

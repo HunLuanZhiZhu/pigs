@@ -73,6 +73,21 @@ fn default_http_log_dir() -> String {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UsageMode {
+    /// 返回 total_tokens 最大的一次真实上游调用的完整 usage，供 coding agent 判断上下文占用。
+    Max,
+    /// 将本次客户端请求触发的真实上游调用 usage 数值字段逐项相加，供评测统计真实消耗。
+    Sum,
+}
+
+impl Default for UsageMode {
+    fn default() -> Self {
+        Self::Max
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OrchestrationConfig {
     /// 一轮任务最多允许多少次高层 Executor 执行；工具暂停/恢复不重复计数。
     #[serde(default = "default_max_executor_runs")]
@@ -80,6 +95,9 @@ pub struct OrchestrationConfig {
     /// Post 没有输出控制标记时，最多额外重试多少次协议响应。
     #[serde(default = "default_max_post_protocol_retries")]
     pub max_post_protocol_retries: u32,
+    /// 最终向下游汇报 usage 的语义：max（日常 coding agent）或 sum（评测真实消耗）。
+    #[serde(default)]
+    pub usage_mode: UsageMode,
 }
 
 impl Default for OrchestrationConfig {
@@ -87,6 +105,7 @@ impl Default for OrchestrationConfig {
         Self {
             max_executor_runs: default_max_executor_runs(),
             max_post_protocol_retries: default_max_post_protocol_retries(),
+            usage_mode: UsageMode::Max,
         }
     }
 }
@@ -172,6 +191,7 @@ anthropic = "http://c"
                 max_executor_runs: pigs_orchestrator::DEFAULT_MAX_EXECUTOR_RUNS,
                 max_post_protocol_retries:
                     pigs_orchestrator::DEFAULT_MAX_POST_PROTOCOL_RETRIES,
+                usage_mode: UsageMode::Max,
             }
         );
     }
@@ -185,6 +205,7 @@ key = ""
 [orchestration]
 max_executor_runs = 6
 max_post_protocol_retries = 1
+usage_mode = "sum"
 [upstream]
 openai = "http://a"
 responses = "http://b"
@@ -194,6 +215,7 @@ anthropic = "http://c"
         .unwrap();
         assert_eq!(config.orchestration.max_executor_runs, 6);
         assert_eq!(config.orchestration.max_post_protocol_retries, 1);
+        assert_eq!(config.orchestration.usage_mode, UsageMode::Sum);
     }
 
     #[test]

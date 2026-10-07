@@ -249,9 +249,14 @@ async fn orchestrate(
         self_url: state.self_url.as_str().to_string(),
         token: state.loopback_token.as_str().to_string(),
     });
-    let orchestrator = orch::Orchestrator::with_limits(
+    let usage_mode = match state.config.orchestration.usage_mode {
+        crate::config::UsageMode::Max => orch::UsageMode::Max,
+        crate::config::UsageMode::Sum => orch::UsageMode::Sum,
+    };
+    let orchestrator = orch::Orchestrator::with_limits_and_usage(
         state.config.orchestration.max_executor_runs,
         state.config.orchestration.max_post_protocol_retries,
+        usage_mode,
     );
 
     if client_wants_stream {
@@ -504,7 +509,7 @@ fn final_content<'a>(
             parts: &paused.parts,
             // 上游这一轮怎么停的就怎么说（工具暂停通常是 tool_calls / tool_use）
             stop_reason: paused.stop_reason.as_deref(),
-            usage: None,
+            usage: paused.usage.as_ref(),
         },
     }
 }

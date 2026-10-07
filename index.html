@@ -75,7 +75,7 @@ anthropic = "https://opencode.ai/zen/go"</pre>
 
 <h2>usage 与响应</h2>
 <div class="card">
-<p>当前实现不做跨相位 token 求和。状态机保留 <code>usage.input_tokens</code> 最大的那个完整 usage 对象；工具暂停响应在 proxy 层使用 <code>usage: None</code>。</p>
+<p>编排 usage 由 <code>[orchestration].usage_mode</code> 控制：<code>max</code>（默认）返回 <code>total_tokens</code> 最大的一次真实上游调用的完整 usage；<code>sum</code> 将本次客户端 API 请求触发的所有真实上游调用 usage 数值字段逐项相加。工具暂停响应同样返回本次请求的聚合 usage，恢复 continuation 后新一发客户端请求从零重新统计。</p>
 <p>OpenAI Chat 常见的计数字段是 <code>prompt_tokens</code>，但当前比较逻辑只看 <code>input_tokens</code>；没有该字段时按 0 比较。这是当前代码行为，不在文档中伪装成累计策略。</p>
 </div>
 
