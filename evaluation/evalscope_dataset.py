@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 from pathlib import Path
 
 from eval_common import EVAL_ROOT, add_common_args, archive_pigs_session_logs, count_evalscope, finalize
@@ -21,12 +22,21 @@ def run_dataset(dataset: str, evalscope_name: str, full_size: int, display_name:
     parser.add_argument('--temperature', type=float, default=0.0)
     parser.add_argument('--sample-retries', type=int, default=1, help='Retry failed/missing samples after the first full pass (default: 1).')
     parser.add_argument('--limit', type=int, default=None, help='Development only; omit for formal runs.')
+    parser.add_argument('--resume-from', type=Path, default=None,
+                        help='Copy a prior EvalScope output snapshot into this run and resume missing predictions.')
     args = parser.parse_args()
     models = validate(args)
     if args.limit is not None and args.limit <= 0:
         raise SystemExit('--limit must be > 0')
     if args.sample_retries < 0:
         raise SystemExit('--sample-retries must be >= 0')
+    if args.resume_from is not None:
+        if len(models) != 1 or len(args.arms) != 1:
+            raise SystemExit('--resume-from requires exactly one model and one arm')
+        if not (args.resume_from / 'configs' / 'task_config.yaml').is_file():
+            raise SystemExit(f'Invalid EvalScope cache source: {args.resume_from}')
+        if not (args.resume_from / 'predictions').is_dir():
+            raise SystemExit(f'Missing predictions in cache source: {args.resume_from}')
     if maybe_background(args):
         return 0
     if not args.evalscope.exists():
@@ -45,6 +55,7 @@ def run_dataset(dataset: str, evalscope_name: str, full_size: int, display_name:
         'seed': args.seed,
         'temperature': args.temperature,
         'sample_retries': args.sample_retries,
+        'resume_source': str(args.resume_from.resolve()) if args.resume_from else None,
     })
     print(f'run_dir={root}')
     print(f'progress_file={root / "progress.txt"}')
@@ -52,6 +63,10 @@ def run_dataset(dataset: str, evalscope_name: str, full_size: int, display_name:
         return 0
 
     def run_one(job):
+        resume_dir = None
+        if args.resume_from:
+            resume_dir = Path(job.output_dir) / args.resume_from.name
+            shutil.copytree(args.resume_from, resume_dir)
         generation = {
             'temperature': args.temperature,
             'reasoning_effort': args.thinking_effort,
@@ -60,8 +75,11 @@ def run_dataset(dataset: str, evalscope_name: str, full_size: int, display_name:
             'stream': True,
             'extra_headers': {'x-opencode-session': job.session_id},
         }
+        evalscope_entry = ([str(args.evalscope.parent / 'python'),
+                            str(Path(__file__).with_name('evalscope_warmup.py'))]
+                           if args.eval_type == 'openai_responses_api' else [str(args.evalscope)])
         command = [
-            str(args.evalscope), 'eval',
+            *evalscope_entry, 'eval',
             '--model', job.model,
             '--model-args', json.dumps({'max_retries': 0}, separators=(',', ':')),
             '--api-url', args.base_url,
@@ -76,6 +94,8 @@ def run_dataset(dataset: str, evalscope_name: str, full_size: int, display_name:
         ]
         if args.limit:
             command += ['--limit', str(args.limit)]
+        if resume_dir:
+            command += ['--use-cache', str(resume_dir), '--rerun-review']
         job.max_attempts = 1 + args.sample_retries
         job.attempt = 1
         code = run_job(
@@ -98,7 +118,7 @@ def run_dataset(dataset: str, evalscope_name: str, full_size: int, display_name:
             job.status = 'running'
             job.stage = 'retrying'
             store.write()
-            retry_command = [*command, '--use-cache', str(cache_dir)]
+            retry_command = [*command] if resume_dir else [*command, '--use-cache', str(cache_dir)]
             code = run_job(
                 job, retry_command, store, count_evalscope, args.progress_interval,
                 secrets=[args.api_key], pigs_log_source=None, stage='retrying',
