@@ -93,9 +93,14 @@ mod tests {
         assert!(p.contains("计划中可以加入本任务需要的执行原则"));
         assert!(p.contains("在输出给用户前会被删除"));
         assert!(!p.contains("按通常语义直接执行"));
-        assert!(p
-            .trim_end()
-            .ends_with("输出以上问题的思考答案以及判定理由。"));
+        assert!(p.contains("判断依据是任务本身的整体执行与核验难度"));
+        assert!(
+            p.find("一般情况下，完成上述问题的分析")
+                .expect("general path instruction")
+                < p.find("仅当任务被判定为简单任务时")
+                    .expect("simple path instruction")
+        );
+        assert!(p.trim_end().ends_with("不要省略、替换或改写。）"));
 
         let p = pre_instruction(Lang::Zh, &[String::from("第一次尝试报告")]);
         assert!(p.contains("曾失败过"));
@@ -131,8 +136,15 @@ mod tests {
 
     #[test]
     fn english_templates_exist() {
-        assert!(pre_instruction(Lang::En, &[])
-            .contains("First think through the answers to the following questions"));
+        let pre = pre_instruction(Lang::En, &[]);
+        assert!(pre.contains("First think through the answers to the following questions"));
+        assert!(pre.contains("overall difficulty of executing and verifying the task"));
+        assert!(
+            pre.find("In general, complete the analysis above")
+                .expect("general path instruction")
+                < pre.find("Only when the task is classified as simple")
+                    .expect("simple path instruction")
+        );
         assert!(executor_instruction(Lang::En, "PRE").contains("PRE"));
         assert!(post_instruction(Lang::En).contains("PIGNEXT"));
         assert!(post_instruction(Lang::En).contains("PIGFAIL"));
