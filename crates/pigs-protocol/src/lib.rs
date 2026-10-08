@@ -1,6 +1,6 @@
 //! pigs-protocol —— 三种协议的公共字典。
 //!
-//! 全仓库最底层 crate：路径路由、`-pigs` / `-pigsb` 后缀与模式规则、请求体手术（改 model / 关流式 /
+//! 全仓库最底层 crate：路径路由、`-pigs` / `-pig`（兼容 `-pigsb`）后缀与模式规则、请求体手术（改 model / 关流式 /
 //! 去 tools / 替换最后一条 user 消息）、响应文本提取（JSON 与 SSE）、最终答复合成。
 //! 只依赖 serde_json，不做任何 HTTP。
 

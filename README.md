@@ -15,13 +15,14 @@
 
 ---
 
-PIGS is a Rust front proxy for LLM APIs. Ordinary requests pass through normally; supported `POST` requests whose model name ends in `-pigs` enter an adaptive **Pre → Executor → Post** orchestration flow.
+PIGS is a Rust front proxy for LLM APIs. Ordinary requests pass through normally; supported `POST` requests whose model name ends in `-pigs` or `-pig` enter an adaptive **Pre → Executor → Post** orchestration flow. The legacy `-pigsb` suffix remains supported.
 
 The core idea is deliberately small:
 
 ```text
 model-x       → normal passthrough
-model-x-pigs  → PIGS orchestration → upstream still receives model-x
+model-x-pigs  → PIGS orchestration (combined phase output) → upstream model-x
+model-x-pig   → PIGS orchestration (one accepted business output) → upstream model-x
 ```
 
 No custom client SDK is required. The client keeps speaking familiar OpenAI- or Anthropic-style APIs, while PIGS decides whether a request can finish on a simple path or should enter a fuller execution and verification path.
@@ -35,7 +36,7 @@ No custom client SDK is required. The client keeps speaking familiar OpenAI- or 
 |---|---|
 | **Adaptive routing** | Pre decides whether a task is genuinely simple or should enter the full execution path. |
 | **Three protocol surfaces** | OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages. |
-| **Suffix-based opt-in** | Add `-pigs` to the model name to enable orchestration; leave it off for normal passthrough. |
+| **Suffix-based opt-in** | Add `-pigs` for combined phase output or `-pig` for one accepted business output (`-pigsb` is a legacy alias); no suffix means passthrough. |
 | **Client-owned tools** | Tool calls are returned to the client; PIGS pauses and resumes the same phase after matching tool results arrive. |
 | **Streaming support** | SSE text and reasoning can be forwarded incrementally while internal control markers stay hidden. |
 | **Continuation state** | Multi-round tool interactions can resume without reinjecting the phase prompt. |
@@ -45,10 +46,10 @@ No custom client SDK is required. The client keeps speaking familiar OpenAI- or 
 ## 🧠 How PIGS works
 
 ```text
-                              model without -pigs
+                              model without -pigs / -pig / -pigsb
 Client ───────► PIGS ─────────────────────────────────► Upstream
                   │
-                  │ model ends in -pigs
+                  │ model ends in -pigs / -pig / -pigsb
                   ▼
                  Pre
           ┌───────┴────────┐
@@ -135,12 +136,12 @@ A request enters orchestration only when all three conditions are true:
 
 1. HTTP method is `POST`;
 2. the path matches one of the supported protocol surfaces;
-3. JSON `model` ends in `-pigs`.
+3. JSON `model` ends in `-pigs`, `-pig`, or the legacy alias `-pigsb`.
 
 Everything else uses the normal passthrough path.
 
 > [!IMPORTANT]
-> A `POST` to a recognized protocol path is parsed as JSON so PIGS can inspect `model`. Invalid JSON therefore returns `400` even when the request would not ultimately use a `-pigs` model.
+> A `POST` to a recognized protocol path is parsed as JSON so PIGS can inspect `model`. Invalid JSON therefore returns `400` even when the request would not ultimately use a suffixed PIGS model.
 
 ## 🚀 Quick start
 

@@ -39,7 +39,7 @@ code{background:#eef1f6;border-radius:4px;padding:1px 6px;font-family:Consolas,m
 </div>
 
 <h2>职责边界</h2>
-<div class="warn"><p>这个 crate 当前不实现协议解析、<code>-pigs</code>/<code>-pigsb</code> 路由、编排或重试；这些逻辑分别在 <code>pigs-proxy</code>、<code>pigs-orchestrator</code> 与 <code>pigs-protocol</code>。当前 orchestrator 契约中，<code>-pigs</code> 选择模式 A、<code>-pigsb</code> 选择模式 B；两者共用状态机。Post 使用 <code>PIGEND</code>/<code>PIGNEXT</code>/<code>PIGFAIL</code> 做纯核验路由：PIGNEXT 回 Executor 修补；Pre 与 Post 使用不同的控制标记有效性规则，并会把明确的 token 上限停止原因视为截断错误；CLI 不覆盖这些语义。</p></div>
+<div class="warn"><p>这个 crate 当前不实现协议解析、<code>-pigs</code>/<code>-pig</code> 路由、编排或重试；这些逻辑分别在 <code>pigs-proxy</code>、<code>pigs-orchestrator</code> 与 <code>pigs-protocol</code>。当前 orchestrator 契约中，<code>-pigs</code> 选择模式 A、<code>-pig</code> 选择模式 B；两者共用状态机。Post 使用 <code>PIGEND</code>/<code>PIGNEXT</code>/<code>PIGFAIL</code> 做纯核验路由：PIGNEXT 回 Executor 修补；Pre 与 Post 使用不同的控制标记有效性规则，并会把明确的 token 上限停止原因视为截断错误；CLI 不覆盖这些语义。</p></div>
 
 <div class="tip"><strong>配置来源：</strong><code>pigs-proxy::config_template()</code> 最终来自根 <code>config.toml</code> 的 <code>include_str!</code>；因此根配置文件同时是默认模板。</div>
 </div></body></html>

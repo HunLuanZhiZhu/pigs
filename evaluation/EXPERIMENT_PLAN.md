@@ -41,10 +41,12 @@ Every formal comparison is paired within the same named model:
 ```text
 MODEL
 vs
-MODEL-pigs
+MODEL-pigs (combined output)
+vs
+MODEL-pig (single accepted output)
 ```
 
-Base and PIGS must use the same provider route, reasoning effort, harness settings, concurrency, task order, tools, timeouts, and scorer.
+Base, PIGS, and PIG must use the same provider route, reasoning effort, harness settings, concurrency, task order, tools, timeouts, and scorer. The legacy `-pigsb` suffix is still accepted as an alias for `-pig` to preserve reproducibility of historical runs.
 
 ## 3. Benchmark matrix
 

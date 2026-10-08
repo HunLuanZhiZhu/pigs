@@ -551,34 +551,36 @@ async fn pig_flow_full_orchestration_via_loopback() {
 }
 
 #[tokio::test]
-async fn pigsb_non_stream_returns_only_accepted_executor_text() {
-    let (_up, upstream_url, fu) = spawn_fake_upstream().await;
-    fu.responses.lock().unwrap().push(openai_text_response("内部分析"));
-    fu.responses.lock().unwrap().push(openai_text_response("最终业务答案"));
-    fu.responses.lock().unwrap().push(openai_text_response("核验通过\nPIGEND"));
-    let (_pigs, pigs_url) = spawn_pigs(&upstream_url).await;
+async fn pig_and_legacy_pigsb_non_stream_return_only_accepted_text() {
+    for model in ["gpt-x-pig", "gpt-x-pigsb"] {
+        let (_up, upstream_url, fu) = spawn_fake_upstream().await;
+        fu.responses.lock().unwrap().push(openai_text_response("内部分析"));
+        fu.responses.lock().unwrap().push(openai_text_response("最终业务答案"));
+        fu.responses.lock().unwrap().push(openai_text_response("核验通过\nPIGEND"));
+        let (_pigs, pigs_url) = spawn_pigs(&upstream_url).await;
 
-    let client = reqwest::Client::new();
-    let resp = client
-        .post(format!("{pigs_url}/chat/completions"))
-        .json(&openai_body("gpt-x-pigsb", false))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 200);
-    let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["model"], "gpt-x-pigsb");
-    assert_eq!(body["choices"][0]["message"]["content"], "最终业务答案");
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(format!("{pigs_url}/chat/completions"))
+            .json(&openai_body(model, false))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body: Value = resp.json().await.unwrap();
+        assert_eq!(body["model"], model);
+        assert_eq!(body["choices"][0]["message"]["content"], "最终业务答案");
 
-    let reqs = fu.requests.lock().unwrap();
-    assert_eq!(reqs.len(), 3);
-    for (_, upstream_body, _) in reqs.iter() {
-        assert_eq!(upstream_body["model"], "gpt-x", "上游必须使用剥离后的真实 model");
+        let reqs = fu.requests.lock().unwrap();
+        assert_eq!(reqs.len(), 3);
+        for (_, upstream_body, _) in reqs.iter() {
+            assert_eq!(upstream_body["model"], "gpt-x", "上游必须使用剥离后的真实 model");
+        }
     }
 }
 
 #[tokio::test]
-async fn pigsb_stream_buffers_business_text_until_post_accepts() {
+async fn pig_stream_buffers_business_text_until_post_accepts() {
     let (_up, upstream_url, fu) = spawn_fake_upstream().await;
     fu.responses.lock().unwrap().push(openai_sse_response("内部分析"));
     fu.responses.lock().unwrap().push(openai_sse_response("最终业务答案"));
@@ -588,7 +590,7 @@ async fn pigsb_stream_buffers_business_text_until_post_accepts() {
     let client = reqwest::Client::new();
     let resp = client
         .post(format!("{pigs_url}/chat/completions"))
-        .json(&openai_body("gpt-x-pigsb", true))
+        .json(&openai_body("gpt-x-pig", true))
         .send()
         .await
         .unwrap();

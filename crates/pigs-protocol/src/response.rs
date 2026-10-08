@@ -1464,7 +1464,7 @@ mod tests {
     /// response.completed.response.output；调用方漏掉显式 End 也不能得到空终止响应。
     #[test]
     fn responses_finish_closes_open_item_and_populates_completed_output() {
-        let mut encoder = StreamEncoder::new(Protocol::Responses, "gpt-x-pigsb");
+        let mut encoder = StreamEncoder::new(Protocol::Responses, "gpt-x-pig");
         let mut frames = encoder.start();
         frames.push_str(&encoder.push_text("最终答案 42"));
         frames.push_str(&encoder.finish());

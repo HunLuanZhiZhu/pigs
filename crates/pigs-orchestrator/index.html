@@ -47,7 +47,7 @@ code{background:#eef1f6;border-radius:4px;padding:1px 6px;font-family:Consolas,m
 
 <h2>模型名与其它 body 字段</h2>
 <div class="card">
-<p>去掉 <code>-pigs</code> / <code>-pigsb</code> 的 model 修改发生在 proxy 进入 orchestrator 之前；proxy 同时把 A/B 模式写入 <code>TurnInput</code>。orchestrator 本身不会调用 <code>set_stream</code> 或 <code>strip_tools</code>；客户端原有的 <code>stream</code>、<code>tools</code>、<code>tool_choice</code>、thinking/reasoning 等字段随克隆 body 保留。</p>
+<p>去掉 <code>-pigs</code> / <code>-pig</code> 的 model 修改发生在 proxy 进入 orchestrator 之前；proxy 同时把 A/B 模式写入 <code>TurnInput</code>。orchestrator 本身不会调用 <code>set_stream</code> 或 <code>strip_tools</code>；客户端原有的 <code>stream</code>、<code>tools</code>、<code>tool_choice</code>、thinking/reasoning 等字段随克隆 body 保留。</p>
 <p>由于 body 经过 <code>serde_json::Value</code> 解析再序列化，只能承诺 JSON 语义字段保留，不能承诺原始字节、空白或对象键顺序完全一致。</p>
 </div>
 
@@ -87,7 +87,7 @@ resume 同一相位</pre>
 <p>当父请求 body 的 <code>stream</code> 为 true 时，orchestrator 使用 transport 的 streaming 路径。上游 SSE 被增量解析并通过 <code>ProgressSink</code> 产生事件。</p>
 <ul>
 <li>模式 A（<code>-pigs</code>）的文本增量经过 <code>MarkerFilter</code> 后实时发送；</li>
-<li>模式 B（<code>-pigsb</code>）的普通文本在 Pre/Executor/Post 生成时不发送。Simple Path 只有 Pre <code>PIGEND</code> 后提交 Pre 答案；复杂路径把 Executor 普通文本先存为 candidate，通常由随后 Post <code>PIGEND</code> 提交；若当前 Executor 已是第 4 次执行，则该 candidate 直接提交，不再进入 Post；</li>
+<li>模式 B（<code>-pig</code>）的普通文本在 Pre/Executor/Post 生成时不发送。Simple Path 只有 Pre <code>PIGEND</code> 后提交 Pre 答案；复杂路径把 Executor 普通文本先存为 candidate，通常由随后 Post <code>PIGEND</code> 提交；若当前 Executor 已是第 4 次执行，则该 candidate 直接提交，不再进入 Post；</li>
 <li>thinking、reasoning summary、signature 等使用带类型事件传给 proxy 的 <code>StreamEncoder</code>；</li>
 <li>一轮结束时，无法实时还原的原生块由收尾逻辑补发；proxy 的编码器会在最终终止事件前关闭仍打开的协议块，因此 Responses 终止对象保留最终业务正文。</li>
 </ul>

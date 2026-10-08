@@ -15,13 +15,14 @@
 
 ---
 
-PIGS 是一个用 Rust 编写的 LLM 前置代理。普通请求正常透传；当受支持的 `POST` 请求中，模型名以 `-pigs` 结尾时，请求会进入自适应的 **Pre → Executor → Post** 编排流程。
+PIGS 是一个用 Rust 编写的 LLM 前置代理。普通请求正常透传；当受支持的 `POST` 请求中，模型名以 `-pigs` 或 `-pig` 结尾时，请求会进入自适应的 **Pre → Executor → Post** 编排流程。旧后缀 `-pigsb` 暂时兼容。
 
 核心使用方式非常简单：
 
 ```text
 model-x       → 普通透传
-model-x-pigs  → PIGS 编排 → 上游实际收到的仍是 model-x
+model-x-pigs  → PIGS 编排（拼接阶段输出）→ 上游 model-x
+model-x-pig   → PIGS 编排（仅提交一个有效业务结果）→ 上游 model-x
 ```
 
 客户端不需要引入专用 SDK，仍然使用熟悉的 OpenAI / Anthropic 风格 API。PIGS 在代理层判断任务应直接走简单路径，还是进入完整的执行与核验路径。
@@ -35,7 +36,7 @@ model-x-pigs  → PIGS 编排 → 上游实际收到的仍是 model-x
 |---|---|
 | **自适应路径** | Pre 判断任务是真正简单，还是需要进入完整执行路径。 |
 | **三种 API 协议面** | 支持 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages。 |
-| **模型后缀开关** | 模型名增加 `-pigs` 即开启编排；不带后缀则正常透传。 |
+| **模型后缀开关** | `-pigs` 拼接阶段输出；`-pig` 只提交一个有效业务结果（旧 `-pigsb` 兼容）；不带后缀正常透传。 |
 | **工具调用友好** | 工具由客户端实际执行；PIGS 暂停当前 phase，并在工具结果返回后恢复。 |
 | **流式优先** | 支持增量 SSE 文本与 reasoning/thinking，同时隐藏内部控制标记。 |
 | **Continuation** | 同一 phase 可经历多轮工具往返，恢复时不会重复注入 phase 提示词。 |
@@ -45,10 +46,10 @@ model-x-pigs  → PIGS 编排 → 上游实际收到的仍是 model-x
 ## 🧠 PIGS 如何工作
 
 ```text
-                              model 不带 -pigs
+                              model 不带 -pigs / -pig / -pigsb
 客户端 ──────► PIGS ───────────────────────────────► 上游
                  │
-                 │ model 以 -pigs 结尾
+                 │ model 以 -pigs / -pig / -pigsb 结尾
                  ▼
                 Pre
          ┌───────┴────────┐
@@ -135,12 +136,12 @@ Post 只负责核验和路由。它可以使用工具验证事实或实际状态
 
 1. HTTP 方法为 `POST`；
 2. 路径能识别为支持的协议；
-3. JSON 中的 `model` 以 `-pigs` 结尾。
+3. JSON 中的 `model` 以 `-pigs`、`-pig` 或兼容别名 `-pigsb` 结尾。
 
 其它请求走普通透传。
 
 > [!IMPORTANT]
-> 对已识别协议路径的 `POST`，PIGS 需要先解析 JSON 才能读取 `model`。因此即使最终模型不带 `-pigs`，非法 JSON 也会直接返回 `400`。
+> 对已识别协议路径的 `POST`，PIGS 需要先解析 JSON 才能读取 `model`。因此即使最终模型不带 PIGS 后缀，非法 JSON 也会直接返回 `400`。
 
 ## 🚀 快速开始
 

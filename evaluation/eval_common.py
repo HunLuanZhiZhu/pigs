@@ -17,7 +17,8 @@ DEFAULT_BASE_URL = 'http://127.0.0.1:3927'
 DEFAULT_API_KEY = 'local-eval-placeholder'
 DEFAULT_MODELS = ['mimo-v2.6-flash', 'deepseek-v4.1-flash']
 DEFAULT_THINKING_EFFORT = 'low'
-ARMS = ['base', 'pigs', 'pigsb']
+ARMS = ['base', 'pigs', 'pig', 'pigsb']
+DEFAULT_ARMS = ['base', 'pigs', 'pig']  # pigsb remains accepted for historical compatibility
 
 @dataclass(frozen=True)
 class ModelSpec:
@@ -28,6 +29,8 @@ class ModelSpec:
             return self.base_model
         if arm == 'pigs':
             return f'{self.base_model}-pigs'
+        if arm == 'pig':
+            return f'{self.base_model}-pig'
         if arm == 'pigsb':
             return f'{self.base_model}-pigsb'
         raise ValueError(f'unsupported arm: {arm}')
@@ -70,7 +73,7 @@ def parse_models(values: Iterable[str]) -> list[ModelSpec]:
     for raw in values:
         label, model = (raw.split('=',1) if '=' in raw else (raw,raw))
         label, model = slug(label.strip()), model.strip()
-        if not model or model.endswith('-pigs'): raise SystemExit(f'invalid base model: {raw}')
+        if not model or model.endswith(('-pigs', '-pig', '-pigsb')): raise SystemExit(f'invalid base model: {raw}')
         if label in labels: raise SystemExit(f'duplicate model label: {label}')
         labels.add(label); out.append(ModelSpec(label,model))
     if not out: raise SystemExit('at least one model is required')
@@ -123,7 +126,7 @@ class ProgressStore:
 
 def add_common_args(p:argparse.ArgumentParser, dataset:str)->None:
     p.add_argument('--models',nargs='+',default=list(DEFAULT_MODELS),metavar='[LABEL=]MODEL')
-    p.add_argument('--arms',nargs='+',choices=ARMS,default=list(ARMS))
+    p.add_argument('--arms',nargs='+',choices=ARMS,default=list(DEFAULT_ARMS))
     p.add_argument('--model-workers',type=int,default=1,help='Concurrent model pipelines; 0 = all models. Base then PIGS stay sequential per model.')
     p.add_argument('--sample-workers',type=int,default=1)
     p.add_argument('--base-url',default=DEFAULT_BASE_URL); p.add_argument('--api-key',default=os.getenv('PIGS_EVAL_API_KEY',DEFAULT_API_KEY))

@@ -1,6 +1,6 @@
 //! axum 服务：fallback 接住所有路径与方法，按需分流。
 //!
-//! PIGS（-pigs / -pigsb）请求的两种情形：
+//! PIGS（-pigs / -pig，兼容 -pigsb）请求的两种情形：
 //! - 客户端的第一发 → 新开一轮编排；
 //! - 请求中包含当前 pending continuation 所等待的工具结果 → 接着被暂停的相位继续。
 
@@ -36,7 +36,7 @@ pub fn router(state: AppState) -> Router {
 
 /// 单一入口：所有路径、所有方法。
 /// - 回环子请求（带内部令牌）→ 直接透传（防递归）；
-/// - POST 三协议路径 + model 带 `-pigs` / `-pigsb` → 编排（新开或恢复）；
+/// - POST 三协议路径 + model 带 `-pigs` / `-pig`（或 `-pigsb`）→ 编排（新开或恢复）；
 /// - 其余一切 → 原样透传。
 async fn handle(
     State(state): State<AppState>,
@@ -60,7 +60,7 @@ async fn handle(
             .diagnostics
             .begin_exchange(internal, method.as_str(), &path, query, &headers, &body);
 
-    // 编排分支：POST 协议路径 + model 带 -pigs / -pigsb（回环子请求不走此分支）
+    // 编排分支：POST 协议路径 + model 带 -pigs / -pig / -pigsb（回环子请求不走此分支）
     if !internal && method == Method::POST {
         if let Some(protocol) = pigs_protocol::protocol_from_path(&path) {
             match serde_json::from_slice::<Value>(&body) {

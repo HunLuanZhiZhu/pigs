@@ -29,14 +29,15 @@
 --models mimo=mimo-v2.6-flash deepseek=deepseek-v4.1-flash
 ```
 
-每个 base model 自动形成两臂：
+每个 base model 默认形成三臂：
 
 ```text
-MODEL
-MODEL-pigs
+MODEL       （Base，普通透传）
+MODEL-pigs  （拼接多个阶段的输出）
+MODEL-pig   （只提交一个有效业务结果）
 ```
 
-`--arms base pigs` 可用于开发时只跑某一臂。
+默认 `--arms base pigs pig`；可用 `--arms base`、`--arms pigs` 或 `--arms pig` 单独运行。历史 `--arms pigsb` 仍可使用，对应的 `MODEL-pigsb` 是 `MODEL-pig` 的兼容别名，不更改旧实验目录。
 
 当前模型选择不再预设“必须固定 MiMo + DeepSeek 两家”。DeepSeek V4.1 Flash 是当前锚点模型；新增正式模型优先考虑低价、其他人可稳定访问、模型身份明确、API 行为可复现。MiMo 目前更适合作为兼容性/压力测试候选，不自动等同于最终核心模型。
 
@@ -160,7 +161,7 @@ mini-proxy :7946
 provider
 ```
 
-Base 和 PIGS 两臂都经过同一个 PIGS HTTP proxy 和同一个 mini-proxy；区别仅在 model 是否带 `-pigs` 后缀，因此 mini-proxy 的重试/传输能力不会成为 arm 间额外变量。
+Base、PIGS 与 PIG 三臂都经过同一个 PIGS HTTP proxy 和同一个 mini-proxy；区别在 model 是否带 `-pigs` 或 `-pig` 后缀，因此 mini-proxy 的重试/传输能力不会成为 arm 间额外变量。
 
 ## 各数据集运行
 

@@ -45,7 +45,8 @@ def main() -> int:
             })
         for comp in summary.get("comparisons") or []:
             base_job = next((j for j in summary["jobs"] if j["model_label"] == comp["model_label"] and j["arm"] == "base"), None)
-            pigs_job = next((j for j in summary["jobs"] if j["model_label"] == comp["model_label"] and j["arm"] == "pigs"), None)
+            arm = comp.get("arm", "pigs")  # pre-rename summaries have no arm field
+            pigs_job = next((j for j in summary["jobs"] if j["model_label"] == comp["model_label"] and j["arm"] == arm), None)
             base_head = (base_job or {}).get("headline_metric") or {}
             pigs_head = (pigs_job or {}).get("headline_metric") or {}
             delta = None
@@ -66,6 +67,7 @@ def main() -> int:
                 "dataset": summary["dataset"],
                 "thinking_effort": summary.get("thinking_effort"),
                 "model_label": comp["model_label"],
+                "arm": arm,
                 "headline_metric": base_head.get("metric") or pigs_head.get("metric"),
                 "base_score": base_head.get("score"),
                 "pigs_score": pigs_head.get("score"),
@@ -79,15 +81,15 @@ def main() -> int:
     payload = {"schema_version": 1, "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"), "runs": [s["run_id"] for s in summaries], "jobs": jobs, "comparisons": comparisons}
     write_json(out / "aggregate.json", payload)
 
-    fields = ["run_id", "dataset", "thinking_effort", "model_label", "headline_metric", "base_score", "pigs_score", "delta", "paired_n", "fixes", "breaks", "mcnemar_exact_p"]
+    fields = ["run_id", "dataset", "thinking_effort", "model_label", "arm", "headline_metric", "base_score", "pigs_score", "delta", "paired_n", "fixes", "breaks", "mcnemar_exact_p"]
     with (out / "comparisons.csv").open("w", encoding="utf-8", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=fields); writer.writeheader(); writer.writerows(comparisons)
 
-    lines = ["# PIGS aggregated evaluation", "", "| Dataset | Effort | Model | Metric | Base | PIGS | Delta | Paired N | Fixes | Breaks | McNemar p |", "|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|"]
+    lines = ["# PIGS aggregated evaluation", "", "| Dataset | Effort | Model | Arm | Metric | Base | PIGS | Delta | Paired N | Fixes | Breaks | McNemar p |", "|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|"]
     for row in sorted(comparisons, key=lambda x: (x["dataset"], str(x["thinking_effort"]), x["model_label"])):
         pval = row.get("mcnemar_exact_p")
         lines.append(
-            f"| {row['dataset']} | {row.get('thinking_effort')} | {row['model_label']} | {row.get('headline_metric') or '-'} | "
+            f"| {row['dataset']} | {row.get('thinking_effort')} | {row['model_label']} | {row.get('arm', 'pigs')} | {row.get('headline_metric') or '-'} | "
             f"{pct(row.get('base_score'))} | {pct(row.get('pigs_score'))} | {pct(row.get('delta'))} | {row.get('paired_n') or '-'} | "
             f"{row.get('fixes') if row.get('fixes') is not None else '-'} | {row.get('breaks') if row.get('breaks') is not None else '-'} | "
             f"{f'{pval:.4f}' if isinstance(pval,(int,float)) else '-'} |"

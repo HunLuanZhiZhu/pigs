@@ -8,7 +8,7 @@ pigs 是一个 Rust 前置代理。普通请求走透传；只有同时满足以
 
 1. HTTP 方法是 `POST`；
 2. 路径能识别为 OpenAI Chat、OpenAI Responses 或 Anthropic Messages；
-3. 请求 JSON 的 `model` 以 `-pigs`（模式 A）或 `-pigsb`（模式 B）结尾。
+3. 请求 JSON 的 `model` 以 `-pigs`（模式 A）或 `-pig`（模式 B，兼容旧后缀 `-pigsb`）结尾。
 
 注意：`POST` 到已识别协议路径时，proxy 会先解析 JSON 才能读取 model。因此这类请求即使最终不带 PIGS 后缀，若 JSON 本身非法也会直接返回 400，而不是进入普通透传。
 
@@ -18,7 +18,7 @@ pigs 是一个 Rust 前置代理。普通请求走透传；只有同时满足以
 
 当前编排对子请求 body 的业务修改如下：
 
-- 客户端模型名 `<name>-pigs` / `<name>-pigsb` 都改成 `<name>` 发给上游；回客户端时使用客户端原始模型名。`-pigs` 选择模式 A，`-pigsb` 选择模式 B。
+- 客户端模型名 `<name>-pigs` / `<name>-pig` 都改成 `<name>` 发给上游；回客户端时使用客户端原始模型名。`-pigs` 选择模式 A，`-pig` 选择模式 B。
 - Pre / Executor：只在进入该 pig 时，把相位指令追加到当前任务 user 文本；同一 pig 内的工具暂停/恢复不会再次注入相位指令。
 - Post：不从最初请求重新构造。Executor 完成后，先保存“Executor 已执行完毕、尚未追加 Post 指令”的完整 checkpoint，再在该 checkpoint 后只追加一条 Post user 指令进行核验。Post 只负责核验和路由，不自行修改任务结果；若输出 `PIGNEXT`，系统丢弃 Post 指令与 Post transcript，回到该 Executor checkpoint，并新增一条与普通 Executor 相同格式的 user 指令，其中 `{pre_output}` 改为 Post 去除控制标记后的核验反馈。
 - 其它字段，例如 `tools`、`tool_choice`、`stream`、`temperature`、`max_tokens`、`thinking`、`reasoning`、`response_format`、`stream_options`、`parallel_tool_calls` 等，当前主链路不主动删除或改写。
@@ -75,7 +75,7 @@ pigs 是一个 Rust 前置代理。普通请求走透传；只有同时满足以
 
 ## 普通透传响应
 
-不带 `-pigs` / `-pigsb` 的请求走 passthrough：
+不带 `-pigs` / `-pig` 的请求走 passthrough：
 
 - 上游状态码保留；
 - 响应 body 以字节流方式回传；
@@ -85,13 +85,13 @@ pigs 是一个 Rust 前置代理。普通请求走透传；只有同时满足以
 
 ## 编排响应是重新合成的
 
-带 `-pigs` / `-pigsb` 的响应都不是上游某一次响应的原样转发，而是 `pigs-protocol` 根据整轮编排产物重新合成。
+带 `-pigs` / `-pig` 的响应都不是上游某一次响应的原样转发，而是 `pigs-protocol` 根据整轮编排产物重新合成。
 
 当前行为：
 
-- `model` 使用客户端原始模型名（包括 `-pigs` 或 `-pigsb` 后缀）；
+- `model` 使用客户端原始模型名（包括 `-pigs` 或 `-pig` 后缀）；
 - 模式 A（`-pigs`）：普通文本按执行顺序保留，控制标记会被过滤；
-- 模式 B（`-pigsb`）：Pre/Post 普通文本以及被 `PIGNEXT`/`PIGFAIL` 否决的 Executor 候选不会进入客户端业务正文。Simple Path 只提交 Pre 的最终答案；复杂路径通常只在 Post `PIGEND` 后提交当前 Executor candidate；若当前 Executor 已是本轮允许的最后一次执行，则该 Executor 完成后直接提交，不再进入 Post；
+- 模式 B（`-pig`）：Pre/Post 普通文本以及被 `PIGNEXT`/`PIGFAIL` 否决的 Executor 候选不会进入客户端业务正文。Simple Path 只提交 Pre 的最终答案；复杂路径通常只在 Post `PIGEND` 后提交当前 Executor candidate；若当前 Executor 已是本轮允许的最后一次执行，则该 Executor 完成后直接提交，不再进入 Post；
 - thinking / reasoning、工具调用和其它已解析的原生块按 `Part` 序列尽量保留；
 - `stop_reason` / `finish_reason` 取最后一轮解析到的值；
 - 响应 id、时间戳、协议壳由 pigs 新生成；

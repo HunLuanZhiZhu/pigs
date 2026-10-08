@@ -641,7 +641,7 @@ def job_common(job: dict[str, Any], updated_at: str | None) -> dict[str, Any]:
     return {
         "job_id": job.get("job_id"),
         "dataset": job.get("dataset"),
-        "model_label": job.get("model_label") or str(job.get("model", "")).removesuffix("-pigs"),
+        "model_label": job.get("model_label") or str(job.get("model", "")).removesuffix({"pigs": "-pigs", "pig": "-pig", "pigsb": "-pigsb"}.get(str(job.get("arm")), "")),
         "arm": job.get("arm"),
         "model": job.get("model"),
         "thinking_effort": job.get("thinking_effort"),
@@ -728,7 +728,7 @@ def summarize_run(run_root: Path, pigs_log_dir: Path | None = None, write_files:
         row["official_metrics"] = metrics
         row["headline_metric"] = headline_metric(dataset, metrics)
 
-        if row["arm"] in {"pigs", "pigsb"}:
+        if row["arm"] in {"pigs", "pig", "pigsb"}:
             local = job_dir / "pigs-http"
             selected = local if any(local.glob("*.txt")) else global_log_dir
             row["orchestration_log_dir"] = str(selected)
@@ -741,47 +741,51 @@ def summarize_run(run_root: Path, pigs_log_dir: Path | None = None, write_files:
     labels = sorted({str(x["model_label"]) for x in jobs_out})
     for label in labels:
         base = next((x for x in jobs_out if x["model_label"] == label and x["arm"] == "base"), None)
-        pigs = next((x for x in jobs_out if x["model_label"] == label and x["arm"] == "pigs"), None)
-        if not base or not pigs:
+        if not base:
             continue
-        comp: dict[str, Any] = {
-            "model_label": label,
-            "dataset": dataset,
-            "thinking_effort": manifest.get("thinking_effort") or base.get("thinking_effort"),
-            "official_metric_deltas": [],
-            "paired": {},
-        }
-        bm = {str(x.get("metric")): x for x in base.get("official_metrics", [])}
-        pm = {str(x.get("metric")): x for x in pigs.get("official_metrics", [])}
-        for name in sorted(set(bm) & set(pm)):
-            bv, pv = number(bm[name].get("score")), number(pm[name].get("score"))
-            if bv is not None and pv is not None:
-                comp["official_metric_deltas"].append({"metric": name, "base": bv, "pigs": pv, "delta": pv - bv})
+        for arm in ("pigs", "pig", "pigsb"):
+            pigs = next((x for x in jobs_out if x["model_label"] == label and x["arm"] == arm), None)
+            if not pigs:
+                continue
+            comp: dict[str, Any] = {
+                "model_label": label,
+                "arm": arm,
+                "dataset": dataset,
+                "thinking_effort": manifest.get("thinking_effort") or base.get("thinking_effort"),
+                "official_metric_deltas": [],
+                "paired": {},
+            }
+            bm = {str(x.get("metric")): x for x in base.get("official_metrics", [])}
+            pm = {str(x.get("metric")): x for x in pigs.get("official_metrics", [])}
+            for name in sorted(set(bm) & set(pm)):
+                bv, pv = number(bm[name].get("score")), number(pm[name].get("score"))
+                if bv is not None and pv is not None:
+                    comp["official_metric_deltas"].append({"metric": name, "base": bv, "pigs": pv, "delta": pv - bv})
 
-        bmat = paired_material.get((label, "base"), {})
-        pmat = paired_material.get((label, "pigs"), {})
-        if dataset in {"gsm8k", "ifeval"}:
-            bmaps = bmat.get("review_maps", {})
-            pmaps = pmat.get("review_maps", {})
-            for name in sorted(set(bmaps) & set(pmaps)):
-                vals = list(bmaps[name].values()) + list(pmaps[name].values())
-                binary = all(v in (0.0, 1.0) for v in vals)
-                comp["paired"][name] = paired_binary(bmaps[name], pmaps[name]) if binary else paired_numeric(bmaps[name], pmaps[name])
-        elif dataset == "bfcl_multiturn":
-            bc, pc = bmat.get("correct_sets", {}), pmat.get("correct_sets", {})
-            bu, pu = bmat.get("universes", {}), pmat.get("universes", {})
-            for name in sorted(set(bc) & set(pc)):
-                universe = set(bu.get(name, set())) & set(pu.get(name, set()))
-                comp["paired"][name] = paired_binary(set(bc[name]), set(pc[name]), universe)
-        elif dataset == "swebench_lite":
-            universe = set(bmat.get("universe", set())) & set(pmat.get("universe", set()))
-            if universe:
-                comp["paired"]["resolved"] = paired_binary(
-                    set(bmat.get("resolved", set())),
-                    set(pmat.get("resolved", set())),
-                    universe,
-                )
-        comparisons.append(comp)
+            bmat = paired_material.get((label, "base"), {})
+            pmat = paired_material.get((label, arm), {})
+            if dataset in {"gsm8k", "ifeval"}:
+                bmaps = bmat.get("review_maps", {})
+                pmaps = pmat.get("review_maps", {})
+                for name in sorted(set(bmaps) & set(pmaps)):
+                    vals = list(bmaps[name].values()) + list(pmaps[name].values())
+                    binary = all(v in (0.0, 1.0) for v in vals)
+                    comp["paired"][name] = paired_binary(bmaps[name], pmaps[name]) if binary else paired_numeric(bmaps[name], pmaps[name])
+            elif dataset == "bfcl_multiturn":
+                bc, pc = bmat.get("correct_sets", {}), pmat.get("correct_sets", {})
+                bu, pu = bmat.get("universes", {}), pmat.get("universes", {})
+                for name in sorted(set(bc) & set(pc)):
+                    universe = set(bu.get(name, set())) & set(pu.get(name, set()))
+                    comp["paired"][name] = paired_binary(set(bc[name]), set(pc[name]), universe)
+            elif dataset == "swebench_lite":
+                universe = set(bmat.get("universe", set())) & set(pmat.get("universe", set()))
+                if universe:
+                    comp["paired"]["resolved"] = paired_binary(
+                        set(bmat.get("resolved", set())),
+                        set(pmat.get("resolved", set())),
+                        universe,
+                    )
+            comparisons.append(comp)
 
     statuses = {str(x.get("status")) for x in jobs_out}
     if any(s in {"running", "queued"} for s in statuses):
@@ -867,7 +871,7 @@ def build_markdown(summary: dict[str, Any]) -> str:
     if summary.get("comparisons"):
         lines += ["", "## Base vs PIGS", ""]
         for comp in summary["comparisons"]:
-            lines.append(f"### {comp['model_label']} — {comp.get('thinking_effort')}")
+            lines.append(f"### {comp['model_label']} — {comp.get('arm', 'pigs')} — {comp.get('thinking_effort')}")
             lines.append("")
             if comp.get("official_metric_deltas"):
                 lines += ["| Metric | Base | PIGS | Delta |", "|---|---:|---:|---:|"]

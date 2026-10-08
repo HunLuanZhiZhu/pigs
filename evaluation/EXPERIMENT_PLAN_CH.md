@@ -39,10 +39,12 @@
 ```text
 MODEL
 vs
-MODEL + PIGS
+MODEL-pigs（拼接阶段输出）
+vs
+MODEL-pig（单一有效业务输出）
 ```
 
-正式主结果不使用身份不明的匿名 alias，也不把 preview 模型当作默认核心模型。
+`-pigsb` 暂时作为 `-pig` 的兼容后缀保留，已有实验目录和记录不重命名。正式主结果不使用身份不明的匿名 alias，也不把 preview 模型当作默认核心模型。
 
 ### 版本冻结要求
 

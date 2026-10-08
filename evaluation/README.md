@@ -23,14 +23,15 @@ All benchmark runners accept one or more base models:
 --models deepseek=deepseek-v4.1-flash MODEL_2 ...
 ```
 
-Each model can run two arms:
+Each model can run three default arms:
 
 ```text
 Base: MODEL
-PIGS: MODEL-pigs
+PIGS: MODEL-pigs   (combined phase output)
+PIG:  MODEL-pig    (one accepted business output)
 ```
 
-Use `--arms base` or `--arms pigs` to run only one arm. For formal experiments, separate run IDs per model are preferred so failures, provider behavior, and cost remain easy to audit.
+`--arms pigsb` remains available for reproducing older runs and sends `MODEL-pigsb`, an alias of `MODEL-pig`. New runs default to `base pigs pig`. Use `--arms base`, `--arms pigs`, or `--arms pig` to select only one arm. For formal experiments, separate run IDs per model are preferred so failures, provider behavior, and cost remain easy to audit.
 
 Current model-selection policy is not “two fixed model families forever.” DeepSeek V4.1 Flash is the current anchor model. Additional formal models should be low-cost, publicly accessible/reproducible through a named API, and have a clear identity. MiMo remains useful as a compatibility/stress-test family but is not automatically a final core model.
 
@@ -93,7 +94,7 @@ mini-proxy :7946
 provider (currently OpenCode Go for the DeepSeek runs)
 ```
 
-Base requests use the unsuffixed model and pass through PIGS normally. PIGS-arm requests use the `-pigs` suffix and enter orchestration. Do not bypass this chain for formal runs.
+Base requests use the unsuffixed model and pass through PIGS normally. PIGS/PIG-arm requests use the `-pigs`/`-pig` suffix and enter the same orchestration; `-pigsb` remains a compatible alias. Do not bypass this chain for formal runs.
 
 ## Control benchmarks
 
