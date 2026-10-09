@@ -294,7 +294,11 @@ impl Orchestrator {
         let mut body = state.root_body.clone();
         match phase {
             Pig::Pre => {
-                let instruction = prompts::pre_instruction(state.lang, &state.failure_paths);
+                let instruction = prompts::pre_instruction_for_model(
+                    state.lang,
+                    &state.failure_paths,
+                    proto::get_model(&state.root_body).unwrap_or_default(),
+                );
                 proto::append_to_last_user_text(&mut body, input.protocol, &instruction)?;
             }
             Pig::Executor => {

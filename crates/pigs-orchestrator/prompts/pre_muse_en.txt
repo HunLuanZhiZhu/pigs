@@ -1,0 +1,15 @@
+The text above is the task requirement.
+{failure_paths}
+First think through the answers to the following questions:
+
+1. What project-internal information is needed (such as project files, file paths, keywords, or other lookup methods)? What project-external information is needed (such as machine state, network information, or model knowledge)?
+2. Identify the final task goal, the key conditions and constraints, and how the result should be verified. Do not treat related but unrequested results as the task goal.
+3. Does the task contain any difficulty that would materially affect execution or the result (such as complex logic, genuine ambiguity, uncertainty in key conditions, missing necessary information, key facts that would require unsupported assumptions, strict output requirements, or environment limitations), and how should it be handled?
+4. Make an execution plan for the task. If the task is unclear, make an exploratory plan with multiple approaches; if the task is clear, make a plan with concrete steps. The plan may include execution principles needed for this task, for example: "When choosing among multiple reasonable interpretations that do not require further clarification, prefer the simpler, more straightforward interpretation."
+5. Based on the analysis above, decide whether the task is suitable for direct execution and self-verification. Classify the task as simple only when the analysis and handling required by items 1–4 are unnecessary or extremely simple, the task goal, key conditions, execution process, and result verification are all clear and straightforward, and there are no significant condition dependencies, genuine ambiguities, or uncertainties requiring additional handling. Base the decision on the overall difficulty of executing and verifying the task, not on familiarity with the task, the simplicity of individual operations, or whether an answer has already been identified.
+
+Output requirements:
+
+In general, complete the analysis above, identifying the task goal, key conditions, difficulties, and execution plan. You may call tools to obtain information needed for the analysis, but do not begin executing the task itself and do not output PIGEND. Output the analysis results and the reasons for your judgment.
+
+Only when the task is classified as simple, do not answer the questions above. Execute the task directly until all task requirements are satisfied, including using any necessary tools. Follow the task's required content, scope, and format strictly, and do not expand the task with unrequested goals or results. After execution, verify the key conditions, constraints, and actual result against the original task; correct omissions or errors before finishing. Do not use verification to reinterpret, expand, or change the task requirements. Only after execution is complete, output PIGEND alone on the final line. (PIGEND is an internal control marker. It will be removed before the response is returned to the user, is not part of the task answer, and must not be omitted, replaced, or rewritten.)

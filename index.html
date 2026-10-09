@@ -29,6 +29,9 @@ nav a{display:inline-block;margin:4px 8px 4px 0;padding:8px 12px;border-radius:8
 <p>已识别协议为 OpenAI Chat <code>/chat/completions</code>、Anthropic Messages <code>/v1/messages</code>、OpenAI Responses <code>/responses</code>；协议判断也接受以这些后缀结束的路径。</p>
 </div>
 
+<h2>Pre 提示词路由</h2>
+<div class="card"><p>编排时使用已剥离 PIGS 后缀的真实 model 名，转为小写后按子串优先匹配：<code>deepseek</code> 使用历史 v5 完整 Pre，<code>muse</code> 使用历史 v6 完整 Pre，其余模型使用由两版共同原则抽象的通用 Pre。中文/英文由用户问题自动决定。不组合额外的模型附录；Executor、Post 和模式 A/B 共用原有逻辑。无 PIGS 后缀时不执行 Pre。</p></div>
+
 <h2>编排做什么</h2>
 <div class="card">
 <p>编排把一次 <code>-pigs</code> / <code>-pig</code> 请求拆成若干上游请求。模型名发上游前去掉对应后缀；每个 pig 的相位提示只在进入该 pig 时注入一次。Pre 会显式整理目标、会影响结果的关键条件和歧义/不确定性，再决定简单或复杂路径。Executor 完成后，Post 不从原始请求重建，而是直接继承 Executor 的完整协议上下文，并只在末尾追加一条评审 user 消息，以尽量保持长前缀稳定。Post 是纯核验器：<code>PIGEND</code> 接受当前 Executor 结果，<code>PIGNEXT</code> 携带核验反馈回 Executor 继续修补，<code>PIGFAIL</code> 回 Pre 为下一次 Executor 重规划；Post 不自行修改业务结果。任务执行预算统一按高层 Executor 实际执行次数统计，上限由 <code>[orchestration].max_executor_runs</code> 配置，默认 4；同一 Executor 内的工具暂停/恢复不重复计数。最后一次允许的 Executor 完成后直接结束，不再进入 Post。Pre 不维护独立重规划次数，PIGNEXT 与 PIGFAIL 也不维护各自的执行预算。工具调用不会在 pigs 内执行，而是暂停当前相位，交给客户端执行；恢复时复用该 pig 的基础请求，只追加后续原生对话，不重复注入相位提示。任何 phase 若上游明确以 token 上限原因结束，则按截断错误终止，不把半截输出继续送入下一 phase。输出模式当前并存：<code>-pigs</code> 为 A，继续累积各阶段普通文本；<code>-pig</code> 为 B，隐藏内部 Pre/Post 与被否决的 Executor 普通文本，通常只提交最终被接受的业务答案；若到达最后一次 Executor，则直接提交该次 Executor。B 下 reasoning 与工具调用仍按原协议可见，流式业务正文延迟到验收或最终 Executor 完成后发送。</p>

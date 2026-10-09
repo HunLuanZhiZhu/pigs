@@ -12,6 +12,12 @@ pigs 是一个 Rust 前置代理。普通请求走透传；只有同时满足以
 
 注意：`POST` 到已识别协议路径时，proxy 会先解析 JSON 才能读取 model。因此这类请求即使最终不带 PIGS 后缀，若 JSON 本身非法也会直接返回 400，而不是进入普通透传。
 
+## Pre 提示词按模型路由
+
+进入 PIGS 编排后，proxy 已经剥离 `-pigs` / `-pig` / `-pigsb` 后缀。orchestrator 读取实际上游 `model` 名称，将其转为 ASCII 小写，再按优先顺序匹配：包含 `deepseek` → 完整历史 v5 Pre；否则包含 `muse` → 完整历史 v6 Pre；均未命中 → 从 v5/v6 五问、简单路径和核验共同原则抽象的通用 Pre。无后缀请求仍直接透传，不执行 Pre。匹配是大小写不敏感的**子串**匹配，不要求模型 ID 精确相等。
+
+三组 Pre 均有中文、英文独立模板，语言按最后一条用户问题前 2000 字是否出现 CJK 汉字选取。选中的完整模板再展开 `{failure_paths}`，不在 v5/v6 后附加模型规则；Executor / Post 和 A/B 模式的状态机不变。历史 `pre_user_{zh,en}.txt` 作为旧实现资料保留，正常路由改为使用 `pre_deepseek_*`、`pre_muse_*`、`pre_generic_*`。这些提示词与测试在 Git 中独立版本化。
+
 ## 编排请求体
 
 进入编排后，父请求 body 会先解析为 `serde_json::Value`，后续子请求重新序列化。因此编排子请求在语义上保留字段，但**不承诺与客户端原始 JSON 字节级一致**。

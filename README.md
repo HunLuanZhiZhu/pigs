@@ -17,6 +17,8 @@
 
 PIGS is a Rust front proxy for LLM APIs. Ordinary requests pass through normally; supported `POST` requests whose model name ends in `-pigs` or `-pig` enter an adaptive **Pre → Executor → Post** orchestration flow. The legacy `-pigsb` suffix remains supported.
 
+The Pre prompt is chosen from the **real upstream model name** after removing the PIGS suffix: names containing `deepseek` use the frozen **DeepSeek v5** full prompt; names containing `muse` use the frozen **Muse v6** full prompt; all others use a concise generic prompt abstracted from their common task analysis, execution, and verification requirements. Matching is ASCII case-insensitive; the user's language selects the Chinese or English edition. There is no model-specific addendum and no change to Executor/Post.
+
 The core idea is deliberately small:
 
 ```text

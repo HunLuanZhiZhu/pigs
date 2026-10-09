@@ -41,6 +41,8 @@ code{background:#eef1f6;border-radius:4px;padding:1px 6px;font-family:Consolas,m
 <p>例如 <code>claude-x-pigs</code> 与 <code>claude-x-pig</code> 都发往上游 <code>claude-x</code>。是否进入编排还要由 proxy 同时判断 HTTP 方法和协议路径。</p>
 </div>
 
+<div class="tip"><strong>模型后缀与 Pre 内容是两层路由：</strong>本 crate 只识别 <code>-pigs</code> / <code>-pig</code> / <code>-pigsb</code> 后缀并读取、改写模型名；DeepSeek v5、Muse v6 和通用 Pre 的选择由 orchestrator 读取真实模型名完成，协议层不匹配模型品牌。</div>
+
 <h2>请求体手术</h2>
 <div class="card">
 <p>所有请求修改直接作用在 <code>serde_json::Value</code> 上。</p>

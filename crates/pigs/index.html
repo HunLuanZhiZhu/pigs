@@ -38,6 +38,9 @@ code{background:#eef1f6;border-radius:4px;padding:1px 6px;font-family:Consolas,m
 <p>另外，proxy 的 HTTP 诊断抓包由 <code>[logging]</code> 配置控制。当前测试阶段默认 <code>detail = "max"</code>，目录默认 <code>logs/http</code>：每个请求/响应各写一个文件，并记录完整 JSON/SSE body；<code>basic</code> 只写元数据，<code>off</code> 关闭。敏感鉴权头会打码，但 body 不做语义脱敏。</p>
 </div>
 
+<h2>Pre 模型路由边界</h2>
+<div class="card"><p>CLI 不识别模型专属提示词。进入 PIGS 编排后，orchestrator 根据真实 model 名匹配 <code>deepseek</code> → v5、<code>muse</code> → v6，其他名称用通用 Pre；语言选择由用户问题决定。这个选择不改变 CLI 或配置参数。</p></div>
+
 <h2>职责边界</h2>
 <div class="warn"><p>这个 crate 当前不实现协议解析、<code>-pigs</code>/<code>-pig</code> 路由、编排或重试；这些逻辑分别在 <code>pigs-proxy</code>、<code>pigs-orchestrator</code> 与 <code>pigs-protocol</code>。当前 orchestrator 契约中，<code>-pigs</code> 选择模式 A、<code>-pig</code> 选择模式 B；两者共用状态机。Post 使用 <code>PIGEND</code>/<code>PIGNEXT</code>/<code>PIGFAIL</code> 做纯核验路由：PIGNEXT 回 Executor 修补；Pre 与 Post 使用不同的控制标记有效性规则，并会把明确的 token 上限停止原因视为截断错误；CLI 不覆盖这些语义。</p></div>
 

@@ -35,6 +35,8 @@ PIG:  MODEL-pig    (one accepted business output)
 
 Current model-selection policy is not “two fixed model families forever.” DeepSeek V4.1 Flash is the current anchor model. Additional formal models should be low-cost, publicly accessible/reproducible through a named API, and have a clear identity. MiMo remains useful as a compatibility/stress-test family but is not automatically a final core model.
 
+PIGS Pre prompt selection is model-specific, but benchmarking stays unchanged: DeepSeek models use the frozen historical v5 full Pre, Muse models use v6, and otherwise an independent generic Pre. This selection is based on the real model name and is applied equally to the `pigs` and `pig` arms. These historical prompt candidates were evaluated in different orchestration modes; selecting v5 in mode B does **not** establish the historical v5 GSM8K score for that new combination.
+
 ## Concurrency
 
 There are two independent concurrency controls:

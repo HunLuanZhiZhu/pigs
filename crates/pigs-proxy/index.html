@@ -19,6 +19,8 @@ table{border-collapse:collapse;width:100%}th,td{border:1px solid var(--line);pad
 <tr><td>其它请求</td><td>直接 passthrough。</td></tr>
 </table></div>
 
+<div class="tip"><strong>Pre 内容的路由：</strong>proxy 负责剥掉后缀并传入真实模型名，orchestrator 再按名称包含 <code>deepseek</code> / <code>muse</code> 选择分别的历史 v5 / v6 完整模板；均未命中时使用通用 Pre。普通透传请求完全不执行 Pre。</div>
+
 <h2>上游地址</h2>
 <div class="card">
 <p>配置不是单一 <code>base_url</code>，而是三个协议 base：<code>upstream.openai</code>、<code>upstream.responses</code>、<code>upstream.anthropic</code>。未识别路径落到 OpenAI base。</p>
