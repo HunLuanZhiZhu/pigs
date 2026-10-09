@@ -8,7 +8,7 @@ h1{margin:0}h2{font-size:20px;margin:30px 0 10px;padding-left:12px;border-left:4
 code{background:#eef1f6;border-radius:4px;padding:1px 6px;font-family:Consolas,monospace;color:#c2410c}pre{background:#1e293b;color:#e2e8f0;border-radius:10px;padding:14px 18px;overflow:auto}
 .tip{border-left:4px solid var(--green);background:var(--green-bg);padding:12px 16px}.warn{border-left:4px solid var(--red);background:var(--red-bg);padding:12px 16px}.note{border-left:4px solid var(--amber);background:var(--amber-bg);padding:12px 16px}.crumb a{color:var(--blue);text-decoration:none}
 </style></head><body><div class="wrap">
-<p class="muted"><strong>实验说明：</strong> <code>-pigfull</code> 是诊断专用后缀：使用仅规划的 Pre 并禁止简单路径提前完成，随后进入 Executor / Post；最终输出沿用模式 B。普通 <code>-pig</code> 与 <code>-pigs</code> 行为不变。</p>
+<p class="muted"><strong>实验说明：</strong> <code>-pig3</code> 是诊断专用后缀：使用仅规划的 Pre 并禁止简单路径提前完成，随后进入 Executor / Post；最终输出沿用模式 B。普通 <code>-pig</code> 与 <code>-pigs</code> 行为不变。</p>
 <p class="crumb"><a href="../../index.html">← 返回总览</a></p>
 <h1>pigs-orchestrator</h1>
 <p class="muted">当前实现：维护 Pre → Executor → Post 状态机，把父请求克隆成多个协议原生子请求，并处理工具暂停/恢复、相位文本、usage 和停止原因。</p>
@@ -28,6 +28,9 @@ code{background:#eef1f6;border-radius:4px;padding:1px 6px;font-family:Consolas,m
 </table>
 <p>Pre 使用严格标记检测，Post 使用只看最后非空行的终止标记检测。Post 只负责核验和路由，不自行执行修补。任务执行预算统一按 Executor 高层执行次数统计，上限由 <code>[orchestration].max_executor_runs</code> 配置，默认 4；同一 Executor 内部的工具暂停/恢复不重复计数。最后一次允许的 Executor 完成后直接结束，因此不会再发送一个没有后续执行价值的 Post。<code>PIGNEXT</code> 与 <code>PIGFAIL→Pre→Executor</code> 都只会推动下一次 Executor，不维护各自的次数预算。任何相位若 <code>stop_reason</code> 明确表示 token 上限截断（<code>length</code> / <code>max_tokens</code> / <code>max_output_tokens</code>），会返回 <code>Error::OutputTruncated</code>。Post 无控制标记的协议重试若超限仍返回 <code>Error::Budget</code>；非流式 proxy 会把真正的预算错误映射为 HTTP 422，其它编排错误通常为 502。</p>
 </div>
+
+<h2>完整 Pre 模板路由</h2>
+<div class="card"><p>Pre 开始时从父请求 <code>model</code>（proxy 已剥除 <code>-pig</code> / <code>-pigs</code> 后缀）选完整模板：ASCII 不区分大小写地先匹配 <code>deepseek</code>（历史 v5），再匹配 <code>muse</code>（历史 v6）；否则选基于二者共同五问、直接执行和核验原则抽象的 <code>pre_generic_{zh,en}.txt</code>。每个候选本身就是独立完整 Pre，不拼接增量附录。再按任务语言选中英文，并替换 <code>{failure_paths}</code>；Executor 与 Post 没有模型专属路由。</p></div>
 
 <h2>子请求如何组装</h2>
 <div class="card">

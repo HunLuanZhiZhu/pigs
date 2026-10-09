@@ -130,7 +130,7 @@ async fn orchestrate(
     let input = orch::TurnInput {
         protocol,
         mode,
-        force_full: client_model.ends_with("-pigfull"),
+        force_full: client_model.ends_with("-pig3"),
         body: parsed.clone(),
         path: path.to_string(),
         query: query.map(String::from),

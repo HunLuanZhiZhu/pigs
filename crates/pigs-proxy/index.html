@@ -7,7 +7,7 @@ h1{margin:0}h2{font-size:20px;margin:30px 0 10px;padding-left:12px;border-left:4
 table{border-collapse:collapse;width:100%}th,td{border:1px solid var(--line);padding:8px 12px;text-align:left;vertical-align:top}th{background:var(--blue-bg);color:var(--blue)}code{background:#eef1f6;border-radius:4px;padding:1px 6px;font-family:Consolas,monospace;color:#c2410c}
 .tip{border-left:4px solid var(--green);background:var(--green-bg);padding:12px 16px}.warn{border-left:4px solid var(--red);background:var(--red-bg);padding:12px 16px}.note{border-left:4px solid var(--amber);background:var(--amber-bg);padding:12px 16px}.crumb a{color:var(--blue);text-decoration:none}
 </style></head><body><div class="wrap">
-<p class="muted"><strong>实验说明：</strong> <code>-pigfull</code> 是诊断专用后缀：使用仅规划的 Pre 并禁止简单路径提前完成，随后进入 Executor / Post；最终输出沿用模式 B。普通 <code>-pig</code> 与 <code>-pigs</code> 行为不变。</p>
+<p class="muted"><strong>实验说明：</strong> <code>-pig3</code> 是诊断专用后缀：使用仅规划的 Pre 并禁止简单路径提前完成，随后进入 Executor / Post；最终输出沿用模式 B。普通 <code>-pig</code> 与 <code>-pigs</code> 行为不变。</p>
 <p class="crumb"><a href="../../index.html">← 返回总览</a></p>
 <h1>pigs-proxy</h1>
 <p class="muted">当前实现：一个 axum fallback 接住所有方法和路径，负责分流、上游转发、loopback 以及把编排结果编码给客户端。</p>
@@ -19,6 +19,8 @@ table{border-collapse:collapse;width:100%}th,td{border:1px solid var(--line);pad
 <tr><td><code>POST</code> + 三协议路径</td><td>先尝试解析 JSON。非法 JSON 返回 400；合法后读取 model，带 <code>-pigs</code> 或 <code>-pig</code> 则编排，不带则继续透传原始 body。</td></tr>
 <tr><td>其它请求</td><td>直接 passthrough。</td></tr>
 </table></div>
+
+<div class="tip"><strong>Pre 内容的路由：</strong>proxy 负责剥掉后缀并传入真实模型名，orchestrator 再按名称包含 <code>deepseek</code> / <code>muse</code> 选择分别的历史 v5 / v6 完整模板；均未命中时使用通用 Pre。普通透传请求完全不执行 Pre。</div>
 
 <h2>上游地址</h2>
 <div class="card">

@@ -336,7 +336,7 @@ async fn subrequests_pass_everything_through_untouched() {
 }
 
 #[tokio::test]
-async fn experimental_full_ignores_pre_early_pigend() {
+async fn pig3_ignores_pre_early_pigend() {
     let transport = fake(vec![
         FakeTransport::text(200, "提前回答了\nPIGEND"),
         FakeTransport::text(200, "Executor 正式答案"),
@@ -354,6 +354,28 @@ async fn experimental_full_ignores_pre_early_pigend() {
     let pre_prompt = last_message_content(&pre_body);
     assert!(pre_prompt.contains("不要在本阶段执行任务"));
     assert!(!pre_prompt.contains("PIGEND"));
+}
+
+#[tokio::test]
+async fn pig3_still_visits_post_when_executor_budget_is_one() {
+    let transport = fake(vec![
+        FakeTransport::text(200, "执行前计划"),
+        FakeTransport::text(200, "首次执行结果"),
+        FakeTransport::text(200, "PIGEND"),
+    ]);
+    let (rt, _) = runtime(transport.clone());
+    let mut request = input_mode(proto::Protocol::OpenAI, proto::PigsMode::B);
+    request.force_full = true;
+    let result = completed(
+        Orchestrator::with_limits(1, 3)
+            .run(request, rt)
+            .await
+            .unwrap(),
+    );
+    assert_eq!(result.path, vec![Pig::Pre, Pig::Executor, Pig::Post]);
+    assert_eq!(result.ended_with, EndedWith::PigEnd);
+    assert_eq!(result.text, "首次执行结果");
+    assert_eq!(transport.requests.lock().unwrap().len(), 3);
 }
 
 #[tokio::test]
@@ -405,6 +427,39 @@ async fn happy_path_three_pigs_with_pigend() {
                 "Post = 原消息 + assistant(草稿) + user(验收指令)"
             );
             assert_eq!(body["messages"][2]["content"], "执行结果……");
+        }
+    }
+}
+
+#[tokio::test]
+async fn pre_route_uses_the_actual_upstream_model_across_protocols() {
+    for protocol in [
+        proto::Protocol::OpenAI,
+        proto::Protocol::Anthropic,
+        proto::Protocol::Responses,
+    ] {
+        for (model, expected_fragment) in [
+            ("DeepSeek-V4.1-Flash", "按通常语义直接执行"),
+            ("muse-spark-1.3-contributor", "整体执行与核验难度"),
+            ("unlisted-provider-model", "若是简单任务"),
+        ] {
+            let transport = fake(vec![FakeTransport::protocol_text(protocol, 200, "已完成\nPIGEND")]);
+            let (rt, _) = runtime(transport.clone());
+            let mut turn = input_mode_for_protocol(protocol, proto::PigsMode::B);
+            proto::set_model(&mut turn.body, model);
+            let result = completed(Orchestrator::new().run(turn, rt).await.unwrap());
+            assert_eq!(result.ended_with, EndedWith::SimplePath);
+
+            let requests = transport.requests.lock().unwrap();
+            assert_eq!(requests.len(), 1);
+            let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+            let serialized = body.to_string();
+            assert!(
+                serialized.contains(expected_fragment),
+                "model={model} protocol={protocol:?} Pre mismatch",
+            );
+            assert_eq!(proto::get_model(&body), Some(model));
+            assert!(serialized.contains("PIGEND"));
         }
     }
 }

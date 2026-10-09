@@ -8,11 +8,17 @@ pigs 是一个 Rust 前置代理。普通请求走透传；只有同时满足以
 
 1. HTTP 方法是 `POST`；
 2. 路径能识别为 OpenAI Chat、OpenAI Responses 或 Anthropic Messages；
-3. 请求 JSON 的 `model` 以 `-pigs`（模式 A）或 `-pig`（模式 B，兼容旧后缀 `-pigsb`）结尾；诊断专用后缀 `-pigfull` 也进入模式 B，且强制走完整路径。
+3. 请求 JSON 的 `model` 以 `-pigs`（模式 A）或 `-pig`（模式 B，兼容旧后缀 `-pigsb`）结尾；诊断专用后缀 `-pig3` 也进入模式 B，且成功执行时至少经过 Pre → Executor → Post 三个阶段。
 
-实验后缀 `-pigfull`：入口在剥除模型名后，将 `force_full` 独立传给编排器；Pre 使用 `prompts/pre_full_{zh,en}.txt`，仅规划、不提供控制标记或简单任务判断，忽略 Pre 的提前终止信号，进入 Executor → Post；Post/Executor 与模式 B 保持一致。此后缀是研究诊断入口，不属于正式主评测矩阵。
+实验后缀 `-pig3`：入口在剥除模型名后，将 `force_full` 独立传给编排器；Pre 使用 `prompts/pre_full_{zh,en}.txt`，仅规划、不提供控制标记或简单任务判断，忽略 Pre 的提前终止信号。正常完成至少运行 Pre、Executor、Post；即使 `max_executor_runs=1`，第一次 Executor 后仍需进入 Post。若上游错误、工具暂停或协议异常，不能保证单次客户端请求已完成三个阶段。最终答案和 Post/Executor 行为保持模式 B 语义。旧实验日志中的 `-pigfull` 是历史真实模型名，现行后缀已改为 `-pig3`（不保留旧后缀别名）。此后缀不属于正式主评测矩阵。
 
 注意：`POST` 到已识别协议路径时，proxy 会先解析 JSON 才能读取 model。因此这类请求即使最终不带 PIGS 后缀，若 JSON 本身非法也会直接返回 400，而不是进入普通透传。
+
+## Pre 提示词按模型路由
+
+进入 PIGS 编排后，proxy 已经剥离 `-pigs` / `-pig` / `-pigsb` 后缀。orchestrator 读取实际上游 `model` 名称，将其转为 ASCII 小写，再按优先顺序匹配：包含 `deepseek` → 完整历史 v5 Pre；否则包含 `muse` → 完整历史 v6 Pre；均未命中 → 从 v5/v6 五问、简单路径和核验共同原则抽象的通用 Pre。无后缀请求仍直接透传，不执行 Pre。匹配是大小写不敏感的**子串**匹配，不要求模型 ID 精确相等。
+
+三组 Pre 均有中文、英文独立模板，语言按最后一条用户问题前 2000 字是否出现 CJK 汉字选取。选中的完整模板再展开 `{failure_paths}`，不在 v5/v6 后附加模型规则；模型名称路由本身不改变 Executor / Post 的提示词选择和 A/B 模式；实验性 `-pig3` 另行强制经过三个阶段。历史 `pre_user_{zh,en}.txt` 作为旧实现资料保留，正常路由改为使用 `pre_deepseek_*`、`pre_muse_*`、`pre_generic_*`。这些提示词与测试在 Git 中独立版本化。
 
 ## 编排请求体
 

@@ -35,6 +35,8 @@ PIG:  MODEL-pig    (one accepted business output)
 
 Current model-selection policy is not “two fixed model families forever.” DeepSeek V4.1 Flash is the current anchor model. Additional formal models should be low-cost, publicly accessible/reproducible through a named API, and have a clear identity. MiMo remains useful as a compatibility/stress-test family but is not automatically a final core model.
 
+PIGS Pre prompt selection is model-specific, but benchmarking stays unchanged: DeepSeek models use the frozen historical v5 full Pre, Muse models use v6, and otherwise an independent generic Pre. This selection is based on the real model name and is applied equally to the `pigs` and `pig` arms. These historical prompt candidates were evaluated in different orchestration modes; selecting v5 in mode B does **not** establish the historical v5 GSM8K score for that new combination.
+
 ## Concurrency
 
 There are two independent concurrency controls:
@@ -210,6 +212,8 @@ Per run:
 ```
 
 `summarize_evaluation.py` summarizes one run. `summarize_runs.py` combines independent runs without pretending they were one execution.
+
+Historical results from 2026-10-08 used the then-current `-pigfull` suffix. In the present runtime it has been **replaced** with `-pig3` (no compatibility alias): the latter forces a planning-only Pre and, for a successful turn, at least one Executor and one Post. Historical reports keep their original request names for reproducibility.
 
 For the 2026-10-08 Muse mechanism diagnostic only: `-pigfull` uses a separate planning-only Pre and forces Executor/Post with mode B output. `evaluation/diagnose_muse_base_errors.py` selects exactly the 26 misses from the complete October 5 Muse Base EvalScope review and sends their original four-shot prompts to an isolated PIGS listener. It writes `progress.txt`, `results.jsonl`, and `summary.json`. These deliberately selected cases must **not** be reported as full GSM8K accuracy.
 

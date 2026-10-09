@@ -20,7 +20,7 @@ import httpx
 from evalscope.metrics.math.parser import extract_answer, math_equal
 
 BASE_REVIEWS = Path("/root/pigs-eval/outputs/formal/gsm8k/muse13-gsm8k-responses-v5-low-c4-20261005/base/reviews/muse-spark-1.3-contributor/gsm8k_main.jsonl")
-MODEL = "muse-spark-1.3-contributor-pigfull"
+MODEL = "muse-spark-1.3-contributor-pig3"
 
 
 def utcnow():

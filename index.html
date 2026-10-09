@@ -15,7 +15,7 @@ nav a{display:inline-block;margin:4px 8px 4px 0;padding:8px 12px;border-radius:8
 </style>
 </head>
 <body><div class="wrap">
-<p class="muted"><strong>实验说明：</strong> <code>-pigfull</code> 是诊断专用后缀：使用仅规划的 Pre 并禁止简单路径提前完成，随后进入 Executor / Post；最终输出沿用模式 B。普通 <code>-pig</code> 与 <code>-pigs</code> 行为不变。</p>
+<p class="muted"><strong>实验说明：</strong> <code>-pig3</code> 是诊断专用后缀：使用仅规划的 Pre 并禁止简单路径提前完成，随后进入 Executor / Post；最终输出沿用模式 B。普通 <code>-pig</code> 与 <code>-pigs</code> 行为不变。</p>
 <h1>pigs 当前架构总览</h1>
 <p class="tagline">当前代码事实：普通请求走前置代理透传；POST 到三种协议路径且 model 以 <code>-pigs</code>（模式 A）或 <code>-pig</code>（模式 B）结尾时，进入 Pre → Executor → Post 编排。</p>
 
@@ -29,6 +29,9 @@ nav a{display:inline-block;margin:4px 8px 4px 0;padding:8px 12px;border-radius:8
 </table>
 <p>已识别协议为 OpenAI Chat <code>/chat/completions</code>、Anthropic Messages <code>/v1/messages</code>、OpenAI Responses <code>/responses</code>；协议判断也接受以这些后缀结束的路径。</p>
 </div>
+
+<h2>Pre 提示词路由</h2>
+<div class="card"><p>编排时使用已剥离 PIGS 后缀的真实 model 名，转为小写后按子串优先匹配：<code>deepseek</code> 使用历史 v5 完整 Pre，<code>muse</code> 使用历史 v6 完整 Pre，其余模型使用由两版共同原则抽象的通用 Pre。中文/英文由用户问题自动决定。不组合额外的模型附录；Executor、Post 和模式 A/B 共用原有逻辑。无 PIGS 后缀时不执行 Pre。</p></div>
 
 <h2>编排做什么</h2>
 <div class="card">

@@ -1,0 +1,15 @@
+The text above is the task requirement.
+{failure_paths}
+First think through the answers to the following questions:
+
+1. What project-internal information (such as files, paths, or lookup methods) and external information (such as machine state, network information, or model knowledge) are needed?
+2. Identify the task's final goal, key conditions and constraints, and how to verify the result. Do not treat related but unrequested results as goals.
+3. Does the task have difficulties that materially affect execution or the result (such as complex logic, genuine ambiguity, missing necessary information, strict output requirements, or environment limits)? How should they be addressed?
+4. Make an execution plan: use concrete steps when the task is clear, or consider viable exploratory approaches when it is unclear.
+5. Decide whether the task is simple. Classify it as simple only when the analysis and handling required by items 1–4 are unnecessary or extremely simple. Base the decision on the task itself, not on whether an answer has already been identified.
+
+Output requirements:
+
+If the task is simple, do not answer the questions above. Execute the original task directly until all requirements are met, using tools when needed. Follow the task's ordinary meaning and its content, scope, and formatting requirements without adding unrequested goals. Afterwards, verify the result against the original task's goal, key conditions, and constraints; correct clear omissions or errors without reinterpreting or changing a reasonable reading of the task. After completion, output PIGEND alone on the final line. (PIGEND is a PIGS internal control marker. It will be removed before the answer is returned to the user and is not part of the task answer; the task's own output formatting, ending, capitalization, and similar restrictions do not apply to PIGEND. Do not omit, replace, or rewrite it.)
+
+If the task is not simple, you may call tools to obtain information necessary for analysis, but do not begin executing the task itself and do not output PIGEND. Give the analysis, execution plan, and reasons for the classification.

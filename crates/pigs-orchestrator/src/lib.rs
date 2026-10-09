@@ -304,7 +304,11 @@ impl Orchestrator {
                 let instruction = if state.force_full {
                     prompts::pre_full_instruction(state.lang, &state.failure_paths)
                 } else {
-                    prompts::pre_instruction(state.lang, &state.failure_paths)
+                    prompts::pre_instruction_for_model(
+                        state.lang,
+                        &state.failure_paths,
+                        proto::get_model(&state.root_body).unwrap_or_default(),
+                    )
                 };
                 proto::append_to_last_user_text(&mut body, input.protocol, &instruction)?;
             }
@@ -460,7 +464,7 @@ impl Orchestrator {
             match phase {
                 // ---------------- Pre：规划 / 分流 ----------------
                 Pig::Pre => match detect_marker(&raw) {
-                    // 实验 -pigfull 不允许提前结束，即使上游意外生成控制标记。
+                    // 实验 -pig3 不允许 Pre 提前结束，即使上游意外生成控制标记。
                     Some(Marker::End) if !state.force_full => {
                         state.commit_text(strip_markers(&raw));
                         return Ok(Outcome::Completed(state.complete(EndedWith::SimplePath)))
@@ -484,7 +488,11 @@ impl Orchestrator {
 
                     // 所有执行预算统一按 Executor 高层执行次数计算。最后一次允许的 Executor
                     // 完成后直接结束；此时再做 Post 已没有任何后续执行机会，因此没有意义。
-                    if state.executor_runs >= self.max_executor_runs {
+                    // -pig3 承诺成功执行时至少经过 Pre → Executor → Post。
+                    // 即使 max_executor_runs=1，也必须先给首次 Executor 一个 Post 验收机会。
+                    if state.executor_runs >= self.max_executor_runs
+                        && !(state.force_full && state.executor_runs == 1)
+                    {
                         state.commit_candidate();
                         return Ok(Outcome::Completed(
                             state.complete(EndedWith::ExecutorLimit),

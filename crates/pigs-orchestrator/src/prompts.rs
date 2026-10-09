@@ -1,7 +1,7 @@
-//! 相位指令组装：模板 `include_str!` 嵌入，语言按用户问题自动选择。
+//! 相位指令组装：按模型名称选择完整 Pre 模板，再按用户问题选择中英文。
 //!
 //! 这里只负责"指令正文"，**不含用户原问题**——命令与产物的接法由编排层决定，
-//! 与 legacy `pigs-prompts` 的模板逐字节一致：
+//! DeepSeek v5 / Muse v6 模板保持历史原文；未命中的模型使用两者共同原则抽象的通用版：
 //! - Pre：模板 + 历次失败路径；
 //! - Executor：模板里填 `{pre_output}`（Pre 的分析）；
 //! - Post：纯模板（Executor 的草稿不走这里，而是作为 assistant 消息接回对话）。
@@ -13,11 +13,26 @@ fn norm(s: &'static str) -> String {
     s.replace("\r\n", "\n")
 }
 
-fn pre_template(lang: Lang) -> String {
-    norm(match lang {
-        Lang::Zh => include_str!("../prompts/pre_user_zh.txt"),
-        Lang::En => include_str!("../prompts/pre_user_en.txt"),
-    })
+fn pre_template(lang: Lang, model: &str) -> String {
+    // 入口已剥离 -pig/-pigs 后缀；只决定 Pre 模板，不修改真正的上游 model。
+    let name = model.to_ascii_lowercase();
+    let template = if name.contains("deepseek") {
+        match lang {
+            Lang::Zh => include_str!("../prompts/pre_deepseek_zh.txt"),
+            Lang::En => include_str!("../prompts/pre_deepseek_en.txt"),
+        }
+    } else if name.contains("muse") {
+        match lang {
+            Lang::Zh => include_str!("../prompts/pre_muse_zh.txt"),
+            Lang::En => include_str!("../prompts/pre_muse_en.txt"),
+        }
+    } else {
+        match lang {
+            Lang::Zh => include_str!("../prompts/pre_generic_zh.txt"),
+            Lang::En => include_str!("../prompts/pre_generic_en.txt"),
+        }
+    };
+    norm(template)
 }
 fn pre_full_template(lang: Lang) -> String {
     norm(match lang {
@@ -44,14 +59,19 @@ fn failure_paths_template(lang: Lang) -> String {
     })
 }
 
-/// Pre pig 的指令：追加到最后一条 user 消息文本后面（含历次失败路径）。
+/// 通用 Pre：供未识别模型和独立调用者使用。
 pub fn pre_instruction(lang: Lang, failure_paths: &[String]) -> String {
-    let template = pre_template(lang);
+    pre_instruction_for_model(lang, failure_paths, "")
+}
+
+/// Pre pig 的指令：按模型名称选完整模板，再嵌入失败路径。
+pub fn pre_instruction_for_model(lang: Lang, failure_paths: &[String], model: &str) -> String {
+    let template = pre_template(lang, model);
     let fp = failure_paths_block(lang, failure_paths);
     template.replace("{failure_paths}", &fp)
 }
 
-/// 仅用于 -pigfull 实验的纯规划 Pre，不提供简单路径或控制标记说明。
+/// 仅用于 -pig3 实验的纯规划 Pre，不提供简单路径或控制标记说明。
 pub fn pre_full_instruction(lang: Lang, failure_paths: &[String]) -> String {
     pre_full_template(lang).replace("{failure_paths}", &failure_paths_block(lang, failure_paths))
 }
@@ -101,17 +121,12 @@ mod tests {
         assert!(p.contains("本次需要你先思考以下问题的答案"));
         assert!(!p.contains("曾失败过"));
         assert!(p.contains("PIGEND"));
-        assert!(p.contains("计划中可以加入本任务需要的执行原则"));
-        assert!(p.contains("在输出给用户前会被删除"));
-        assert!(!p.contains("按通常语义直接执行"));
-        assert!(p.contains("判断依据是任务本身的整体执行与核验难度"));
-        assert!(
-            p.find("一般情况下，完成上述问题的分析")
-                .expect("general path instruction")
-                < p.find("仅当任务被判定为简单任务时")
-                    .expect("simple path instruction")
-        );
-        assert!(p.trim_end().ends_with("不要省略、替换或改写。）"));
+        assert!(p.contains("判断依据是任务本身"));
+        assert!(p.contains("若是简单任务"));
+        assert!(p.contains("若不是简单任务"));
+        assert!(p.contains("返回用户前会被删除"));
+        assert!(!p.contains("{failure_paths}"));
+        assert!(!p.contains("用户补充"));
 
         let p = pre_instruction(Lang::Zh, &[String::from("第一次尝试报告")]);
         assert!(p.contains("曾失败过"));
@@ -130,6 +145,41 @@ mod tests {
         let zh = pre_full_instruction(Lang::Zh, &[]);
         assert!(!zh.contains("判定为简单任务"));
         assert!(zh.contains("不要在本阶段执行任务"));
+    }
+
+    #[test]
+    fn model_specific_pre_uses_unmodified_full_historical_templates() {
+        for lang in [Lang::Zh, Lang::En] {
+            let generic = pre_instruction(lang, &[]);
+            let unknown = pre_instruction_for_model(lang, &[], "unknown-model-pig");
+            assert_eq!(generic, unknown);
+
+            let (deepseek_source, muse_source) = match lang {
+                Lang::Zh => (
+                    include_str!("../prompts/pre_deepseek_zh.txt"),
+                    include_str!("../prompts/pre_muse_zh.txt"),
+                ),
+                Lang::En => (
+                    include_str!("../prompts/pre_deepseek_en.txt"),
+                    include_str!("../prompts/pre_muse_en.txt"),
+                ),
+            };
+            let deepseek = pre_instruction_for_model(lang, &[], "DeEpSeEk-v4.1-flash");
+            let muse = pre_instruction_for_model(lang, &[], "MuSe-spark-1.3-contributor");
+            assert_eq!(deepseek, norm(deepseek_source).replace("{failure_paths}", ""));
+            assert_eq!(muse, norm(muse_source).replace("{failure_paths}", ""));
+            assert_ne!(deepseek, muse);
+            assert_ne!(deepseek, generic);
+            assert_ne!(muse, generic);
+            assert_eq!(deepseek.matches("PIGEND").count(), norm(deepseek_source).matches("PIGEND").count());
+            assert_eq!(muse.matches("PIGEND").count(), norm(muse_source).matches("PIGEND").count());
+
+            let with_failure = pre_instruction_for_model(
+                lang, &[String::from("historical failure")], "deepseek-v4",
+            );
+            assert!(with_failure.contains("historical failure"));
+            assert!(!with_failure.contains("{failure_paths}"));
+        }
     }
 
     #[test]
@@ -163,13 +213,9 @@ mod tests {
     fn english_templates_exist() {
         let pre = pre_instruction(Lang::En, &[]);
         assert!(pre.contains("First think through the answers to the following questions"));
-        assert!(pre.contains("overall difficulty of executing and verifying the task"));
-        assert!(
-            pre.find("In general, complete the analysis above")
-                .expect("general path instruction")
-                < pre.find("Only when the task is classified as simple")
-                    .expect("simple path instruction")
-        );
+        assert!(pre.contains("Base the decision on the task itself"));
+        assert!(pre.contains("If the task is simple"));
+        assert!(pre.contains("If the task is not simple"));
         assert!(executor_instruction(Lang::En, "PRE").contains("PRE"));
         assert!(post_instruction(Lang::En).contains("PIGNEXT"));
         assert!(post_instruction(Lang::En).contains("PIGFAIL"));

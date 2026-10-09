@@ -8,7 +8,7 @@ h1{margin:0}h2{font-size:20px;margin:30px 0 10px;padding-left:12px;border-left:4
 code{background:#eef1f6;border-radius:4px;padding:1px 6px;font-family:Consolas,monospace;color:#c2410c}pre{background:#1e293b;color:#e2e8f0;border-radius:10px;padding:14px 18px;overflow:auto}
 .tip{border-left:4px solid var(--green);background:var(--green-bg);padding:12px 16px}.warn{border-left:4px solid var(--red);background:var(--red-bg);padding:12px 16px}.note{border-left:4px solid var(--amber);background:var(--amber-bg);padding:12px 16px}.crumb a{color:var(--blue);text-decoration:none}
 </style></head><body><div class="wrap">
-<p class="muted"><strong>实验说明：</strong> <code>-pigfull</code> 是诊断专用后缀：使用仅规划的 Pre 并禁止简单路径提前完成，随后进入 Executor / Post；最终输出沿用模式 B。普通 <code>-pig</code> 与 <code>-pigs</code> 行为不变。</p>
+<p class="muted"><strong>实验说明：</strong> <code>-pig3</code> 是诊断专用后缀：使用仅规划的 Pre 并禁止简单路径提前完成，随后进入 Executor / Post；最终输出沿用模式 B。普通 <code>-pig</code> 与 <code>-pigs</code> 行为不变。</p>
 <p class="crumb"><a href="../../index.html">← 返回总览</a></p>
 <h1>pigs-protocol</h1>
 <p class="muted">当前实现不是“纯 serde 结构体字典”，而是一组基于 <code>serde_json::Value</code> 的协议工具：路径判定、请求体手术、JSON/SSE 输出解析、增量流解析和客户端响应合成。</p>
@@ -41,6 +41,8 @@ code{background:#eef1f6;border-radius:4px;padding:1px 6px;font-family:Consolas,m
 <p><code>parse_pigs_model</code> 是模式解析入口：<code>&lt;model&gt;-pigs</code> → 模式 A，<code>&lt;model&gt;-pig</code> → 模式 B；两者都剥成同一个真实上游 model。<code>has_pigs</code> 对两种后缀都返回 true，<code>strip_pigs_suffix</code> 只返回剥离后的真实 model。旧后缀 <code>-pigsb</code> 继续兼容，行为与 <code>-pig</code> 相同。</p>
 <p>例如 <code>claude-x-pigs</code> 与 <code>claude-x-pig</code> 都发往上游 <code>claude-x</code>。是否进入编排还要由 proxy 同时判断 HTTP 方法和协议路径。</p>
 </div>
+
+<div class="tip"><strong>模型后缀与 Pre 内容是两层路由：</strong>本 crate 只识别 <code>-pigs</code> / <code>-pig</code> / <code>-pigsb</code> 后缀并读取、改写模型名；DeepSeek v5、Muse v6 和通用 Pre 的选择由 orchestrator 读取真实模型名完成，协议层不匹配模型品牌。</div>
 
 <h2>请求体手术</h2>
 <div class="card">

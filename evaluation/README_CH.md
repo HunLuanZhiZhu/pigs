@@ -41,6 +41,8 @@ MODEL-pig   （只提交一个有效业务结果）
 
 当前模型选择不再预设“必须固定 MiMo + DeepSeek 两家”。DeepSeek V4.1 Flash 是当前锚点模型；新增正式模型优先考虑低价、其他人可稳定访问、模型身份明确、API 行为可复现。MiMo 目前更适合作为兼容性/压力测试候选，不自动等同于最终核心模型。
 
+PIGS 的 Pre 提示词按实际模型名选择：DeepSeek 使用历史 v5 完整版，Muse 使用历史 v6 完整版，未匹配时使用独立通用 Pre，`pigs` 与 `pig` 两臂选择规则相同。历史 DeepSeek v5 在模式 A 下的成绩**不能直接等同于**其在模式 B 下的成绩；本次代码重构不代表重新进行了付费模型评测。
+
 ### 两层并发
 
 - `--model-workers N`：同时运行多少条**模型管线**。每个模型内部仍保持 `base → pigs` 顺序，避免同一模型两臂直接互相竞争吞吐。`0` 表示所有传入模型同时运行。
@@ -337,5 +339,7 @@ comparisons.csv
 所有 benchmark runner 在正式 job 完成后都会自动调用单-run 统计器；也可以在运行中手工重复调用来获取 live snapshot。
 
 ### 2026-10-08 Muse 强制 Full 诊断（非正式指标）
+
+历史 2026-10-08 实验使用当时的 `-pigfull` 后缀；**当前运行时已改为 `-pig3`（不保留旧别名）**，正常完成时至少运行一次 Pre、Executor、Post。历史报告中的模型名保留原状以供溯源。
 
 实验后缀 `-pigfull` 使用独立的纯规划 Pre 提示词，禁止简单路径直接结束，统一执行 Executor/Post；最终答案采用模式 B 的提交语义。`evaluation/diagnose_muse_base_errors.py` 从 2026-10-05 完整 Muse Base 的 EvalScope 评分文件自动选取 **26 道原始错误题**，复用四示例原始输入，向隔离服务发送 Responses 请求，持续写出 `progress.txt`、`results.jsonl`、`summary.json`。由于样本按 Base 错误刻意筛选，其修复数只可用于机制诊断，不可当作 GSM8K 总体正确率。
