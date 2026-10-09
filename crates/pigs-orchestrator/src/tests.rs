@@ -165,6 +165,7 @@ fn input(protocol: proto::Protocol) -> TurnInput {
     TurnInput {
         protocol,
         mode: proto::PigsMode::A,
+        force_full: false,
         body,
         path: path.into(),
         query: Some("beta=1".into()),
@@ -231,6 +232,7 @@ fn input_mode_for_protocol(protocol: proto::Protocol, mode: proto::PigsMode) -> 
     TurnInput {
         protocol,
         mode,
+        force_full: false,
         body: json!({
             "model": "r-x",
             "stream": true,
@@ -331,6 +333,27 @@ async fn subrequests_pass_everything_through_untouched() {
         .find(|(k, _)| k == SESSION_HEADER)
         .unwrap();
     assert_eq!(session.1, result.session);
+}
+
+#[tokio::test]
+async fn experimental_full_ignores_pre_early_pigend() {
+    let transport = fake(vec![
+        FakeTransport::text(200, "提前回答了\nPIGEND"),
+        FakeTransport::text(200, "Executor 正式答案"),
+        FakeTransport::text(200, "核验完成\nPIGEND"),
+    ]);
+    let (rt, _) = runtime(transport.clone());
+    let mut request = input_mode(proto::Protocol::OpenAI, proto::PigsMode::B);
+    request.force_full = true;
+    let result = completed(Orchestrator::new().run(request, rt).await.unwrap());
+    assert_eq!(result.path, vec![Pig::Pre, Pig::Executor, Pig::Post]);
+    assert_eq!(result.ended_with, EndedWith::PigEnd);
+    assert_eq!(result.text, "Executor 正式答案");
+    let reqs = transport.requests.lock().unwrap();
+    let pre_body: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
+    let pre_prompt = last_message_content(&pre_body);
+    assert!(pre_prompt.contains("不要在本阶段执行任务"));
+    assert!(!pre_prompt.contains("PIGEND"));
 }
 
 #[tokio::test]

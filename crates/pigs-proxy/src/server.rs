@@ -130,6 +130,7 @@ async fn orchestrate(
     let input = orch::TurnInput {
         protocol,
         mode,
+        force_full: client_model.ends_with("-pigfull"),
         body: parsed.clone(),
         path: path.to_string(),
         query: query.map(String::from),
@@ -149,6 +150,7 @@ async fn orchestrate(
     let mut decision_fields = vec![
         format!("model: {real_model}"),
         format!("mode: {mode:?}"),
+        format!("force_full: {}", input.force_full),
         format!("protocol: {protocol:?}"),
         format!("client_session: {client_session}"),
         format!("all_tool_result_ids: {all_result_ids:?}"),

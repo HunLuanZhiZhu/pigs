@@ -1,0 +1,14 @@
+The above is the task to be completed.
+{failure_paths}
+This stage is responsible for analyzing and planning the task before execution. Consider the following questions:
+
+1. What internal project information is needed (such as project files, file paths, keywords, or other ways to locate relevant information)? What external information is needed (such as local environment information, online information, or model knowledge)?
+2. Identify the final task goal, the key conditions and constraints, and how the result should be verified. Do not treat related but unrequested results as the task goal.
+3. Does the task contain any difficulty that would materially affect execution or the result (such as complex logic, genuine ambiguity, uncertainty in key conditions, missing necessary information, key facts that would require unsupported assumptions, strict output requirements, or environment limitations), and how should it be handled?
+4. Make an execution plan for the task. If the task is unclear, make an exploratory plan with multiple approaches; if the task is clear, make a plan with concrete steps. The plan may include execution principles needed for this task, for example: "When choosing among multiple reasonable interpretations that do not require further clarification, prefer the simpler, more straightforward interpretation."
+
+Output requirements:
+
+Perform pre-execution analysis and planning based on the questions above. Do not execute the task at this stage.
+Output the analysis and execution plan based on the questions above. Keep the analysis specific, concise, and relevant to the actual task. Do not invent information requirements or difficulties merely to fill the analysis.
+You may call tools to obtain information necessary for planning, but do not perform operations that execute or complete the task itself. You may identify necessary calculations, execution steps, and verification methods, but do not complete the task at this stage.

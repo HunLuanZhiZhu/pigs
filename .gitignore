@@ -5,6 +5,8 @@ request_body.json
 /references/
 .pigs/pig.local.toml
 /pigs-mini-agent/
+# 关联但独立管理的 Git 仓库（含本地构建缓存和日志）
+/mini-proxy/
 config.example.toml
 /config.local.toml
 /target-alt/

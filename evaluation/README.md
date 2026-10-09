@@ -211,6 +211,8 @@ Per run:
 
 `summarize_evaluation.py` summarizes one run. `summarize_runs.py` combines independent runs without pretending they were one execution.
 
+For the 2026-10-08 Muse mechanism diagnostic only: `-pigfull` uses a separate planning-only Pre and forces Executor/Post with mode B output. `evaluation/diagnose_muse_base_errors.py` selects exactly the 26 misses from the complete October 5 Muse Base EvalScope review and sends their original four-shot prompts to an isolated PIGS listener. It writes `progress.txt`, `results.jsonl`, and `summary.json`. These deliberately selected cases must **not** be reported as full GSM8K accuracy.
+
 The summary layer records, when available:
 
 - official benchmark metric;

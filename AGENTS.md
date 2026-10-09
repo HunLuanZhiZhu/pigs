@@ -8,7 +8,9 @@ pigs 是一个 Rust 前置代理。普通请求走透传；只有同时满足以
 
 1. HTTP 方法是 `POST`；
 2. 路径能识别为 OpenAI Chat、OpenAI Responses 或 Anthropic Messages；
-3. 请求 JSON 的 `model` 以 `-pigs`（模式 A）或 `-pig`（模式 B，兼容旧后缀 `-pigsb`）结尾。
+3. 请求 JSON 的 `model` 以 `-pigs`（模式 A）或 `-pig`（模式 B，兼容旧后缀 `-pigsb`）结尾；诊断专用后缀 `-pigfull` 也进入模式 B，且强制走完整路径。
+
+实验后缀 `-pigfull`：入口在剥除模型名后，将 `force_full` 独立传给编排器；Pre 使用 `prompts/pre_full_{zh,en}.txt`，仅规划、不提供控制标记或简单任务判断，忽略 Pre 的提前终止信号，进入 Executor → Post；Post/Executor 与模式 B 保持一致。此后缀是研究诊断入口，不属于正式主评测矩阵。
 
 注意：`POST` 到已识别协议路径时，proxy 会先解析 JSON 才能读取 model。因此这类请求即使最终不带 PIGS 后缀，若 JSON 本身非法也会直接返回 400，而不是进入普通透传。
 

@@ -335,3 +335,7 @@ comparisons.csv
 表格按 `dataset + thinking_effort + model` 保留独立条件，因此可以直接同时比较例如 DeepSeek-low、MiMo-low、DeepSeek-high，而不会混淆不同 run。
 
 所有 benchmark runner 在正式 job 完成后都会自动调用单-run 统计器；也可以在运行中手工重复调用来获取 live snapshot。
+
+### 2026-10-08 Muse 强制 Full 诊断（非正式指标）
+
+实验后缀 `-pigfull` 使用独立的纯规划 Pre 提示词，禁止简单路径直接结束，统一执行 Executor/Post；最终答案采用模式 B 的提交语义。`evaluation/diagnose_muse_base_errors.py` 从 2026-10-05 完整 Muse Base 的 EvalScope 评分文件自动选取 **26 道原始错误题**，复用四示例原始输入，向隔离服务发送 Responses 请求，持续写出 `progress.txt`、`results.jsonl`、`summary.json`。由于样本按 Base 错误刻意筛选，其修复数只可用于机制诊断，不可当作 GSM8K 总体正确率。

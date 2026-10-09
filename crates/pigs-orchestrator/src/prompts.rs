@@ -19,6 +19,12 @@ fn pre_template(lang: Lang) -> String {
         Lang::En => include_str!("../prompts/pre_user_en.txt"),
     })
 }
+fn pre_full_template(lang: Lang) -> String {
+    norm(match lang {
+        Lang::Zh => include_str!("../prompts/pre_full_zh.txt"),
+        Lang::En => include_str!("../prompts/pre_full_en.txt"),
+    })
+}
 fn executor_template(lang: Lang) -> String {
     norm(match lang {
         Lang::Zh => include_str!("../prompts/executor_user_zh.txt"),
@@ -43,6 +49,11 @@ pub fn pre_instruction(lang: Lang, failure_paths: &[String]) -> String {
     let template = pre_template(lang);
     let fp = failure_paths_block(lang, failure_paths);
     template.replace("{failure_paths}", &fp)
+}
+
+/// 仅用于 -pigfull 实验的纯规划 Pre，不提供简单路径或控制标记说明。
+pub fn pre_full_instruction(lang: Lang, failure_paths: &[String]) -> String {
+    pre_full_template(lang).replace("{failure_paths}", &failure_paths_block(lang, failure_paths))
 }
 
 /// Executor pig 的指令：追加到最后一条 user 消息文本后面（含 Pre 的分析）。
@@ -108,12 +119,26 @@ mod tests {
     }
 
     #[test]
+    fn experimental_pre_only_plans_and_has_no_control_markers() {
+        for lang in [Lang::Zh, Lang::En] {
+            let prompt = pre_full_instruction(lang, &[]);
+            assert!(!prompt.contains("PIGEND"));
+            assert!(!prompt.contains("PIGNEXT"));
+            assert!(!prompt.contains("PIGFAIL"));
+            assert!(!prompt.contains("{failure_paths}"));
+        }
+        let zh = pre_full_instruction(Lang::Zh, &[]);
+        assert!(!zh.contains("判定为简单任务"));
+        assert!(zh.contains("不要在本阶段执行任务"));
+    }
+
+    #[test]
     fn executor_instruction_fills_pre_output() {
         let p = executor_instruction(Lang::Zh, "计划X");
         assert!(p.starts_with("计划X\n\n"));
         assert!(p
             .trim_end()
-            .ends_with("以上是本任务的执行前分析，可在执行过程中根据实际情况调整。"));
+            .ends_with("以上是本任务的执行前分析，可在执行过程中根据实际情况调整。对于暂时无法自主获取的信息，应结合任务目标和现有上下文作出最简单的合理推定，主动推进并完成任务。"));
         assert!(!p.contains("自主核验") && !p.contains("完成任务目标"));
         assert!(!p.contains("多种合理理解") && !p.contains("简单、直观"));
         // 不含用户问题（问题留在原 user 消息里，由 body 手术追加）

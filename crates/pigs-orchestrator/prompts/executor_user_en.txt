@@ -1,3 +1,3 @@
 {pre_output}
 
-The above is the analysis prepared before executing this task and may be adjusted during execution as needed.
+The above is the analysis prepared before executing this task and may be adjusted during execution as needed. For information that cannot currently be obtained autonomously, make the simplest reasonable assumption based on the task goal and available context, proactively proceed, and complete the task.

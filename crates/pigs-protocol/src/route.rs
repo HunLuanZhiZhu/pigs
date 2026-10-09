@@ -52,7 +52,9 @@ pub fn protocol_from_path(path: &str) -> Option<Protocol> {
 /// - `<model>-pig`   → 模式 B（单一最终业务输出）
 /// - `<model>-pigsb` → 模式 B（旧后缀兼容）
 pub fn parse_pigs_model(model: &str) -> Option<(String, PigsMode)> {
-    if let Some(real) = model.strip_suffix("-pigsb") {
+    if let Some(real) = model.strip_suffix("-pigfull") {
+        Some((real.to_string(), PigsMode::B))
+    } else if let Some(real) = model.strip_suffix("-pigsb") {
         Some((real.to_string(), PigsMode::B))
     } else if let Some(real) = model.strip_suffix("-pigs") {
         Some((real.to_string(), PigsMode::A))
@@ -99,6 +101,7 @@ mod tests {
         assert!(has_pigs("claude-opus-5-pigs"));
         assert!(has_pigs("claude-opus-5-pigsb"));
         assert!(has_pigs("claude-opus-5-pig"));
+        assert!(has_pigs("claude-opus-5-pigfull"));
         assert!(!has_pigs("claude-opus-5"));
 
         assert_eq!(
@@ -114,6 +117,8 @@ mod tests {
             parse_pigs_model("claude-opus-5-pig")
         );
         assert_eq!(strip_pigs_suffix("deepseek-v4.1-flash-pig").as_deref(), Some("deepseek-v4.1-flash"));
+        assert_eq!(strip_pigs_suffix("deepseek-v4.1-flash-pigfull").as_deref(), Some("deepseek-v4.1-flash"));
+        assert_eq!(parse_pigs_model("muse-spark-1.3-contributor-pigfull"), Some(("muse-spark-1.3-contributor".into(), PigsMode::B)));
         assert_eq!(strip_pigs_suffix("deepseek-v4.1-flash-pigsb").as_deref(), Some("deepseek-v4.1-flash"));
         assert_eq!(strip_pigs_suffix("claude-opus-5"), None);
         assert_eq!(strip_pigs_suffix("-pigs").as_deref(), Some(""));

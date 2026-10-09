@@ -15,7 +15,7 @@
 
 ---
 
-PIGS is a Rust front proxy for LLM APIs. Ordinary requests pass through normally; supported `POST` requests whose model name ends in `-pigs` or `-pig` enter an adaptive **Pre → Executor → Post** orchestration flow. The legacy `-pigsb` suffix remains supported.
+PIGS is a Rust front proxy for LLM APIs. Ordinary requests pass through normally; supported `POST` requests whose model name ends in `-pigs` or `-pig` enter an adaptive **Pre → Executor → Post** orchestration flow. The legacy `-pigsb` suffix remains supported. The experimental `-pigfull` suffix forces a planning-only Pre followed by Executor/Post, retaining mode B's final-answer behavior; it is intended for diagnostic experiments, not the formal benchmark matrix.
 
 The core idea is deliberately small:
 

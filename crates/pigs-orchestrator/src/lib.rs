@@ -98,6 +98,8 @@ pub struct TurnInput {
     pub protocol: proto::Protocol,
     /// 输出模式：A 逐阶段暴露正文；B 只提交最终被接受的业务正文。
     pub mode: proto::PigsMode,
+    /// 实验开关：使用纯规划 Pre 并强制进入 Executor。
+    pub force_full: bool,
     /// 原始请求 body（JSON）。客户端请求什么就是什么，只允许在尾部追加。
     pub body: serde_json::Value,
     /// 协议路径（子请求原样使用）。
@@ -255,7 +257,8 @@ impl Orchestrator {
             .clone()
             .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
         let lang = lang::detect_lang(&proto::extract_last_user_text(&input.body, input.protocol));
-        let state = TurnState::new_with_mode(lang, session, input.body.clone(), input.mode);
+        let mut state = TurnState::new_with_mode(lang, session, input.body.clone(), input.mode);
+        state.force_full = input.force_full;
         self.drive(input, rt, state).await
     }
 
@@ -271,8 +274,12 @@ impl Orchestrator {
             phase = continuation.state.phase.as_str(),
             "恢复相位（工具结果已回填）"
         );
-        if input.mode != continuation.state.mode {
-            return Err(Error::Budget("continuation 的 PIGS 模式与恢复请求不一致".into()));
+        if input.mode != continuation.state.mode
+            || input.force_full != continuation.state.force_full
+        {
+            return Err(Error::Budget(
+                "continuation 的 PIGS 模式与恢复请求不一致".into(),
+            ));
         }
         // continuation 只负责判断“这次请求是不是上一轮工具调用的继续”。
         // 一旦确认恢复，就保留客户端从匹配工具结果开始追加的后续消息原样，不擅自过滤 reminder/user。
@@ -294,7 +301,11 @@ impl Orchestrator {
         let mut body = state.root_body.clone();
         match phase {
             Pig::Pre => {
-                let instruction = prompts::pre_instruction(state.lang, &state.failure_paths);
+                let instruction = if state.force_full {
+                    prompts::pre_full_instruction(state.lang, &state.failure_paths)
+                } else {
+                    prompts::pre_instruction(state.lang, &state.failure_paths)
+                };
                 proto::append_to_last_user_text(&mut body, input.protocol, &instruction)?;
             }
             Pig::Executor => {
@@ -449,14 +460,14 @@ impl Orchestrator {
             match phase {
                 // ---------------- Pre：规划 / 分流 ----------------
                 Pig::Pre => match detect_marker(&raw) {
-                    // 简单路径：Pre 直接给出答案，整轮结束
-                    Some(Marker::End) => {
+                    // 实验 -pigfull 不允许提前结束，即使上游意外生成控制标记。
+                    Some(Marker::End) if !state.force_full => {
                         state.commit_text(strip_markers(&raw));
                         return Ok(Outcome::Completed(state.complete(EndedWith::SimplePath)))
                     }
                     // Pre 只负责给下一次 Executor 形成计划；PIGFAIL/PIGNEXT 在 Pre 没有独立的次数语义。
                     // 除简单路径 PIGEND 外，其余输出都按复杂计划进入 Executor。
-                    Some(Marker::Failed) | Some(Marker::Next) | None => {
+                    Some(Marker::Failed) | Some(Marker::Next) | Some(Marker::End) | None => {
                         state.pre_output = strip_markers(&raw);
                         state.post_protocol_retries = 0;
                         state.executor_checkpoint_body = None;

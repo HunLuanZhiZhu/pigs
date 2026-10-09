@@ -15,6 +15,7 @@ nav a{display:inline-block;margin:4px 8px 4px 0;padding:8px 12px;border-radius:8
 </style>
 </head>
 <body><div class="wrap">
+<p class="muted"><strong>实验说明：</strong> <code>-pigfull</code> 是诊断专用后缀：使用仅规划的 Pre 并禁止简单路径提前完成，随后进入 Executor / Post；最终输出沿用模式 B。普通 <code>-pig</code> 与 <code>-pigs</code> 行为不变。</p>
 <h1>pigs 当前架构总览</h1>
 <p class="tagline">当前代码事实：普通请求走前置代理透传；POST 到三种协议路径且 model 以 <code>-pigs</code>（模式 A）或 <code>-pig</code>（模式 B）结尾时，进入 Pre → Executor → Post 编排。</p>
 

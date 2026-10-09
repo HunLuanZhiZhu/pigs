@@ -15,7 +15,7 @@
 
 ---
 
-PIGS 是一个用 Rust 编写的 LLM 前置代理。普通请求正常透传；当受支持的 `POST` 请求中，模型名以 `-pigs` 或 `-pig` 结尾时，请求会进入自适应的 **Pre → Executor → Post** 编排流程。旧后缀 `-pigsb` 暂时兼容。
+PIGS 是一个用 Rust 编写的 LLM 前置代理。普通请求正常透传；当受支持的 `POST` 请求中，模型名以 `-pigs` 或 `-pig` 结尾时，请求会进入自适应的 **Pre → Executor → Post** 编排流程。旧后缀 `-pigsb` 暂时兼容。另有实验专用后缀 `-pigfull`：Pre 只进行规划、不能提前结束，随后进入 Executor/Post，最终输出沿用模式 B；此模式仅供机制诊断，不属于正式主评测矩阵。
 
 核心使用方式非常简单：
 

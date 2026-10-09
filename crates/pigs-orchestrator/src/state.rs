@@ -17,6 +17,8 @@ pub struct TurnState {
     pub phase: Pig,
     /// 本轮输出模式。
     pub mode: PigsMode,
+    /// 实验模式：仅规划 Pre，禁止简单路径提前结束。
+    pub force_full: bool,
     /// 本轮最初的客户端请求 body。Pre / Executor 从这里构造；Post 直接继承 Executor 完整上下文。
     pub root_body: Value,
     /// 当前 pig 第一次进入时构造好的基础请求（已注入一次阶段提示）。
@@ -65,6 +67,7 @@ impl TurnState {
         Self {
             phase: Pig::Pre,
             mode,
+            force_full: false,
             root_body,
             phase_base_body: None,
             phase_transcript: Vec::new(),
