@@ -108,7 +108,7 @@ Post inherits the complete Exec protocol context and independently checks whethe
 - `PIGEND` → accept the current result, including a truthful terminal state that cannot be reliably improved further;
 - `PIGNEXT` → the current path is repairable; return concise verifier feedback and run another Exec from the last Exec checkpoint;
 - `PIGFAIL` → the current execution path is fundamentally wrong; return to Pre for replanning;
-- no control marker → retry Post as verifier-protocol incompletion within the separate Post retry budget.
+- no control marker → retain the Post response, append a language-matched user correction prompt (`control_protocol_retry_{zh,en}.txt`), then retry in the same Post phase within its separate protocol retry budget.
 
 Post is verification/routing only. It may use tools to verify facts or state, but it does not continue execution, modify the result, or rewrite the answer itself.
 

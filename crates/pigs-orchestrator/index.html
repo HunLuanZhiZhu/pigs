@@ -25,9 +25,9 @@ code{background:#eef1f6;border-radius:4px;padding:1px 6px;font-family:Consolas,m
 <tr><td>Post</td><td><code>PIGEND</code>（可单独一行）</td><td>接受当前 Exec 结果并正常完成。</td></tr>
 <tr><td>Post</td><td><code>PIGNEXT</code></td><td>当前结果可修补：砍回最近一次 Exec 完成时的 checkpoint，丢弃 Post 指令与 Post transcript，再用原 Exec 指令模板把 Post 反馈作为新的执行前分析交给下一次 Exec；不单独统计修补次数。</td></tr>
 <tr><td>Post</td><td><code>PIGFAIL</code></td><td>记录根本问题并回 Pre，为下一次 Exec 重规划；不表示回滚外部状态，也不单独统计重规划次数。</td></tr>
-<tr><td>Post</td><td>无控制标记</td><td>视为核验协议未完成，继续在同一 Post 对话现场做协议重试；上限由 <code>[orchestration].max_post_protocol_retries</code> 配置，默认 3。这个计数不属于任务执行次数。</td></tr>
+<tr><td>Post</td><td>无控制标记</td><td>视为核验协议未完成，继续在同一 Post 对话现场做协议重试；上限由 <code>[orchestration].max_post_protocol_retries</code> 配置，默认 1。这个计数不属于任务执行次数。</td></tr>
 </table>
-<p>Pre 使用严格标记检测，Post 使用只看最后非空行的终止标记检测。Post 只负责核验和路由，不自行执行修补。任务执行预算统一按 Exec 高层执行次数统计，上限由 <code>[orchestration].max_exec_runs</code> 配置，默认 4；同一 Exec 内部的工具暂停/恢复不重复计数。最后一次允许的 Exec 完成后直接结束，因此不会再发送一个没有后续执行价值的 Post。<code>PIGNEXT</code> 与 <code>PIGFAIL→Pre→Exec</code> 都只会推动下一次 Exec，不维护各自的次数预算。任何相位若 <code>stop_reason</code> 明确表示 token 上限截断（<code>length</code> / <code>max_tokens</code> / <code>max_output_tokens</code>），会返回 <code>Error::OutputTruncated</code>。Post 无控制标记的协议重试若超限仍返回 <code>Error::Budget</code>；非流式 proxy 会把真正的预算错误映射为 HTTP 422，其它编排错误通常为 502。</p>
+<p>Pre 使用严格标记检测，Post 使用只看最后非空行的终止标记检测。Post 只负责核验和路由，不自行执行修补。任务执行预算统一按 Exec 高层执行次数统计，上限由 <code>[orchestration].max_exec_runs</code> 配置，默认 3（首次执行 + 最多 2 次重试）；同一 Exec 内部的工具暂停/恢复不重复计数。最后一次允许的 Exec 完成后直接结束，因此不会再发送一个没有后续执行价值的 Post。<code>PIGNEXT</code> 与 <code>PIGFAIL→Pre→Exec</code> 都只会推动下一次 Exec，不维护各自的次数预算。任何相位若 <code>stop_reason</code> 明确表示 token 上限截断（<code>length</code> / <code>max_tokens</code> / <code>max_output_tokens</code>），会返回 <code>Error::OutputTruncated</code>。Post 无控制标记的协议重试若超限仍返回 <code>Error::Budget</code>；非流式 proxy 会把真正的预算错误映射为 HTTP 422，其它编排错误通常为 502。</p>
 </div>
 
 <h2>临时测试提示词</h2>

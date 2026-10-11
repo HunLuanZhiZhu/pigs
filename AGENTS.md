@@ -145,7 +145,7 @@ Exec：
 
 - 不解析控制标记；
 - 一轮任务的执行次数只按高层 Exec 相位计数；同一 Exec 内因工具调用发生的暂停/恢复不重复计数；
-- Exec 执行上限来自 `[orchestration].max_exec_runs`，默认 4；最后一次允许的 Exec 完成后直接结束，不再进入 Post；
+- Exec 执行上限来自 `[orchestration].max_exec_runs`，默认 3（首次执行 + 最多 2 次重试）；最后一次允许的 Exec 完成后直接结束，不再进入 Post；
 - 尚未达到执行次数上限时，Exec 结束后进入 Post。
 
 Post：
@@ -155,7 +155,7 @@ Post：
 - `PIGNEXT` → 当前结果可继续修补；Post 应给出简短可执行反馈。系统砍回最近一次 Exec 完成时保存的 checkpoint，丢弃 Post 指令与 Post transcript，再用原 Exec 指令模板把 Post 反馈作为新的“执行前分析”交给下一次 Exec；
 - `PIGFAIL` → 当前执行路径需要重新规划，记录失败反馈并回 Pre，由 Pre 为下一次 Exec 形成新计划；
 - `PIGNEXT` 与 `PIGFAIL→Pre→Exec` 不再维护各自的次数预算，二者统一消耗同一个 Exec 执行次数上限；
-- 无标记 → 视为核验器协议未完成，留在 Post 做协议重试；重试上限来自 `[orchestration].max_post_protocol_retries`，默认 3，这个协议重试计数不属于任务执行次数。
+- 无标记 → 视为核验器协议未完成，保留本轮 Post 输出及工具对话，追加一条以 `include_str!` 编译嵌入、按语言选取的 `control_protocol_retry_{zh,en}.txt` 用户纠错消息，在同一个 Post 阶段重试；重试上限来自 `[orchestration].max_post_protocol_retries`，默认 1，这个协议重试计数不属于任务执行次数。
 
 任何相位只要上游停止原因明确表示生成 token 上限截断（当前识别 OpenAI Chat 的 `length`、Anthropic 的 `max_tokens`、Responses 的 `max_output_tokens`），就返回截断错误，不把部分文本当作完整 Pre/Exec/Post 产出继续推进。
 
@@ -171,8 +171,8 @@ Post：
 - 可选 `key`
 - `[logging].detail`：`off` / `basic` / `max`，当前测试阶段默认 `max`
 - `[logging].directory`：HTTP 抓包目录，默认 `logs/http`
-- `[orchestration].max_exec_runs`：Exec 高层执行次数上限，默认 `4`
-- `[orchestration].max_post_protocol_retries`：Post 无控制标记时的协议重试次数上限，默认 `3`
+- `[orchestration].max_exec_runs`：Exec 高层执行次数上限，默认 `3`（首次执行 + 最多 2 次重试）；兼容旧配置键 `max_executor_runs`（新配置统一使用 `max_exec_runs`）。
+- `[orchestration].max_post_protocol_retries`：Post 无控制标记时的协议重试次数上限，默认 `1`
 - `[orchestration].usage_mode`：`max` / `sum`，默认 `max`
 - `[upstream].openai`
 - `[upstream].responses`

@@ -1,0 +1,1 @@
+Your previous response did not follow the control protocol. Supply the control marker required by the current phase: uppercase, alone on the final line, without quotes, bold, code blocks, or other formatting; do not repeat the task.

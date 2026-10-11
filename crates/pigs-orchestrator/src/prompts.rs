@@ -37,6 +37,17 @@ fn post_template(lang: Lang) -> String {
         Lang::En => include_str!("../prompts/test_post_user_en.txt"),
     })
 }
+
+/// Post 缺少合法终止标记时，作为新的 user 消息追加的协议纠正提醒。
+pub fn control_protocol_retry_instruction(lang: Lang) -> String {
+    norm(match lang {
+        Lang::Zh => include_str!("../prompts/control_protocol_retry_zh.txt"),
+        Lang::En => include_str!("../prompts/control_protocol_retry_en.txt"),
+    })
+    .trim()
+    .to_string()
+}
+
 fn failure_paths_template(lang: Lang) -> String {
     norm(match lang {
         Lang::Zh => include_str!("../prompts/failure_paths_zh.txt"),
@@ -49,9 +60,9 @@ pub fn pre_instruction(lang: Lang, failure_paths: &[String]) -> String {
     pre_instruction_for_model(lang, failure_paths, "")
 }
 
-/// Pre pig 的指令：按模型名称选完整模板，再嵌入失败路径。
-pub fn pre_instruction_for_model(lang: Lang, failure_paths: &[String], model: &str) -> String {
-    let template = pre_template(lang, model);
+/// Pre pig 的指令：测试阶段统一使用 test 模板，不再按模型分流；保留函数签名兼容调用方。
+pub fn pre_instruction_for_model(lang: Lang, failure_paths: &[String], _model: &str) -> String {
+    let template = pre_template(lang);
     let fp = failure_paths_block(lang, failure_paths);
     template.replace("{failure_paths}", &fp)
 }

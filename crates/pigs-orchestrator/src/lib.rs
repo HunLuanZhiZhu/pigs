@@ -32,8 +32,8 @@ pub const LOOPBACK_TOKEN_HEADER: &str = "x-pigs-loopback";
 
 /// 默认编排次数；部署配置可以覆盖。
 /// 工具暂停/恢复不重复计入 Exec 执行次数。
-pub const DEFAULT_MAX_EXEC_RUNS: u32 = 4;
-pub const DEFAULT_MAX_POST_PROTOCOL_RETRIES: u32 = 3;
+pub const DEFAULT_MAX_EXEC_RUNS: u32 = 3;
+pub const DEFAULT_MAX_POST_PROTOCOL_RETRIES: u32 = 1;
 
 /// 最终向下游汇报 usage 的语义。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -561,6 +561,23 @@ impl Orchestrator {
                                 self.max_post_protocol_retries
                             )));
                         }
+                        // 保留已有 Post 回复及工具对话，在其后追加一条单独的 user
+                        // 纠错指令。只补控制协议，不重新执行 Post 之前的任务。
+                        let mut retry_body = state.phase_base_body.clone().ok_or_else(|| {
+                            Error::Budget("Post 缺少 phase_base_body，无法协议重试".into())
+                        })?;
+                        proto::append_transcript_items(
+                            &mut retry_body,
+                            ctx.input.protocol,
+                            &state.phase_transcript,
+                        )?;
+                        proto::push_user_message(
+                            &mut retry_body,
+                            ctx.input.protocol,
+                            &prompts::control_protocol_retry_instruction(state.lang),
+                        )?;
+                        state.phase_base_body = Some(retry_body);
+                        state.phase_transcript.clear();
                         state.post_protocol_retries += 1;
                         state.phase_raw.clear();
                     }

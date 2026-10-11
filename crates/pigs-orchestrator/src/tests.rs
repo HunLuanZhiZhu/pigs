@@ -1052,6 +1052,12 @@ async fn mode_b_pignext_discards_rejected_exec_and_commits_repair() {
     assert_eq!(result.visible, vec!["修正后的最终答案"]);
 }
 
+#[test]
+fn default_limits_allow_three_exec_runs_and_one_protocol_retry() {
+    assert_eq!(DEFAULT_MAX_EXEC_RUNS, 3, "首次 Exec + 最多两次重试");
+    assert_eq!(DEFAULT_MAX_POST_PROTOCOL_RETRIES, 1, "Post 控制标记错误只重试一次");
+}
+
 #[tokio::test]
 async fn mode_a_last_exec_skips_post_at_execution_limit() {
     let mut responses = vec![
@@ -1133,6 +1139,72 @@ async fn custom_exec_run_limit_is_honored() {
 }
 
 #[tokio::test]
+async fn post_retry_sends_correction_as_new_user_message_for_each_protocol() {
+    for protocol in [
+        proto::Protocol::OpenAI,
+        proto::Protocol::Anthropic,
+        proto::Protocol::Responses,
+    ] {
+        let transport = fake(vec![
+            FakeTransport::protocol_text(protocol, 200, "计划\nPIGNEXT"),
+            FakeTransport::protocol_text(protocol, 200, "执行结果"),
+            FakeTransport::protocol_text(protocol, 200, "没有控制标记"),
+            FakeTransport::protocol_text(protocol, 200, "PIGEND"),
+        ]);
+        let (rt, _) = runtime(transport.clone());
+        let result = completed(
+            Orchestrator::new()
+                .run(input_mode_for_protocol(protocol, proto::PigsMode::B), rt)
+                .await
+                .unwrap(),
+        );
+        assert_eq!(result.ended_with, EndedWith::PigEnd);
+        assert_eq!(result.text, "执行结果");
+
+        let reqs = transport.requests.lock().unwrap();
+        assert_eq!(reqs.len(), 4);
+        let first_post: serde_json::Value = serde_json::from_slice(&reqs[2].body).unwrap();
+        let retry_post: serde_json::Value = serde_json::from_slice(&reqs[3].body).unwrap();
+        let field = if protocol == proto::Protocol::Responses {
+            "input"
+        } else {
+            "messages"
+        };
+        let before = first_post[field].as_array().unwrap();
+        let after = retry_post[field].as_array().unwrap();
+        assert_eq!(&after[..before.len()], before.as_slice());
+        assert_eq!(after.len(), before.len() + 2);
+        assert_eq!(after[before.len()]["role"], "assistant");
+        assert!(after[before.len()].to_string().contains("没有控制标记"));
+        assert_eq!(after[before.len() + 1]["role"], "user");
+        assert_eq!(
+            proto::extract_last_user_text(&retry_post, protocol),
+            include_str!("../prompts/control_protocol_retry_zh.txt").trim()
+        );
+    }
+}
+
+#[tokio::test]
+async fn post_retry_uses_english_correction_when_task_is_english() {
+    let transport = fake(vec![
+        FakeTransport::text(200, "plan\nPIGNEXT"),
+        FakeTransport::text(200, "answer"),
+        FakeTransport::text(200, "No marker"),
+        FakeTransport::text(200, "PIGEND"),
+    ]);
+    let (rt, _) = runtime(transport.clone());
+    let mut request = input_mode(proto::Protocol::OpenAI, proto::PigsMode::B);
+    request.body["messages"][1]["content"] = json!("Please solve the task.");
+    completed(Orchestrator::new().run(request, rt).await.unwrap());
+    let reqs = transport.requests.lock().unwrap();
+    let retry: serde_json::Value = serde_json::from_slice(&reqs[3].body).unwrap();
+    assert_eq!(
+        proto::extract_last_user_text(&retry, proto::Protocol::OpenAI),
+        include_str!("../prompts/control_protocol_retry_en.txt").trim()
+    );
+}
+
+#[tokio::test]
 async fn custom_post_protocol_retry_limit_is_honored() {
     let transport = fake(vec![
         FakeTransport::text(200, "计划\nPIGNEXT"),
@@ -1179,7 +1251,7 @@ async fn post_without_marker_retries_post_until_budget() {
         FakeTransport::text(200, "计划\nPIGNEXT"),
         FakeTransport::text(200, "草稿"),
     ];
-    for _ in 0..4 {
+    for _ in 0..=DEFAULT_MAX_POST_PROTOCOL_RETRIES {
         responses.push(FakeTransport::text(200, "还需改进"));
     }
     let transport = fake(responses);
@@ -1189,10 +1261,27 @@ async fn post_without_marker_retries_post_until_budget() {
         .await
         .unwrap_err();
     assert!(matches!(err, Error::Budget(m) if m.contains("Post 无标记协议重试")));
-    assert_eq!(
-        transport.requests.lock().unwrap().len(),
-        DEFAULT_MAX_POST_PROTOCOL_RETRIES as usize + 3
-    );
+    let reqs = transport.requests.lock().unwrap();
+    assert_eq!(reqs.len(), DEFAULT_MAX_POST_PROTOCOL_RETRIES as usize + 3);
+    // 首次 Post 之后的每次协议重试，均在上一条 assistant 输出后追加独立 user 提醒。
+    for retry in 1..=DEFAULT_MAX_POST_PROTOCOL_RETRIES as usize {
+        let body: serde_json::Value = serde_json::from_slice(&reqs[2 + retry].body).unwrap();
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.last().unwrap()["role"], "user");
+        assert_eq!(
+            messages.last().unwrap()["content"],
+            include_str!("../prompts/control_protocol_retry_zh.txt").trim()
+        );
+        let count = messages
+            .iter()
+            .filter(|message| {
+                message["role"] == "user"
+                    && message["content"]
+                        == include_str!("../prompts/control_protocol_retry_zh.txt").trim()
+            })
+            .count();
+        assert_eq!(count, retry, "每次无标记恰好增加一条纠错消息");
+    }
 }
 
 #[tokio::test]
@@ -1224,9 +1313,6 @@ async fn pigfail_replanning_uses_the_same_exec_run_limit() {
         FakeTransport::text(200, "路径二根本错误\nPIGFAIL"),
         FakeTransport::text(200, "计划三\nPIGNEXT"),
         FakeTransport::text(200, "候选三"),
-        FakeTransport::text(200, "路径三仍错误\nPIGFAIL"),
-        FakeTransport::text(200, "计划四\nPIGNEXT"),
-        FakeTransport::text(200, "候选四"),
     ]);
     let (rt, _store) = runtime(transport.clone());
     let result = completed(
@@ -1236,12 +1322,12 @@ async fn pigfail_replanning_uses_the_same_exec_run_limit() {
             .unwrap(),
     );
     assert_eq!(result.ended_with, EndedWith::ExecLimit);
-    assert_eq!(result.text, "候选四");
+    assert_eq!(result.text, "候选三");
     assert_eq!(result.path.last(), Some(&Pig::Exec));
     assert_eq!(
         transport.requests.lock().unwrap().len(),
-        11,
-        "第四次 Exec 后不得再进入 Post"
+        8,
+        "第三次 Exec 后不得再进入 Post"
     );
 }
 
@@ -1255,8 +1341,6 @@ async fn pignext_and_pigfail_share_one_exec_run_counter() {
         FakeTransport::text(200, "路径错误\nPIGFAIL"),
         FakeTransport::text(200, "计划三\nPIGNEXT"),
         FakeTransport::text(200, "候选三"),
-        FakeTransport::text(200, "再修一次\nPIGNEXT"),
-        FakeTransport::text(200, "候选四"),
     ]);
     let (rt, _store) = runtime(transport.clone());
     let result = completed(
@@ -1266,7 +1350,7 @@ async fn pignext_and_pigfail_share_one_exec_run_counter() {
             .unwrap(),
     );
     assert_eq!(result.ended_with, EndedWith::ExecLimit);
-    assert_eq!(result.text, "候选四");
+    assert_eq!(result.text, "候选三");
     assert_eq!(
         result.path,
         vec![
@@ -1277,10 +1361,9 @@ async fn pignext_and_pigfail_share_one_exec_run_counter() {
             Pig::Post,
             Pig::Pre,
             Pig::Exec,
-            Pig::Post,
-            Pig::Exec,
         ]
     );
+    assert_eq!(transport.requests.lock().unwrap().len(), 7);
 }
 
 #[tokio::test]
