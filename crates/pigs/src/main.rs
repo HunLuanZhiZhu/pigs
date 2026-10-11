@@ -32,7 +32,7 @@ async fn main() -> Result<()> {
         println!("  pigs --log-dir PATH              覆盖 HTTP 诊断日志目录");
         println!("  pigs --example              导出配置模板到 config.example.toml");
         println!("  pigs -h | --help            显示此帮助\n");
-        println!("model 带 -pigs 后缀的请求走 Pre→Executor→Post 编排，其余原样透传。");
+        println!("model 带 -pigs 后缀的请求走 Pre→Exec→Post 编排，其余原样透传。");
         return Ok(());
     }
 

@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
-description = "编排引擎：三只 pig（Pre→Executor→Post）状态机、子请求组装、会话头贯穿"
+description = "编排引擎：三只 pig（Pre→Exec→Post）状态机、子请求组装、会话头贯穿"
 
 [dependencies]
 pigs-protocol = { workspace = true }

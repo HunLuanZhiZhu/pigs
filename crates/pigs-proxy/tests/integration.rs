@@ -510,14 +510,14 @@ async fn pig_flow_full_orchestration_via_loopback() {
         } else if i == 1 {
             assert!(content.contains("分析：需要X"));
         } else {
-            // Post：完整继承 Executor 请求前缀，再追加 Executor 最终输出与一条评审 user。
+            // Post：完整继承 Exec 请求前缀，再追加 Exec 最终输出与一条评审 user。
             let msgs = body["messages"].as_array().unwrap();
             let exec_msgs = reqs[1].1["messages"].as_array().unwrap();
             assert_eq!(msgs.len(), exec_msgs.len() + 2);
             assert_eq!(
                 &msgs[..exec_msgs.len()],
                 exec_msgs.as_slice(),
-                "Post 必须保持 Executor 的完整消息前缀"
+                "Post 必须保持 Exec 的完整消息前缀"
             );
             assert_eq!(msgs[exec_msgs.len()]["role"], "assistant");
             assert_eq!(msgs[exec_msgs.len()]["content"], "执行结果……");
@@ -620,7 +620,7 @@ async fn pig_simple_path_answers_from_pre() {
     assert_eq!(resp.status(), 200);
     let final_json: Value = resp.json().await.unwrap();
     assert_eq!(final_json["choices"][0]["message"]["content"], "答案是 4");
-    // 只发生了 1 次上游请求（Executor/Post 未执行）
+    // 只发生了 1 次上游请求（Exec/Post 未执行）
     assert_eq!(fu.requests.lock().unwrap().len(), 1);
 }
 
@@ -670,7 +670,7 @@ async fn pig_streaming_end_to_end_streams_phases_without_markers() {
 
     // 上游收到的子请求：真名 + 流式（客户端自己要的）+ 头原样
     let reqs = fu.requests.lock().unwrap();
-    assert_eq!(reqs.len(), 3, "Pre → Executor → Post 三次子请求");
+    assert_eq!(reqs.len(), 3, "Pre → Exec → Post 三次子请求");
     for (i, (_p, body, hdrs)) in reqs.iter().enumerate() {
         assert_eq!(body["model"], "gpt-x");
         assert_eq!(body["stream"], true, "第 {i} 只 pig 的子请求应为流式");
@@ -702,7 +702,7 @@ async fn pig_streaming_is_progressive_not_buffered() {
     let (_up, upstream_url, fu) = spawn_fake_upstream().await;
     {
         let mut q = fu.slow_sse.lock().unwrap();
-        // Pre → Executor → Post(带结尾标记，标记本身跨段到达)
+        // Pre → Exec → Post(带结尾标记，标记本身跨段到达)
         q.push(vec!["分析一".into(), "分析二".into()]);
         q.push(vec!["执行草".into(), "稿完毕".into()]);
         q.push(vec!["验收通过".into(), "\nPIG".into(), "END".into()]);
@@ -1051,7 +1051,7 @@ async fn failed_resume_rolls_back_continuation_for_retry() {
         let mut q = fu.responses.lock().unwrap();
         q.push(openai_text_response("计划"));
         q.push(openai_tool_call_response("call_retry"));
-        // 第一次 resume 的 Executor 收到非法 JSON，触发编排 502。
+        // 第一次 resume 的 Exec 收到非法 JSON，触发编排 502。
         q.push(("application/json", Bytes::from_static(b"not-json")));
         // 第二次发送相同 tool result 时，应从同一 continuation 再次恢复并完成。
         q.push(openai_text_response("恢复后执行完成"));
@@ -1222,9 +1222,9 @@ async fn streaming_tool_rounds_do_not_replay_consumed_calls() {
     );
 }
 
-/// 真实代理链路：Executor 的阶段说明只在进入该 pig 时放一次；工具恢复只追加原生对话。
+/// 真实代理链路：Exec 的阶段说明只在进入该 pig 时放一次；工具恢复只追加原生对话。
 #[tokio::test]
-async fn executor_resume_keeps_one_phase_prompt_upstream() {
+async fn exec_resume_keeps_one_phase_prompt_upstream() {
     let (_up, upstream_url, fu) = spawn_fake_upstream().await;
     {
         let mut q = fu.responses.lock().unwrap();
@@ -1300,7 +1300,7 @@ async fn executor_resume_keeps_one_phase_prompt_upstream() {
             user.matches("以上是本任务的执行前分析，可在执行过程中根据实际情况调整。")
                 .count(),
             1,
-            "同一 Executor pig 的阶段说明不能重复注入"
+            "同一 Exec pig 的阶段说明不能重复注入"
         );
     }
 
@@ -1310,7 +1310,7 @@ async fn executor_resume_keeps_one_phase_prompt_upstream() {
     assert_eq!(
         &post_messages[..exec_messages.len()],
         exec_messages.as_slice(),
-        "真实上游 Post 请求必须保留 Executor 最后一发的完整消息前缀"
+        "真实上游 Post 请求必须保留 Exec 最后一发的完整消息前缀"
     );
     assert_eq!(post_messages[exec_messages.len()]["role"], "assistant");
     assert_eq!(post_messages[exec_messages.len()]["content"], "草稿完成");

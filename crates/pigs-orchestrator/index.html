@@ -8,39 +8,39 @@ h1{margin:0}h2{font-size:20px;margin:30px 0 10px;padding-left:12px;border-left:4
 code{background:#eef1f6;border-radius:4px;padding:1px 6px;font-family:Consolas,monospace;color:#c2410c}pre{background:#1e293b;color:#e2e8f0;border-radius:10px;padding:14px 18px;overflow:auto}
 .tip{border-left:4px solid var(--green);background:var(--green-bg);padding:12px 16px}.warn{border-left:4px solid var(--red);background:var(--red-bg);padding:12px 16px}.note{border-left:4px solid var(--amber);background:var(--amber-bg);padding:12px 16px}.crumb a{color:var(--blue);text-decoration:none}
 </style></head><body><div class="wrap">
-<p class="muted"><strong>实验说明：</strong> <code>-pig3</code> 是诊断专用后缀：使用仅规划的 Pre 并禁止简单路径提前完成，随后进入 Executor / Post；最终输出沿用模式 B。普通 <code>-pig</code> 与 <code>-pigs</code> 行为不变。</p>
+<p class="muted"><strong>实验说明：</strong> <code>-pig3</code> 是诊断专用后缀：使用仅规划的 Pre 并禁止简单路径提前完成，随后进入 Exec / Post；最终输出沿用模式 B。普通 <code>-pig</code> 与 <code>-pigs</code> 行为不变。</p>
 <p class="crumb"><a href="../../index.html">← 返回总览</a></p>
 <h1>pigs-orchestrator</h1>
-<p class="muted">当前实现：维护 Pre → Executor → Post 状态机，把父请求克隆成多个协议原生子请求，并处理工具暂停/恢复、相位文本、usage 和停止原因。</p>
+<p class="muted">当前实现：维护 Pre → Exec → Post 状态机，把父请求克隆成多个协议原生子请求，并处理工具暂停/恢复、相位文本、usage 和停止原因。</p>
 
 <div class="card"><p><strong>调试提示：</strong>orchestrator 本身仍通过事件/状态工作；每一轮实际发出的 phase 请求与上游响应由 proxy 的 HTTP 诊断抓包记录。<code>max</code> 模式下可直接查看 loopback / upstream 明文文件确认相位 prompt、工具调用与 reasoning 的真实协议形状。</p></div>
 
 <h2>状态机</h2>
 <div class="card"><table>
 <tr><th>相位</th><th>模型输出</th><th>下一步</th></tr>
-<tr><td>Pre</td><td>实质正文后的末尾 <code>PIGEND</code></td><td>简单路径完成，不进入 Executor/Post；只有控制标记而没有正文仍无效。</td></tr>
-<tr><td>Pre</td><td><code>PIGFAIL</code> / <code>PIGNEXT</code> / 无控制标记</td><td>都作为复杂计划保存为 <code>pre_output</code> 并进入 Executor；Pre 不维护独立的重规划次数。</td></tr>
-<tr><td>Executor</td><td>任意正常输出</td><td>不按 PIG 标记路由；统一增加一次 <code>executor_runs</code>。若已达到配置的 Executor 执行上限，则直接完成，不再进入 Post；否则物化 Executor checkpoint 并进入 Post。默认上限为 4。</td></tr>
-<tr><td>Post</td><td><code>PIGEND</code>（可单独一行）</td><td>接受当前 Executor 结果并正常完成。</td></tr>
-<tr><td>Post</td><td><code>PIGNEXT</code></td><td>当前结果可修补：砍回最近一次 Executor 完成时的 checkpoint，丢弃 Post 指令与 Post transcript，再用原 Executor 指令模板把 Post 反馈作为新的执行前分析交给下一次 Executor；不单独统计修补次数。</td></tr>
-<tr><td>Post</td><td><code>PIGFAIL</code></td><td>记录根本问题并回 Pre，为下一次 Executor 重规划；不表示回滚外部状态，也不单独统计重规划次数。</td></tr>
+<tr><td>Pre</td><td>实质正文后的末尾 <code>PIGEND</code></td><td>简单路径完成，不进入 Exec/Post；只有控制标记而没有正文仍无效。</td></tr>
+<tr><td>Pre</td><td><code>PIGFAIL</code> / <code>PIGNEXT</code> / 无控制标记</td><td>都作为复杂计划保存为 <code>pre_output</code> 并进入 Exec；Pre 不维护独立的重规划次数。</td></tr>
+<tr><td>Exec</td><td>任意正常输出</td><td>不按 PIG 标记路由；统一增加一次 <code>exec_runs</code>。若已达到配置的 Exec 执行上限，则直接完成，不再进入 Post；否则物化 Exec checkpoint 并进入 Post。默认上限为 4。</td></tr>
+<tr><td>Post</td><td><code>PIGEND</code>（可单独一行）</td><td>接受当前 Exec 结果并正常完成。</td></tr>
+<tr><td>Post</td><td><code>PIGNEXT</code></td><td>当前结果可修补：砍回最近一次 Exec 完成时的 checkpoint，丢弃 Post 指令与 Post transcript，再用原 Exec 指令模板把 Post 反馈作为新的执行前分析交给下一次 Exec；不单独统计修补次数。</td></tr>
+<tr><td>Post</td><td><code>PIGFAIL</code></td><td>记录根本问题并回 Pre，为下一次 Exec 重规划；不表示回滚外部状态，也不单独统计重规划次数。</td></tr>
 <tr><td>Post</td><td>无控制标记</td><td>视为核验协议未完成，继续在同一 Post 对话现场做协议重试；上限由 <code>[orchestration].max_post_protocol_retries</code> 配置，默认 3。这个计数不属于任务执行次数。</td></tr>
 </table>
-<p>Pre 使用严格标记检测，Post 使用只看最后非空行的终止标记检测。Post 只负责核验和路由，不自行执行修补。任务执行预算统一按 Executor 高层执行次数统计，上限由 <code>[orchestration].max_executor_runs</code> 配置，默认 4；同一 Executor 内部的工具暂停/恢复不重复计数。最后一次允许的 Executor 完成后直接结束，因此不会再发送一个没有后续执行价值的 Post。<code>PIGNEXT</code> 与 <code>PIGFAIL→Pre→Executor</code> 都只会推动下一次 Executor，不维护各自的次数预算。任何相位若 <code>stop_reason</code> 明确表示 token 上限截断（<code>length</code> / <code>max_tokens</code> / <code>max_output_tokens</code>），会返回 <code>Error::OutputTruncated</code>。Post 无控制标记的协议重试若超限仍返回 <code>Error::Budget</code>；非流式 proxy 会把真正的预算错误映射为 HTTP 422，其它编排错误通常为 502。</p>
+<p>Pre 使用严格标记检测，Post 使用只看最后非空行的终止标记检测。Post 只负责核验和路由，不自行执行修补。任务执行预算统一按 Exec 高层执行次数统计，上限由 <code>[orchestration].max_exec_runs</code> 配置，默认 4；同一 Exec 内部的工具暂停/恢复不重复计数。最后一次允许的 Exec 完成后直接结束，因此不会再发送一个没有后续执行价值的 Post。<code>PIGNEXT</code> 与 <code>PIGFAIL→Pre→Exec</code> 都只会推动下一次 Exec，不维护各自的次数预算。任何相位若 <code>stop_reason</code> 明确表示 token 上限截断（<code>length</code> / <code>max_tokens</code> / <code>max_output_tokens</code>），会返回 <code>Error::OutputTruncated</code>。Post 无控制标记的协议重试若超限仍返回 <code>Error::Budget</code>；非流式 proxy 会把真正的预算错误映射为 HTTP 422，其它编排错误通常为 502。</p>
 </div>
 
 <h2>完整 Pre 模板路由</h2>
-<div class="card"><p>Pre 开始时从父请求 <code>model</code>（proxy 已剥除 <code>-pig</code> / <code>-pigs</code> 后缀）选完整模板：ASCII 不区分大小写地先匹配 <code>deepseek</code>（历史 v5），再匹配 <code>muse</code>（历史 v6）；否则选基于二者共同五问、直接执行和核验原则抽象的 <code>pre_generic_{zh,en}.txt</code>。每个候选本身就是独立完整 Pre，不拼接增量附录。再按任务语言选中英文，并替换 <code>{failure_paths}</code>；Executor 与 Post 没有模型专属路由。</p></div>
+<div class="card"><p>Pre 开始时从父请求 <code>model</code>（proxy 已剥除 <code>-pig</code> / <code>-pigs</code> 后缀）选完整模板：ASCII 不区分大小写地先匹配 <code>deepseek</code>（历史 v5），再匹配 <code>muse</code>（历史 v6）；否则选基于二者共同五问、直接执行和核验原则抽象的 <code>pre_generic_{zh,en}.txt</code>。每个候选本身就是独立完整 Pre，不拼接增量附录。再按任务语言选中英文，并替换 <code>{failure_paths}</code>；Exec 与 Post 没有模型专属路由。</p></div>
 
 <h2>子请求如何组装</h2>
 <div class="card">
 <p>orchestrator 为每个 pig 建立一次基础请求，而不是每次工具恢复都重新解释客户端整段请求。</p>
 <p>组装顺序是：</p>
 <ol>
-<li>Pre / Executor 进入时，从本轮最初的请求 body 构造基础请求；</li>
-<li>Pre / Executor 只在这一步把相位提示追加到当前任务 user 文本；</li>
-<li>Executor 完成时，先把 Executor 的基础请求与完整 <code>phase_transcript</code> 物化成一个 checkpoint；该 checkpoint 恰好截止到 Executor 最终 assistant 输出，尚未包含任何 Post 指令；Post 请求只是在这个 checkpoint 后追加一条 Post user 指令；</li>
-<li>Post 返回 <code>PIGNEXT</code> 时，系统回到上述 checkpoint，丢弃 Post user 指令及整个 Post transcript；随后新增一条 user 消息，内容直接复用普通 <code>executor_instruction</code> 模板，只把其中的执行前分析替换为 Post 去除控制标记后的反馈；</li>
+<li>Pre / Exec 进入时，从本轮最初的请求 body 构造基础请求；</li>
+<li>Pre / Exec 只在这一步把相位提示追加到当前任务 user 文本；</li>
+<li>Exec 完成时，先把 Exec 的基础请求与完整 <code>phase_transcript</code> 物化成一个 checkpoint；该 checkpoint 恰好截止到 Exec 最终 assistant 输出，尚未包含任何 Post 指令；Post 请求只是在这个 checkpoint 后追加一条 Post user 指令；</li>
+<li>Post 返回 <code>PIGNEXT</code> 时，系统回到上述 checkpoint，丢弃 Post user 指令及整个 Post transcript；随后新增一条 user 消息，内容直接复用普通 <code>exec_instruction</code> 模板，只把其中的执行前分析替换为 Post 去除控制标记后的反馈；</li>
 <li>工具 continuation 恢复除了要求 pending tool-call id 全部匹配，还要求 A/B 模式一致，避免两种输出模式互相消费现场；</li>
 <li>同一 pig 内若发生工具调用，模型的原生 assistant/tool-call 记录保存在 <code>phase_transcript</code>；客户端回填时，用 pending id 定位本次恢复起点，然后把从匹配工具结果开始的客户端新增消息原样接回，包括后续 reminder / 普通 user 消息；</li>
 <li>恢复时复用同一个基础请求，再把 <code>phase_transcript</code> 接在后面，不新增相位 user 指令；</li>
@@ -91,7 +91,7 @@ resume 同一相位</pre>
 <p>当父请求 body 的 <code>stream</code> 为 true 时，orchestrator 使用 transport 的 streaming 路径。上游 SSE 被增量解析并通过 <code>ProgressSink</code> 产生事件。</p>
 <ul>
 <li>模式 A（<code>-pigs</code>）的文本增量经过 <code>MarkerFilter</code> 后实时发送；</li>
-<li>模式 B（<code>-pig</code>）的普通文本在 Pre/Executor/Post 生成时不发送。Simple Path 只有 Pre <code>PIGEND</code> 后提交 Pre 答案；复杂路径把 Executor 普通文本先存为 candidate，通常由随后 Post <code>PIGEND</code> 提交；若当前 Executor 已是第 4 次执行，则该 candidate 直接提交，不再进入 Post；</li>
+<li>模式 B（<code>-pig</code>）的普通文本在 Pre/Exec/Post 生成时不发送。Simple Path 只有 Pre <code>PIGEND</code> 后提交 Pre 答案；复杂路径把 Exec 普通文本先存为 candidate，通常由随后 Post <code>PIGEND</code> 提交；若当前 Exec 已是第 4 次执行，则该 candidate 直接提交，不再进入 Post；</li>
 <li>thinking、reasoning summary、signature 等使用带类型事件传给 proxy 的 <code>StreamEncoder</code>；</li>
 <li>一轮结束时，无法实时还原的原生块由收尾逻辑补发；proxy 的编码器会在最终终止事件前关闭仍打开的协议块，因此 Responses 终止对象保留最终业务正文。</li>
 </ul>
@@ -100,7 +100,7 @@ resume 同一相位</pre>
 
 <h2>最终内容与 usage</h2>
 <div class="card">
-<p>模式 A 中，<code>TurnState</code> 继续按执行顺序保留各阶段普通文本。模式 B 中，Pre/Post 普通文本不进入客户端业务正文；<code>candidate_text</code> 保存当前待验收 Executor 候选，<code>committed_text</code> 保存最终实际提交的业务正文。正常验收由 Post <code>PIGEND</code> 提交 candidate；若达到 Executor 执行次数上限，则最后一次 Executor 的 candidate 直接提交。thinking/reasoning 与工具调用不受正文隐藏规则影响。</p>
+<p>模式 A 中，<code>TurnState</code> 继续按执行顺序保留各阶段普通文本。模式 B 中，Pre/Post 普通文本不进入客户端业务正文；<code>candidate_text</code> 保存当前待验收 Exec 候选，<code>committed_text</code> 保存最终实际提交的业务正文。正常验收由 Post <code>PIGEND</code> 提交 candidate；若达到 Exec 执行次数上限，则最后一次 Exec 的 candidate 直接提交。thinking/reasoning 与工具调用不受正文隐藏规则影响。</p>
 <p><code>stop_reason</code> 每一轮都会覆盖，最终保留最后一轮解析到的值。</p>
 <p><strong>usage 有两种语义。</strong><code>max</code>（默认）比较每次真实上游调用的 <code>total_tokens</code>，缺失时以协议主输入字段 + 主输出字段回退计算，并返回最大者的完整原始 usage JSON；<code>sum</code> 则递归合并本次客户端 API 请求触发的所有真实调用 usage，对同路径数值字段逐项相加。</p>
 <div class="note">工具暂停响应也会带上本次客户端请求已经聚合的 usage。客户端执行工具并发起恢复请求后，continuation 继续保留相位现场，但 usage 会清零并只统计新一发客户端请求，避免 sum 重复计费或 max 沿用旧快照。</div>

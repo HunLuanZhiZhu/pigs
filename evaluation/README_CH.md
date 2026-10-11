@@ -121,7 +121,7 @@ GSM8K / IFEval 默认在首轮全部样本结束后，对缺失/失败 predictio
 - BFCL V4 Multi-Turn：本目录的 BFCL adapter 在官方 OpenAI handler 请求上附加 `reasoning_effort`；
 - SWE-bench Lite：mini-SWE-agent `model_kwargs.reasoning_effort`。
 
-PIGS 的 phase 请求从原始请求克隆，因此 Base 与 PIGS 的 Pre / Executor / Post 都继承相同的 reasoning effort。
+PIGS 的 phase 请求从原始请求克隆，因此 Base 与 PIGS 的 Pre / Exec / Post 都继承相同的 reasoning effort。
 
 每次 run 会把该值写入：
 
@@ -348,6 +348,6 @@ comparisons.csv
 
 ### 2026-10-08 Muse 强制 Full 诊断（非正式指标）
 
-历史 2026-10-08 实验使用当时的 `-pigfull` 后缀；**当前运行时已改为 `-pig3`（不保留旧别名）**，正常完成时至少运行一次 Pre、Executor、Post。历史报告中的模型名保留原状以供溯源。
+历史 2026-10-08 实验使用当时的 `-pigfull` 后缀；**当前运行时已改为 `-pig3`（不保留旧别名）**，正常完成时至少运行一次 Pre、Exec、Post。历史报告中的模型名保留原状以供溯源。
 
-实验后缀 `-pigfull` 使用独立的纯规划 Pre 提示词，禁止简单路径直接结束，统一执行 Executor/Post；最终答案采用模式 B 的提交语义。`evaluation/diagnose_muse_base_errors.py` 从 2026-10-05 完整 Muse Base 的 EvalScope 评分文件自动选取 **26 道原始错误题**，复用四示例原始输入，向隔离服务发送 Responses 请求，持续写出 `progress.txt`、`results.jsonl`、`summary.json`。由于样本按 Base 错误刻意筛选，其修复数只可用于机制诊断，不可当作 GSM8K 总体正确率。
+实验后缀 `-pigfull` 使用独立的纯规划 Pre 提示词，禁止简单路径直接结束，统一执行 Exec/Post；最终答案采用模式 B 的提交语义。`evaluation/diagnose_muse_base_errors.py` 从 2026-10-05 完整 Muse Base 的 EvalScope 评分文件自动选取 **26 道原始错误题**，复用四示例原始输入，向隔离服务发送 Responses 请求，持续写出 `progress.txt`、`results.jsonl`、`summary.json`。由于样本按 Base 错误刻意筛选，其修复数只可用于机制诊断，不可当作 GSM8K 总体正确率。

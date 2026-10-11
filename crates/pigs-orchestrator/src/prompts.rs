@@ -3,8 +3,8 @@
 //! 这里只负责"指令正文"，**不含用户原问题**——命令与产物的接法由编排层决定，
 //! DeepSeek v5 / Muse v6 模板保持历史原文；未命中的模型使用两者共同原则抽象的通用版：
 //! - Pre：模板 + 历次失败路径；
-//! - Executor：模板里填 `{pre_output}`（Pre 的分析）；
-//! - Post：纯模板（Executor 的草稿不走这里，而是作为 assistant 消息接回对话）。
+//! - Exec：模板里填 `{pre_output}`（Pre 的分析）；
+//! - Post：纯模板（Exec 的草稿不走这里，而是作为 assistant 消息接回对话）。
 
 use crate::lang::Lang;
 
@@ -40,10 +40,10 @@ fn pre_full_template(lang: Lang) -> String {
         Lang::En => include_str!("../prompts/pre_full_en.txt"),
     })
 }
-fn executor_template(lang: Lang) -> String {
+fn exec_template(lang: Lang) -> String {
     norm(match lang {
-        Lang::Zh => include_str!("../prompts/executor_user_zh.txt"),
-        Lang::En => include_str!("../prompts/executor_user_en.txt"),
+        Lang::Zh => include_str!("../prompts/exec_user_zh.txt"),
+        Lang::En => include_str!("../prompts/exec_user_en.txt"),
     })
 }
 fn post_template(lang: Lang) -> String {
@@ -76,9 +76,9 @@ pub fn pre_full_instruction(lang: Lang, failure_paths: &[String]) -> String {
     pre_full_template(lang).replace("{failure_paths}", &failure_paths_block(lang, failure_paths))
 }
 
-/// Executor pig 的指令：追加到最后一条 user 消息文本后面（含 Pre 的分析）。
-pub fn executor_instruction(lang: Lang, pre_output: &str) -> String {
-    executor_template(lang).replace("{pre_output}", pre_output)
+/// Exec pig 的指令：追加到最后一条 user 消息文本后面（含 Pre 的分析）。
+pub fn exec_instruction(lang: Lang, pre_output: &str) -> String {
+    exec_template(lang).replace("{pre_output}", pre_output)
 }
 
 /// Post pig 的指令：作为**新的一条** user 消息追加（草稿已作为 assistant 消息在场）。
@@ -183,8 +183,8 @@ mod tests {
     }
 
     #[test]
-    fn executor_instruction_fills_pre_output() {
-        let p = executor_instruction(Lang::Zh, "计划X");
+    fn exec_instruction_fills_pre_output() {
+        let p = exec_instruction(Lang::Zh, "计划X");
         assert!(p.starts_with("计划X\n\n"));
         assert!(p
             .trim_end()
@@ -216,7 +216,7 @@ mod tests {
         assert!(pre.contains("Base the decision on the task itself"));
         assert!(pre.contains("If the task is simple"));
         assert!(pre.contains("If the task is not simple"));
-        assert!(executor_instruction(Lang::En, "PRE").contains("PRE"));
+        assert!(exec_instruction(Lang::En, "PRE").contains("PRE"));
         assert!(post_instruction(Lang::En).contains("PIGNEXT"));
         assert!(post_instruction(Lang::En).contains("PIGFAIL"));
     }

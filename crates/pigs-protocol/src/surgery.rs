@@ -3,7 +3,7 @@
 //! 所有操作都基于 `serde_json::Value`，不构造 typed 模型——编排只需要改少数几个字段。
 //!
 //! 相位之间的信息传递方式与 legacy `pigs-api/src/protocol.rs` 一致：
-//! - Pre / Executor 把指令**追加到最后一条 user 消息的文本上**（不动原有内容，
+//! - Pre / Exec 把指令**追加到最后一条 user 消息的文本上**（不动原有内容，
 //!   图片等非文本块也不会丢）；
 //! - Post 把上一只 pig 的产出作为**一条 assistant 消息接回对话**，再追加一条新的
 //!   user 消息作为验收指令——模型看到的是"我自己写的稿子"，而不是"用户塞来的材料"。
@@ -48,7 +48,7 @@ pub fn strip_tools(body: &mut Value) {
     }
 }
 
-/// 把相位指令追加到最后一条 user 消息的文本后面（Pre / Executor 相位用）。
+/// 把相位指令追加到最后一条 user 消息的文本后面（Pre / Exec 相位用）。
 ///
 /// - OpenAI Chat / Anthropic：`messages` 数组里最后一条 `role=="user"`；
 /// - Responses：`input` 是字符串则直接拼接；是数组则改最后一条 user 项。
@@ -101,7 +101,7 @@ pub fn append_to_last_user_text(body: &mut Value, protocol: Protocol, suffix: &s
 
 /// 把相位指令追加到请求**尾部**。
 ///
-/// 规则：末条消息是 user → 追加到它的文本尾部（Pre/Executor 接在用户原话后面）；
+/// 规则：末条消息是 user → 追加到它的文本尾部（Pre/Exec 接在用户原话后面）；
 /// 末条是别的（assistant / tool 结果 / 全新请求）→ 新增一条 user 消息。
 ///
 /// 只动尾部是刻意的：上游 prompt cache 按前缀命中，尾部追加才不打断缓存。

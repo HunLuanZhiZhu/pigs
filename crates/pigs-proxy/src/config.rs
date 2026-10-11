@@ -89,9 +89,9 @@ impl Default for UsageMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OrchestrationConfig {
-    /// 一轮任务最多允许多少次高层 Executor 执行；工具暂停/恢复不重复计数。
-    #[serde(default = "default_max_executor_runs")]
-    pub max_executor_runs: u32,
+    /// 一轮任务最多允许多少次高层 Exec 执行；工具暂停/恢复不重复计数。
+    #[serde(default = "default_max_exec_runs", alias = "max_executor_runs")]
+    pub max_exec_runs: u32,
     /// Post 没有输出控制标记时，最多额外重试多少次协议响应。
     #[serde(default = "default_max_post_protocol_retries")]
     pub max_post_protocol_retries: u32,
@@ -103,15 +103,15 @@ pub struct OrchestrationConfig {
 impl Default for OrchestrationConfig {
     fn default() -> Self {
         Self {
-            max_executor_runs: default_max_executor_runs(),
+            max_exec_runs: default_max_exec_runs(),
             max_post_protocol_retries: default_max_post_protocol_retries(),
             usage_mode: UsageMode::Max,
         }
     }
 }
 
-fn default_max_executor_runs() -> u32 {
-    pigs_orchestrator::DEFAULT_MAX_EXECUTOR_RUNS
+fn default_max_exec_runs() -> u32 {
+    pigs_orchestrator::DEFAULT_MAX_EXEC_RUNS
 }
 
 fn default_max_post_protocol_retries() -> u32 {
@@ -154,8 +154,8 @@ impl Config {
     }
 
     fn validate(&self) -> anyhow::Result<()> {
-        if self.orchestration.max_executor_runs == 0 {
-            anyhow::bail!("orchestration.max_executor_runs 必须大于 0");
+        if self.orchestration.max_exec_runs == 0 {
+            anyhow::bail!("orchestration.max_exec_runs 必须大于 0");
         }
         Ok(())
     }
@@ -188,7 +188,7 @@ anthropic = "http://c"
         assert_eq!(
             config.orchestration,
             OrchestrationConfig {
-                max_executor_runs: pigs_orchestrator::DEFAULT_MAX_EXECUTOR_RUNS,
+                max_exec_runs: pigs_orchestrator::DEFAULT_MAX_EXEC_RUNS,
                 max_post_protocol_retries:
                     pigs_orchestrator::DEFAULT_MAX_POST_PROTOCOL_RETRIES,
                 usage_mode: UsageMode::Max,
@@ -203,7 +203,7 @@ anthropic = "http://c"
 listen = "127.0.0.1:3927"
 key = ""
 [orchestration]
-max_executor_runs = 6
+max_exec_runs = 6
 max_post_protocol_retries = 1
 usage_mode = "sum"
 [upstream]
@@ -213,9 +213,22 @@ anthropic = "http://c"
 "#,
         )
         .unwrap();
-        assert_eq!(config.orchestration.max_executor_runs, 6);
+        assert_eq!(config.orchestration.max_exec_runs, 6);
         assert_eq!(config.orchestration.max_post_protocol_retries, 1);
         assert_eq!(config.orchestration.usage_mode, UsageMode::Sum);
+    }
+
+    #[test]
+    fn legacy_max_executor_runs_key_is_still_accepted() {
+        let legacy: OrchestrationConfig = toml::from_str("max_executor_runs = 7").unwrap();
+        assert_eq!(legacy.max_exec_runs, 7);
+
+        let modern: OrchestrationConfig = toml::from_str("max_exec_runs = 7").unwrap();
+        assert_eq!(modern.max_exec_runs, 7);
+
+        let serialized = toml::to_string(&legacy).unwrap();
+        assert!(serialized.contains("max_exec_runs = 7"));
+        assert!(!serialized.contains("max_executor_runs"));
     }
 
     #[test]

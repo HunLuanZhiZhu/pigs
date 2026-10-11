@@ -51,7 +51,7 @@ pub fn protocol_from_path(path: &str) -> Option<Protocol> {
 /// - `<model>-pigs`  → 模式 A（拼接阶段输出）
 /// - `<model>-pig`   → 模式 B（单一最终业务输出）
 /// - `<model>-pigsb` → 模式 B（旧后缀兼容）
-/// - `<model>-pig3`  → 模式 B，至少经历 Pre/Executor/Post 三个相位（成功执行时）
+/// - `<model>-pig3`  → 模式 B，至少经历 Pre/Exec/Post 三个相位（成功执行时）
 pub fn parse_pigs_model(model: &str) -> Option<(String, PigsMode)> {
     if let Some(real) = model.strip_suffix("-pig3") {
         Some((real.to_string(), PigsMode::B))

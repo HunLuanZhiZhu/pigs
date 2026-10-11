@@ -19,24 +19,24 @@ pub struct TurnState {
     pub mode: PigsMode,
     /// 实验模式：仅规划 Pre，禁止简单路径提前结束。
     pub force_full: bool,
-    /// 本轮最初的客户端请求 body。Pre / Executor 从这里构造；Post 直接继承 Executor 完整上下文。
+    /// 本轮最初的客户端请求 body。Pre / Exec 从这里构造；Post 直接继承 Exec 完整上下文。
     pub root_body: Value,
     /// 当前 pig 第一次进入时构造好的基础请求（已注入一次阶段提示）。
     pub phase_base_body: Option<Value>,
     /// 当前 pig 内已经发生过的协议原生 assistant/tool 对话记录。
     pub phase_transcript: Vec<Value>,
-    /// 最近一次 Executor 完成后的完整上下文截面（尚未追加 Post 指令）。
-    /// Post 返回 PIGNEXT 时从这里恢复，再用 Post 反馈作为新的 Executor 分析输入。
-    pub executor_checkpoint_body: Option<Value>,
+    /// 最近一次 Exec 完成后的完整上下文截面（尚未追加 Post 指令）。
+    /// Post 返回 PIGNEXT 时从这里恢复，再用 Post 反馈作为新的 Exec 分析输入。
+    pub exec_checkpoint_body: Option<Value>,
     /// 已走过的相位序列（诊断）。
     pub path: Vec<Pig>,
-    /// Pre 的分析（Executor 指令要用）。
+    /// Pre 的分析（Exec 指令要用）。
     pub pre_output: String,
     /// 历次失败路径（Pre 重规划用）。
     pub failure_paths: Vec<String>,
     /// 模式 A 的各段可见文本；模式 B 只在最终提交时写入一段。
     pub visible: Vec<String>,
-    /// 模式 B：当前 Executor 候选正文。Post 未接受前不对客户端可见。
+    /// 模式 B：当前 Exec 候选正文。Post 未接受前不对客户端可见。
     pub candidate_text: String,
     /// 模式 B：已经提交的最终业务正文。
     pub committed_text: String,
@@ -44,8 +44,8 @@ pub struct TurnState {
     pub parts: Vec<Part>,
     /// 本相位各轮的原始文本（含控制标记，用于路由）。
     pub phase_raw: Vec<String>,
-    /// Executor 高层执行次数；同一次 Executor 内的工具暂停/恢复不重复计数。
-    pub executor_runs: u32,
+    /// Exec 高层执行次数；同一次 Exec 内的工具暂停/恢复不重复计数。
+    pub exec_runs: u32,
     /// Post 无控制标记时的协议重试次数；它不是任务执行预算。
     pub post_protocol_retries: u32,
     /// 语言（按用户问题判定）。
@@ -71,7 +71,7 @@ impl TurnState {
             root_body,
             phase_base_body: None,
             phase_transcript: Vec::new(),
-            executor_checkpoint_body: None,
+            exec_checkpoint_body: None,
             path: Vec::new(),
             pre_output: String::new(),
             failure_paths: Vec::new(),
@@ -80,7 +80,7 @@ impl TurnState {
             committed_text: String::new(),
             parts: Vec::new(),
             phase_raw: Vec::new(),
-            executor_runs: 0,
+            exec_runs: 0,
             post_protocol_retries: 0,
             lang,
             session,
@@ -89,7 +89,7 @@ impl TurnState {
         }
     }
 
-    /// 清掉当前 pig 的临时对话现场。进入 Pre / Executor 新阶段或 Pre 重规划时调用。
+    /// 清掉当前 pig 的临时对话现场。进入 Pre / Exec 新阶段或 Pre 重规划时调用。
     pub fn reset_phase_conversation(&mut self) {
         self.phase_base_body = None;
         self.phase_transcript.clear();
@@ -166,14 +166,14 @@ impl TurnState {
         self.stop_reason = output.stop_reason.clone();
     }
 
-    /// 记录当前 Executor 业务正文；模式 B 把它作为待验收 candidate。
+    /// 记录当前 Exec 业务正文；模式 B 把它作为待验收 candidate。
     pub fn set_candidate(&mut self, text: String) {
         if self.mode == PigsMode::B {
             self.candidate_text = text;
         }
     }
 
-    /// 模式 B：丢弃当前 Executor 候选。
+    /// 模式 B：丢弃当前 Exec 候选。
     pub fn discard_candidate(&mut self) {
         if self.mode == PigsMode::B {
             self.candidate_text.clear();
@@ -191,7 +191,7 @@ impl TurnState {
         }
     }
 
-    /// 模式 B：接受当前 Executor candidate。
+    /// 模式 B：接受当前 Exec candidate。
     pub fn commit_candidate(&mut self) {
         if self.mode == PigsMode::B {
             let text = std::mem::take(&mut self.candidate_text);
@@ -592,7 +592,7 @@ mod tests {
             state: state(),
             created: Instant::now(),
         };
-        cont.state.phase = Pig::Executor;
+        cont.state.phase = Pig::Exec;
         let id = store.insert(cont);
         assert_eq!(store.len(), 1);
 
@@ -603,7 +603,7 @@ mod tests {
             .take_match(&["call_1".into(), "call_2".into()])
             .unwrap();
         assert_eq!(taken.id, id);
-        assert_eq!(taken.state.phase, Pig::Executor);
+        assert_eq!(taken.state.phase, Pig::Exec);
         assert!(store
             .take_match(&["call_1".into(), "call_2".into()])
             .is_none());

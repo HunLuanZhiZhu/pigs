@@ -256,7 +256,7 @@ async fn orchestrate(
         crate::config::UsageMode::Sum => orch::UsageMode::Sum,
     };
     let orchestrator = orch::Orchestrator::with_limits_and_usage(
-        state.config.orchestration.max_executor_runs,
+        state.config.orchestration.max_exec_runs,
         state.config.orchestration.max_post_protocol_retries,
         usage_mode,
     );

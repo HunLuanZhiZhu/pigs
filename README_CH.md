@@ -15,9 +15,9 @@
 
 ---
 
-PIGS 是一个用 Rust 编写的 LLM 前置代理。普通请求正常透传；当受支持的 `POST` 请求中，模型名以 `-pigs` 或 `-pig` 结尾时，请求会进入自适应的 **Pre → Executor → Post** 编排流程。旧后缀 `-pigsb` 暂时兼容。另有实验专用后缀 `-pig3`：Pre 只进行规划、不能提前结束，随后进入 Executor/Post，最终输出沿用模式 B；此模式仅供机制诊断，不属于正式主评测矩阵。
+PIGS 是一个用 Rust 编写的 LLM 前置代理。普通请求正常透传；当受支持的 `POST` 请求中，模型名以 `-pigs` 或 `-pig` 结尾时，请求会进入自适应的 **Pre → Exec → Post** 编排流程。旧后缀 `-pigsb` 暂时兼容。另有实验专用后缀 `-pig3`：Pre 只进行规划、不能提前结束，随后进入 Exec/Post，最终输出沿用模式 B；此模式仅供机制诊断，不属于正式主评测矩阵。
 
-进入编排后，Pre 会根据**剥除 PIGS 后缀的真实模型名**选择完整提示词：名称包含 `deepseek` 使用历史 **DeepSeek v5** 原版，包含 `muse` 使用历史 **Muse v6** 原版，其他模型使用从二者共同原则抽象的精简通用 Pre。名称匹配不区分 ASCII 大小写；中文或英文模板根据用户问题自动选择。不拼接额外的模型专属段落，Executor/Post 保持不变。
+进入编排后，Pre 会根据**剥除 PIGS 后缀的真实模型名**选择完整提示词：名称包含 `deepseek` 使用历史 **DeepSeek v5** 原版，包含 `muse` 使用历史 **Muse v6** 原版，其他模型使用从二者共同原则抽象的精简通用 Pre。名称匹配不区分 ASCII 大小写；中文或英文模板根据用户问题自动选择。不拼接额外的模型专属段落，Exec/Post 保持不变。
 
 核心使用方式非常简单：
 
@@ -59,7 +59,7 @@ model-x-pig   → PIGS 编排（仅提交一个有效业务结果）→ 上游 m
        简单任务          复杂任务
          │                │
          ▼                ▼
-       完成            Executor
+       完成            Exec
                           │
                    工具调用? ─────► 客户端
                           ▲            │
@@ -89,11 +89,11 @@ Pre 在进入完整执行路径之前先分析任务，包括：
 
 如果初始请求提供了可用客户端工具，并且没有显式设置 `tool_choice = none`，PIGS 会保留 function-calling 语义，不允许 Pre 的文本捷径吞掉工具路径。
 
-### 2. Executor —— 真正执行任务
+### 2. Exec —— 真正执行任务
 
-Executor 接收 Pre 的分析并完成任务本身。
+Exec 接收 Pre 的分析并完成任务本身。
 
-一个 Executor phase 可以经历多轮工具调用。PIGS **不会代替客户端执行工具**：
+一个 Exec phase 可以经历多轮工具调用。PIGS **不会代替客户端执行工具**：
 
 1. 模型请求工具；
 2. PIGS 暂停当前 phase；
@@ -103,10 +103,10 @@ Executor 接收 Pre 的分析并完成任务本身。
 
 ### 3. Post —— 独立核验并决定下一步
 
-Post 直接继承 Executor 已形成的完整协议上下文，对执行结果进行独立核验。
+Post 直接继承 Exec 已形成的完整协议上下文，对执行结果进行独立核验。
 
 - `PIGEND` → 接受当前结果；也包括任务已经无法可靠继续改进、且当前结果如实反映这一终止状态的情况；
-- `PIGNEXT` → 当前执行路径仍可修补；Post 给出简短核验反馈，系统砍回最近一次 Executor checkpoint 再运行下一次 Executor；
+- `PIGNEXT` → 当前执行路径仍可修补；Post 给出简短核验反馈，系统砍回最近一次 Exec checkpoint 再运行下一次 Exec；
 - `PIGFAIL` → 当前执行路径存在根本性错误，回到 Pre 重新规划；
 - 没有控制标记 → 视为核验器协议未完成，在独立的 Post 协议重试预算内重试。
 
@@ -114,7 +114,7 @@ Post 只负责核验和路由。它可以使用工具验证事实或实际状态
 
 ### Token 上限截断
 
-如果上游明确表示这一轮是因为生成 token 上限而结束，PIGS 会把它视为**未完成的 phase**，不会把半截 Pre / Executor / Post 当成正常产物继续向后传。
+如果上游明确表示这一轮是因为生成 token 上限而结束，PIGS 会把它视为**未完成的 phase**，不会把半截 Pre / Exec / Post 当成正常产物继续向后传。
 
 当前识别：
 
@@ -322,7 +322,7 @@ flowchart LR
 |---|---|---|
 | `pigs` | CLI、配置加载、日志、启动服务 | [HTML](./crates/pigs/index.html) |
 | `pigs-proxy` | HTTP 入口、分流、透传、loopback、客户端响应流 | [HTML](./crates/pigs-proxy/index.html) |
-| `pigs-orchestrator` | Pre / Executor / Post 状态机、continuation、phase 提示 | [HTML](./crates/pigs-orchestrator/index.html) |
+| `pigs-orchestrator` | Pre / Exec / Post 状态机、continuation、phase 提示 | [HTML](./crates/pigs-orchestrator/index.html) |
 | `pigs-protocol` | 协议判定、JSON/SSE 解析、请求体手术、响应合成 | [HTML](./crates/pigs-protocol/index.html) |
 
 依赖方向：

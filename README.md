@@ -15,9 +15,9 @@
 
 ---
 
-PIGS is a Rust front proxy for LLM APIs. Ordinary requests pass through normally; supported `POST` requests whose model name ends in `-pigs` or `-pig` enter an adaptive **Pre → Executor → Post** orchestration flow. The legacy `-pigsb` suffix remains supported. The experimental `-pig3` suffix forces a planning-only Pre followed by Executor/Post, retaining mode B's final-answer behavior; it is intended for diagnostic experiments, not the formal benchmark matrix.
+PIGS is a Rust front proxy for LLM APIs. Ordinary requests pass through normally; supported `POST` requests whose model name ends in `-pigs` or `-pig` enter an adaptive **Pre → Exec → Post** orchestration flow. The legacy `-pigsb` suffix remains supported. The experimental `-pig3` suffix forces a planning-only Pre followed by Exec/Post, retaining mode B's final-answer behavior; it is intended for diagnostic experiments, not the formal benchmark matrix.
 
-The Pre prompt is chosen from the **real upstream model name** after removing the PIGS suffix: names containing `deepseek` use the frozen **DeepSeek v5** full prompt; names containing `muse` use the frozen **Muse v6** full prompt; all others use a concise generic prompt abstracted from their common task analysis, execution, and verification requirements. Matching is ASCII case-insensitive; the user's language selects the Chinese or English edition. There is no model-specific addendum; this model-name routing does not select or alter Executor/Post prompts.
+The Pre prompt is chosen from the **real upstream model name** after removing the PIGS suffix: names containing `deepseek` use the frozen **DeepSeek v5** full prompt; names containing `muse` use the frozen **Muse v6** full prompt; all others use a concise generic prompt abstracted from their common task analysis, execution, and verification requirements. Matching is ASCII case-insensitive; the user's language selects the Chinese or English edition. There is no model-specific addendum; this model-name routing does not select or alter Exec/Post prompts.
 
 The core idea is deliberately small:
 
@@ -59,7 +59,7 @@ Client ───────► PIGS ──────────────�
      simple task       complex task
           │                │
           ▼                ▼
-       complete         Executor
+       complete         Exec
                            │
                     tool call? ─────► Client
                            ▲             │
@@ -89,9 +89,9 @@ For safety, a Pre `PIGEND` is valid only when substantive user-facing text exist
 
 If the initial request exposes usable client tools and does not explicitly set `tool_choice = none`, PIGS preserves function-calling semantics instead of allowing a Pre text shortcut to consume the tool path.
 
-### 2. Executor — do the work
+### 2. Exec — do the work
 
-Executor receives the Pre analysis and performs the task.
+Exec receives the Pre analysis and performs the task.
 
 It can span multiple tool round-trips. PIGS itself does **not** execute client tools:
 
@@ -103,10 +103,10 @@ It can span multiple tool round-trips. PIGS itself does **not** execute client t
 
 ### 3. Post — verify and route
 
-Post inherits the complete Executor protocol context and independently checks whether the task is complete.
+Post inherits the complete Exec protocol context and independently checks whether the task is complete.
 
 - `PIGEND` → accept the current result, including a truthful terminal state that cannot be reliably improved further;
-- `PIGNEXT` → the current path is repairable; return concise verifier feedback and run another Executor from the last Executor checkpoint;
+- `PIGNEXT` → the current path is repairable; return concise verifier feedback and run another Exec from the last Exec checkpoint;
 - `PIGFAIL` → the current execution path is fundamentally wrong; return to Pre for replanning;
 - no control marker → retry Post as verifier-protocol incompletion within the separate Post retry budget.
 
@@ -322,7 +322,7 @@ flowchart LR
 |---|---|---|
 | `pigs` | CLI, configuration loading, logging, service startup | [HTML](./crates/pigs/index.html) |
 | `pigs-proxy` | HTTP entrypoint, routing, passthrough, loopback, client response streaming | [HTML](./crates/pigs-proxy/index.html) |
-| `pigs-orchestrator` | Pre / Executor / Post state machine, continuation, phase prompts | [HTML](./crates/pigs-orchestrator/index.html) |
+| `pigs-orchestrator` | Pre / Exec / Post state machine, continuation, phase prompts | [HTML](./crates/pigs-orchestrator/index.html) |
 | `pigs-protocol` | Protocol detection, JSON/SSE parsing, request surgery, response synthesis | [HTML](./crates/pigs-protocol/index.html) |
 
 Dependency direction:

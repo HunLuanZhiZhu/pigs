@@ -18,7 +18,7 @@
 
 ### Part B — Agentic / Long-horizon
 
-目标是验证 PIGS 的完整 `Pre → Executor → Post` 编排在多轮、工具驱动、需要环境反馈与持续修正的任务中，是否提高 end-to-end task success。
+目标是验证 PIGS 的完整 `Pre → Exec → Post` 编排在多轮、工具驱动、需要环境反馈与持续修正的任务中，是否提高 end-to-end task success。
 
 核心实验原则：
 

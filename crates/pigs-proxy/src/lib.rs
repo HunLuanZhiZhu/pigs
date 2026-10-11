@@ -48,7 +48,7 @@ fn build(config: Config, addr: std::net::SocketAddr) -> axum::Router {
         openai = %config.upstream.openai,
         responses = %config.upstream.responses,
         anthropic = %config.upstream.anthropic,
-        max_executor_runs = config.orchestration.max_executor_runs,
+        max_exec_runs = config.orchestration.max_exec_runs,
         max_post_protocol_retries = config.orchestration.max_post_protocol_retries,
         usage_mode = ?config.orchestration.usage_mode,
         "pigs 已启动"
@@ -59,10 +59,10 @@ fn build(config: Config, addr: std::net::SocketAddr) -> axum::Router {
         "  上游：chat={} responses={} anthropic={}",
         config.upstream.openai, config.upstream.responses, config.upstream.anthropic
     );
-    println!("  -pigs(A) / -pig(B, alias -pigsb) 编排：Pre → Executor → Post");
+    println!("  -pigs(A) / -pig(B, alias -pigsb) 编排：Pre → Exec → Post");
     println!(
-        "  编排次数：Executor 最多 {} 次；Post 无标记协议重试最多 {} 次",
-        config.orchestration.max_executor_runs, config.orchestration.max_post_protocol_retries
+        "  编排次数：Exec 最多 {} 次；Post 无标记协议重试最多 {} 次",
+        config.orchestration.max_exec_runs, config.orchestration.max_post_protocol_retries
     );
     println!("  usage 汇报模式：{:?}", config.orchestration.usage_mode);
     println!(

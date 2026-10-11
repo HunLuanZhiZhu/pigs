@@ -1,6 +1,6 @@
 //! pigs-orchestrator —— 编排引擎。
 //!
-//! 三只 pig 组成一头 pigs：Pre（规划/分流）→ Executor（执行）→ Post（验收），
+//! 三只 pig 组成一头 pigs：Pre（规划/分流）→ Exec（执行）→ Post（验收），
 //! 由 PIGEND / PIGNEXT / PIGFAIL 控制标记与预算驱动的状态机串起来。
 //!
 //! **一只 pig 是一段对话区间**：模型要工具 → 客户端执行 → 结果回填 → 模型继续，
@@ -31,8 +31,8 @@ pub const SESSION_HEADER: &str = "x-opencode-session";
 pub const LOOPBACK_TOKEN_HEADER: &str = "x-pigs-loopback";
 
 /// 默认编排次数；部署配置可以覆盖。
-/// 工具暂停/恢复不重复计入 Executor 执行次数。
-pub const DEFAULT_MAX_EXECUTOR_RUNS: u32 = 4;
+/// 工具暂停/恢复不重复计入 Exec 执行次数。
+pub const DEFAULT_MAX_EXEC_RUNS: u32 = 4;
 pub const DEFAULT_MAX_POST_PROTOCOL_RETRIES: u32 = 3;
 
 /// 最终向下游汇报 usage 的语义。
@@ -56,8 +56,8 @@ pub enum Pig {
     /// 规划 / 分流 / GOAL 声明。
     Pre,
     /// 信息收集 + 起草答复（工具调用多发生在这个相位）。
-    Executor,
-    /// 纯核验 + 路由：接受、回 Executor 继续修补、或回 Pre 重规划。
+    Exec,
+    /// 纯核验 + 路由：接受、回 Exec 继续修补、或回 Pre 重规划。
     Post,
 }
 
@@ -65,7 +65,7 @@ impl Pig {
     pub fn as_str(self) -> &'static str {
         match self {
             Pig::Pre => "pre",
-            Pig::Executor => "executor",
+            Pig::Exec => "exec",
             Pig::Post => "post",
         }
     }
@@ -98,7 +98,7 @@ pub struct TurnInput {
     pub protocol: proto::Protocol,
     /// 输出模式：A 逐阶段暴露正文；B 只提交最终被接受的业务正文。
     pub mode: proto::PigsMode,
-    /// 实验开关：使用纯规划 Pre 并强制进入 Executor。
+    /// 实验开关：使用纯规划 Pre 并强制进入 Exec。
     pub force_full: bool,
     /// 原始请求 body（JSON）。客户端请求什么就是什么，只允许在尾部追加。
     pub body: serde_json::Value,
@@ -125,7 +125,7 @@ pub struct Runtime {
 /// 一轮编排的结果：跑完，或者被工具调用打断。
 #[derive(Debug, Clone)]
 pub enum Outcome {
-    /// 本轮完成（正常验收，或最后一次 Executor 直接完成）。
+    /// 本轮完成（正常验收，或最后一次 Exec 直接完成）。
     Completed(TurnResult),
     /// 模型要工具：调用已交给客户端，等它执行完带结果回来。
     Paused(PausedTurn),
@@ -176,8 +176,8 @@ pub enum EndedWith {
     SimplePath,
     /// Post 验收通过。
     PigEnd,
-    /// 已达到 Executor 执行次数上限；最后一次 Executor 完成后直接结束，未再进入 Post。
-    ExecutorLimit,
+    /// 已达到 Exec 执行次数上限；最后一次 Exec 完成后直接结束，未再进入 Post。
+    ExecLimit,
 }
 
 impl EndedWith {
@@ -185,7 +185,7 @@ impl EndedWith {
         match self {
             EndedWith::SimplePath => "SIMPLE_PATH",
             EndedWith::PigEnd => "PIGEND",
-            EndedWith::ExecutorLimit => "EXECUTOR_LIMIT",
+            EndedWith::ExecLimit => "EXECUTOR_LIMIT",
         }
     }
 }
@@ -210,7 +210,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// 编排器。只持有本轮控制次数配置，可全局共享。
 #[derive(Debug, Clone)]
 pub struct Orchestrator {
-    max_executor_runs: u32,
+    max_exec_runs: u32,
     max_post_protocol_retries: u32,
     usage_mode: UsageMode,
 }
@@ -218,7 +218,7 @@ pub struct Orchestrator {
 impl Default for Orchestrator {
     fn default() -> Self {
         Self {
-            max_executor_runs: DEFAULT_MAX_EXECUTOR_RUNS,
+            max_exec_runs: DEFAULT_MAX_EXEC_RUNS,
             max_post_protocol_retries: DEFAULT_MAX_POST_PROTOCOL_RETRIES,
             usage_mode: UsageMode::Max,
         }
@@ -230,21 +230,21 @@ impl Orchestrator {
         Self::default()
     }
 
-    pub fn with_limits(max_executor_runs: u32, max_post_protocol_retries: u32) -> Self {
+    pub fn with_limits(max_exec_runs: u32, max_post_protocol_retries: u32) -> Self {
         Self {
-            max_executor_runs,
+            max_exec_runs,
             max_post_protocol_retries,
             usage_mode: UsageMode::Max,
         }
     }
 
     pub fn with_limits_and_usage(
-        max_executor_runs: u32,
+        max_exec_runs: u32,
         max_post_protocol_retries: u32,
         usage_mode: UsageMode,
     ) -> Self {
         Self {
-            max_executor_runs,
+            max_exec_runs,
             max_post_protocol_retries,
             usage_mode,
         }
@@ -312,33 +312,33 @@ impl Orchestrator {
                 };
                 proto::append_to_last_user_text(&mut body, input.protocol, &instruction)?;
             }
-            Pig::Executor => {
-                let instruction = prompts::executor_instruction(state.lang, &state.pre_output);
+            Pig::Exec => {
+                let instruction = prompts::exec_instruction(state.lang, &state.pre_output);
                 proto::append_to_last_user_text(&mut body, input.protocol, &instruction)?;
             }
             Pig::Post => {
                 return Err(Error::Budget(
-                    "Post 必须继承 Executor 的完整上下文，不能从 root_body 重建".into(),
+                    "Post 必须继承 Exec 的完整上下文，不能从 root_body 重建".into(),
                 ));
             }
         }
         Ok(body)
     }
 
-    /// 物化“Executor 已执行完、尚未进入 Post”的完整上下文截面。
-    fn build_executor_checkpoint(
+    /// 物化“Exec 已执行完、尚未进入 Post”的完整上下文截面。
+    fn build_exec_checkpoint(
         input: &TurnInput,
         state: &TurnState,
     ) -> Result<serde_json::Value> {
         let mut body = state
             .phase_base_body
             .clone()
-            .ok_or_else(|| Error::Budget("Executor 缺少 phase_base_body，无法建立 checkpoint".into()))?;
+            .ok_or_else(|| Error::Budget("Exec 缺少 phase_base_body，无法建立 checkpoint".into()))?;
         proto::append_transcript_items(&mut body, input.protocol, &state.phase_transcript)?;
         Ok(body)
     }
 
-    /// 从 Executor checkpoint 构造 Post：只在 checkpoint 后追加一条 Post 核验 user 消息。
+    /// 从 Exec checkpoint 构造 Post：只在 checkpoint 后追加一条 Post 核验 user 消息。
     fn build_post_base_from_checkpoint(
         input: &TurnInput,
         state: &TurnState,
@@ -353,21 +353,21 @@ impl Orchestrator {
         Ok(body)
     }
 
-    /// Post 返回 PIGNEXT 时，砍回最近一次 Executor 完成的 checkpoint。
-    /// 然后复用原 Executor 指令模板，只把“执行前分析”替换为 Post 的核验反馈。
-    fn build_executor_base_from_checkpoint(
+    /// Post 返回 PIGNEXT 时，砍回最近一次 Exec 完成的 checkpoint。
+    /// 然后复用原 Exec 指令模板，只把“执行前分析”替换为 Post 的核验反馈。
+    fn build_exec_base_from_checkpoint(
         input: &TurnInput,
         state: &TurnState,
         feedback: &str,
     ) -> Result<serde_json::Value> {
         let mut body = state
-            .executor_checkpoint_body
+            .exec_checkpoint_body
             .clone()
-            .ok_or_else(|| Error::Budget("Post 缺少 Executor checkpoint，无法 PIGNEXT".into()))?;
+            .ok_or_else(|| Error::Budget("Post 缺少 Exec checkpoint，无法 PIGNEXT".into()))?;
         proto::push_user_message(
             &mut body,
             input.protocol,
-            &prompts::executor_instruction(state.lang, feedback),
+            &prompts::exec_instruction(state.lang, feedback),
         )?;
         Ok(body)
     }
@@ -386,14 +386,14 @@ impl Orchestrator {
             let first_entry = state.path.last() != Some(&phase);
             if first_entry {
                 state.path.push(phase);
-                if phase == Pig::Executor {
-                    state.executor_runs += 1;
+                if phase == Pig::Exec {
+                    state.exec_runs += 1;
                 }
             }
             tracing::info!(
                 pig = phase.as_str(),
                 first_entry,
-                executor_runs = state.executor_runs,
+                exec_runs = state.exec_runs,
                 "pig round"
             );
 
@@ -469,41 +469,41 @@ impl Orchestrator {
                         state.commit_text(strip_markers(&raw));
                         return Ok(Outcome::Completed(state.complete(EndedWith::SimplePath)))
                     }
-                    // Pre 只负责给下一次 Executor 形成计划；PIGFAIL/PIGNEXT 在 Pre 没有独立的次数语义。
-                    // 除简单路径 PIGEND 外，其余输出都按复杂计划进入 Executor。
+                    // Pre 只负责给下一次 Exec 形成计划；PIGFAIL/PIGNEXT 在 Pre 没有独立的次数语义。
+                    // 除简单路径 PIGEND 外，其余输出都按复杂计划进入 Exec。
                     Some(Marker::Failed) | Some(Marker::Next) | Some(Marker::End) | None => {
                         state.pre_output = strip_markers(&raw);
                         state.post_protocol_retries = 0;
-                        state.executor_checkpoint_body = None;
+                        state.exec_checkpoint_body = None;
                         state.discard_candidate();
                         state.phase_raw.clear();
-                        state.phase = Pig::Executor;
+                        state.phase = Pig::Exec;
                         state.reset_phase_conversation();
                     }
                 },
-                // ---------------- Executor：执行 ----------------
-                Pig::Executor => {
-                    // 不解析标记。模式 B 先把本次 Executor 的普通文本保存为候选。
+                // ---------------- Exec：执行 ----------------
+                Pig::Exec => {
+                    // 不解析标记。模式 B 先把本次 Exec 的普通文本保存为候选。
                     state.set_candidate(strip_markers(&raw));
 
-                    // 所有执行预算统一按 Executor 高层执行次数计算。最后一次允许的 Executor
+                    // 所有执行预算统一按 Exec 高层执行次数计算。最后一次允许的 Exec
                     // 完成后直接结束；此时再做 Post 已没有任何后续执行机会，因此没有意义。
-                    // -pig3 承诺成功执行时至少经过 Pre → Executor → Post。
-                    // 即使 max_executor_runs=1，也必须先给首次 Executor 一个 Post 验收机会。
-                    if state.executor_runs >= self.max_executor_runs
-                        && !(state.force_full && state.executor_runs == 1)
+                    // -pig3 承诺成功执行时至少经过 Pre → Exec → Post。
+                    // 即使 max_exec_runs=1，也必须先给首次 Exec 一个 Post 验收机会。
+                    if state.exec_runs >= self.max_exec_runs
+                        && !(state.force_full && state.exec_runs == 1)
                     {
                         state.commit_candidate();
                         return Ok(Outcome::Completed(
-                            state.complete(EndedWith::ExecutorLimit),
+                            state.complete(EndedWith::ExecLimit),
                         ));
                     }
 
                     // 尚有下一次执行机会时才保存 checkpoint 并进入 Post 核验。
-                    let checkpoint = Self::build_executor_checkpoint(&ctx.input, &state)?;
+                    let checkpoint = Self::build_exec_checkpoint(&ctx.input, &state)?;
                     let post_base =
                         Self::build_post_base_from_checkpoint(&ctx.input, &state, &checkpoint)?;
-                    state.executor_checkpoint_body = Some(checkpoint);
+                    state.exec_checkpoint_body = Some(checkpoint);
                     state.post_protocol_retries = 0;
                     state.phase_raw.clear();
                     state.phase = Pig::Post;
@@ -517,11 +517,11 @@ impl Orchestrator {
                         state.commit_candidate();
                         return Ok(Outcome::Completed(state.complete(EndedWith::PigEnd)))
                     }
-                    // 可修补 → Post 只给反馈，不自行执行；把完整现场交回下一次 Executor。
-                    // 是否还能继续不在这里单独计数；统一由下一次 Executor 的 executor_runs 判断。
+                    // 可修补 → Post 只给反馈，不自行执行；把完整现场交回下一次 Exec。
+                    // 是否还能继续不在这里单独计数；统一由下一次 Exec 的 exec_runs 判断。
                     Some(Marker::Next) => {
                         let feedback = strip_markers(&raw);
-                        let executor_base = Self::build_executor_base_from_checkpoint(
+                        let exec_base = Self::build_exec_base_from_checkpoint(
                             &ctx.input,
                             &state,
                             &feedback,
@@ -529,18 +529,18 @@ impl Orchestrator {
                         state.post_protocol_retries = 0;
                         state.discard_candidate();
                         state.phase_raw.clear();
-                        state.phase = Pig::Executor;
-                        state.phase_base_body = Some(executor_base);
+                        state.phase = Pig::Exec;
+                        state.phase_base_body = Some(exec_base);
                         state.phase_transcript.clear();
                     }
-                    // 执行路径根本错误 → 记录反馈并回 Pre 形成下一次 Executor 的计划。
-                    // 同样不维护独立的“重规划次数”；唯一执行预算是 executor_runs。
+                    // 执行路径根本错误 → 记录反馈并回 Pre 形成下一次 Exec 的计划。
+                    // 同样不维护独立的“重规划次数”；唯一执行预算是 exec_runs。
                     Some(Marker::Failed) => {
                         let text = strip_markers(&raw);
                         state.failure_paths.push(text);
                         state.pre_output.clear();
                         state.post_protocol_retries = 0;
-                        state.executor_checkpoint_body = None;
+                        state.exec_checkpoint_body = None;
                         state.discard_candidate();
                         state.phase_raw.clear();
                         state.phase = Pig::Pre;

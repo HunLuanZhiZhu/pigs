@@ -16,7 +16,7 @@ These benchmarks are not expected to prove a large gain. Their role is to detect
 
 ### Part B — Agentic / long-horizon
 
-Question: does `Pre → Executor → Post` improve end-to-end success when the outer task already requires multiple model calls, tools, environment feedback, and revision?
+Question: does `Pre → Exec → Post` improve end-to-end success when the outer task already requires multiple model calls, tools, environment feedback, and revision?
 
 The causal rule is:
 

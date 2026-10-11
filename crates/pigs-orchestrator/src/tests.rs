@@ -339,16 +339,16 @@ async fn subrequests_pass_everything_through_untouched() {
 async fn pig3_ignores_pre_early_pigend() {
     let transport = fake(vec![
         FakeTransport::text(200, "提前回答了\nPIGEND"),
-        FakeTransport::text(200, "Executor 正式答案"),
+        FakeTransport::text(200, "Exec 正式答案"),
         FakeTransport::text(200, "核验完成\nPIGEND"),
     ]);
     let (rt, _) = runtime(transport.clone());
     let mut request = input_mode(proto::Protocol::OpenAI, proto::PigsMode::B);
     request.force_full = true;
     let result = completed(Orchestrator::new().run(request, rt).await.unwrap());
-    assert_eq!(result.path, vec![Pig::Pre, Pig::Executor, Pig::Post]);
+    assert_eq!(result.path, vec![Pig::Pre, Pig::Exec, Pig::Post]);
     assert_eq!(result.ended_with, EndedWith::PigEnd);
-    assert_eq!(result.text, "Executor 正式答案");
+    assert_eq!(result.text, "Exec 正式答案");
     let reqs = transport.requests.lock().unwrap();
     let pre_body: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
     let pre_prompt = last_message_content(&pre_body);
@@ -357,7 +357,7 @@ async fn pig3_ignores_pre_early_pigend() {
 }
 
 #[tokio::test]
-async fn pig3_still_visits_post_when_executor_budget_is_one() {
+async fn pig3_still_visits_post_when_exec_budget_is_one() {
     let transport = fake(vec![
         FakeTransport::text(200, "执行前计划"),
         FakeTransport::text(200, "首次执行结果"),
@@ -372,7 +372,7 @@ async fn pig3_still_visits_post_when_executor_budget_is_one() {
             .await
             .unwrap(),
     );
-    assert_eq!(result.path, vec![Pig::Pre, Pig::Executor, Pig::Post]);
+    assert_eq!(result.path, vec![Pig::Pre, Pig::Exec, Pig::Post]);
     assert_eq!(result.ended_with, EndedWith::PigEnd);
     assert_eq!(result.text, "首次执行结果");
     assert_eq!(transport.requests.lock().unwrap().len(), 3);
@@ -382,7 +382,7 @@ async fn pig3_still_visits_post_when_executor_budget_is_one() {
 async fn happy_path_three_pigs_with_pigend() {
     let transport = fake(vec![
         FakeTransport::text(200, "分析：需要X和Y"),   // pre
-        FakeTransport::text(200, "执行结果……"),       // executor
+        FakeTransport::text(200, "执行结果……"),       // exec
         FakeTransport::text(200, "验收通过\nPIGEND"), // post
     ]);
     let (rt, _store) = runtime(transport.clone());
@@ -395,7 +395,7 @@ async fn happy_path_three_pigs_with_pigend() {
 
     assert_eq!(result.ended_with, EndedWith::PigEnd);
     assert_eq!(result.text, "分析：需要X和Y\n\n执行结果……\n\n验收通过");
-    assert_eq!(result.path, vec![Pig::Pre, Pig::Executor, Pig::Post]);
+    assert_eq!(result.path, vec![Pig::Pre, Pig::Exec, Pig::Post]);
     // usage 取 input 最大的那只子请求的原对象、stop_reason 取上游的值
     assert_eq!(
         result.usage.unwrap(),
@@ -417,7 +417,7 @@ async fn happy_path_three_pigs_with_pigend() {
         } else if i == 1 {
             assert!(
                 content.contains("分析：需要X和Y"),
-                "Executor 指令要带 Pre 分析"
+                "Exec 指令要带 Pre 分析"
             );
         } else {
             assert!(content.contains("根据任务目标和任务要求"));
@@ -504,7 +504,7 @@ async fn mode_b_simple_commits_only_pre_answer() {
 }
 
 #[tokio::test]
-async fn mode_b_complex_commits_only_accepted_executor() {
+async fn mode_b_complex_commits_only_accepted_exec() {
     let transport = fake(vec![
         FakeTransport::text(200, "内部分析"),
         FakeTransport::text(200, "最终业务答案"),
@@ -772,9 +772,9 @@ async fn multiple_tool_rounds_inside_one_phase() {
     }
 }
 
-/// Executor 连续工具恢复时，执行计划只在进入 Executor 时注入一次。
+/// Exec 连续工具恢复时，执行计划只在进入 Exec 时注入一次。
 #[tokio::test]
-async fn executor_tool_resumes_keep_one_phase_prompt() {
+async fn exec_tool_resumes_keep_one_phase_prompt() {
     let transport = fake(vec![
         FakeTransport::text(200, "计划A"),
         FakeTransport::tool_calls(200, &[("call_1", "Read")]),
@@ -798,7 +798,7 @@ async fn executor_tool_resumes_keep_one_phase_prompt() {
         .unwrap()
         .take_match(&["call_1".into()])
         .unwrap();
-    assert_eq!(continuation1.state.phase, Pig::Executor);
+    assert_eq!(continuation1.state.phase, Pig::Exec);
     let (rt2, store2) = runtime(transport.clone());
     let paused2 = paused(
         orchestrator
@@ -842,7 +842,7 @@ async fn executor_tool_resumes_keep_one_phase_prompt() {
             user.matches("以上是本任务的执行前分析，可在执行过程中根据实际情况调整。")
                 .count(),
             1,
-            "Executor 阶段说明在同一 pig 中必须只有一份"
+            "Exec 阶段说明在同一 pig 中必须只有一份"
         );
     }
 
@@ -852,7 +852,7 @@ async fn executor_tool_resumes_keep_one_phase_prompt() {
     assert_eq!(
         &post_messages[..exec_messages.len()],
         exec_messages.as_slice(),
-        "Post 必须保留 Executor 最后一发请求的完整消息前缀"
+        "Post 必须保留 Exec 最后一发请求的完整消息前缀"
     );
     assert_eq!(post_messages[exec_messages.len()]["role"], "assistant");
     assert_eq!(post_messages[exec_messages.len()]["content"], "草稿完成");
@@ -881,10 +881,10 @@ async fn post_pigfail_returns_to_pre_with_failure_paths() {
         result.path,
         vec![
             Pig::Pre,
-            Pig::Executor,
+            Pig::Exec,
             Pig::Post,
             Pig::Pre,
-            Pig::Executor,
+            Pig::Exec,
             Pig::Post
         ]
     );
@@ -893,14 +893,14 @@ async fn post_pigfail_returns_to_pre_with_failure_paths() {
     // 第二次 Pre 的指令里带上了失败路径
     let pre2: serde_json::Value = serde_json::from_slice(&reqs[3].body).unwrap();
     assert!(last_message_content(&pre2).contains("走偏了"));
-    // 第二次 Post：直接继承第二次 Executor 的完整上下文，只在末尾追加评审 user。
+    // 第二次 Post：直接继承第二次 Exec 的完整上下文，只在末尾追加评审 user。
     let exec2: serde_json::Value = serde_json::from_slice(&reqs[4].body).unwrap();
     let post2: serde_json::Value = serde_json::from_slice(&reqs[5].body).unwrap();
     assert_eq!(roles(&post2), vec!["system", "user", "assistant", "user"]);
     assert_eq!(
         &post2["messages"].as_array().unwrap()[..exec2["messages"].as_array().unwrap().len()],
         exec2["messages"].as_array().unwrap().as_slice(),
-        "Post 的消息前缀必须逐条等于当前 Executor 最后一发请求"
+        "Post 的消息前缀必须逐条等于当前 Exec 最后一发请求"
     );
     assert_eq!(post2["messages"][2]["content"], "草稿二");
     assert!(
@@ -908,7 +908,7 @@ async fn post_pigfail_returns_to_pre_with_failure_paths() {
             .as_str()
             .unwrap()
             .contains("计划二（这次记住失败路径）"),
-        "Executor 阶段注入的 Pre 计划必须随完整前缀进入 Post"
+        "Exec 阶段注入的 Pre 计划必须随完整前缀进入 Post"
     );
     assert!(!post2.to_string().contains("草稿一"));
     assert!(!post2.to_string().contains("走偏了"));
@@ -933,7 +933,7 @@ async fn post_accepts_marker_only_pigend() {
 }
 
 #[tokio::test]
-async fn post_pignext_returns_to_executor_with_feedback_then_rechecks() {
+async fn post_pignext_returns_to_exec_with_feedback_then_rechecks() {
     let transport = fake(vec![
         FakeTransport::text(200, "计划"),
         FakeTransport::text(200, "草稿一"),
@@ -951,7 +951,7 @@ async fn post_pignext_returns_to_executor_with_feedback_then_rechecks() {
     assert_eq!(result.ended_with, EndedWith::PigEnd);
     assert_eq!(
         result.path,
-        vec![Pig::Pre, Pig::Executor, Pig::Post, Pig::Executor, Pig::Post]
+        vec![Pig::Pre, Pig::Exec, Pig::Post, Pig::Exec, Pig::Post]
     );
     assert!(!result.text.contains("PIGNEXT"));
 
@@ -965,12 +965,12 @@ async fn post_pignext_returns_to_executor_with_feedback_then_rechecks() {
     let exec2_messages = exec2["messages"].as_array().unwrap();
 
     // Post1 的最后一条 user 是核验提示。PIGNEXT 后必须把它和整个 Post transcript 都砍掉，
-    // 回到 Executor1 已执行完毕的 checkpoint。
+    // 回到 Exec1 已执行完毕的 checkpoint。
     let checkpoint_len = post1_messages.len() - 1;
     assert_eq!(
         &exec2_messages[..checkpoint_len],
         &post1_messages[..checkpoint_len],
-        "PIGNEXT 后必须回到上一次 Executor 完成时的上下文截面"
+        "PIGNEXT 后必须回到上一次 Exec 完成时的上下文截面"
     );
     assert_eq!(exec2_messages.len(), checkpoint_len + 1);
     assert_eq!(exec2_messages[checkpoint_len]["role"], "user");
@@ -985,7 +985,7 @@ async fn post_pignext_returns_to_executor_with_feedback_then_rechecks() {
     assert_eq!(
         &post2_messages[..exec2_messages.len()],
         exec2_messages.as_slice(),
-        "第二次 Post 必须继续继承第二次 Executor 的完整前缀"
+        "第二次 Post 必须继续继承第二次 Exec 的完整前缀"
     );
     assert_eq!(post2_messages[exec2_messages.len()]["role"], "assistant");
     assert_eq!(
@@ -996,7 +996,7 @@ async fn post_pignext_returns_to_executor_with_feedback_then_rechecks() {
 }
 
 #[tokio::test]
-async fn mode_b_pignext_discards_rejected_executor_and_commits_repair() {
+async fn mode_b_pignext_discards_rejected_exec_and_commits_repair() {
     let transport = fake(vec![
         FakeTransport::text(200, "计划"),
         FakeTransport::text(200, "错误草稿"),
@@ -1018,12 +1018,12 @@ async fn mode_b_pignext_discards_rejected_executor_and_commits_repair() {
 }
 
 #[tokio::test]
-async fn mode_a_last_executor_skips_post_at_execution_limit() {
+async fn mode_a_last_exec_skips_post_at_execution_limit() {
     let mut responses = vec![
         FakeTransport::text(200, "计划"),
         FakeTransport::text(200, "草稿1"),
     ];
-    for i in 1..DEFAULT_MAX_EXECUTOR_RUNS {
+    for i in 1..DEFAULT_MAX_EXEC_RUNS {
         responses.push(FakeTransport::text(200, &format!("还要修{i}\nPIGNEXT")));
         responses.push(FakeTransport::text(200, &format!("草稿{}", i + 1)));
     }
@@ -1035,24 +1035,24 @@ async fn mode_a_last_executor_skips_post_at_execution_limit() {
             .await
             .unwrap(),
     );
-    assert_eq!(result.ended_with, EndedWith::ExecutorLimit);
+    assert_eq!(result.ended_with, EndedWith::ExecLimit);
     assert!(result
         .text
-        .contains(&format!("草稿{DEFAULT_MAX_EXECUTOR_RUNS}")));
+        .contains(&format!("草稿{DEFAULT_MAX_EXEC_RUNS}")));
     assert_eq!(
         transport.requests.lock().unwrap().len(),
-        (DEFAULT_MAX_EXECUTOR_RUNS as usize) * 2,
-        "最后一次 Executor 后不应再发送 Post"
+        (DEFAULT_MAX_EXEC_RUNS as usize) * 2,
+        "最后一次 Exec 后不应再发送 Post"
     );
 }
 
 #[tokio::test]
-async fn mode_b_last_executor_skips_post_at_execution_limit() {
+async fn mode_b_last_exec_skips_post_at_execution_limit() {
     let mut responses = vec![
         FakeTransport::text(200, "计划"),
         FakeTransport::text(200, "草稿1"),
     ];
-    for i in 1..DEFAULT_MAX_EXECUTOR_RUNS {
+    for i in 1..DEFAULT_MAX_EXEC_RUNS {
         responses.push(FakeTransport::text(200, &format!("还要修{i}\nPIGNEXT")));
         responses.push(FakeTransport::text(200, &format!("草稿{}", i + 1)));
     }
@@ -1064,21 +1064,21 @@ async fn mode_b_last_executor_skips_post_at_execution_limit() {
             .await
             .unwrap(),
     );
-    assert_eq!(result.ended_with, EndedWith::ExecutorLimit);
+    assert_eq!(result.ended_with, EndedWith::ExecLimit);
     assert_eq!(
         result.text,
-        format!("草稿{DEFAULT_MAX_EXECUTOR_RUNS}")
+        format!("草稿{DEFAULT_MAX_EXEC_RUNS}")
     );
     assert!(!result.text.contains("还要修"));
     assert_eq!(
         transport.requests.lock().unwrap().len(),
-        (DEFAULT_MAX_EXECUTOR_RUNS as usize) * 2,
-        "模式 B 同样必须在最后一次 Executor 后直接结束"
+        (DEFAULT_MAX_EXEC_RUNS as usize) * 2,
+        "模式 B 同样必须在最后一次 Exec 后直接结束"
     );
 }
 
 #[tokio::test]
-async fn custom_executor_run_limit_is_honored() {
+async fn custom_exec_run_limit_is_honored() {
     let transport = fake(vec![
         FakeTransport::text(200, "计划"),
         FakeTransport::text(200, "草稿1"),
@@ -1092,7 +1092,7 @@ async fn custom_executor_run_limit_is_honored() {
             .await
             .unwrap(),
     );
-    assert_eq!(result.ended_with, EndedWith::ExecutorLimit);
+    assert_eq!(result.ended_with, EndedWith::ExecLimit);
     assert_eq!(result.text, "草稿2");
     assert_eq!(transport.requests.lock().unwrap().len(), 4);
 }
@@ -1106,7 +1106,7 @@ async fn custom_post_protocol_retry_limit_is_honored() {
         FakeTransport::text(200, "还是没有控制标记"),
     ]);
     let (rt, _store) = runtime(transport.clone());
-    let err = Orchestrator::with_limits(DEFAULT_MAX_EXECUTOR_RUNS, 1)
+    let err = Orchestrator::with_limits(DEFAULT_MAX_EXEC_RUNS, 1)
         .run(input(proto::Protocol::OpenAI), rt)
         .await
         .unwrap_err();
@@ -1134,7 +1134,7 @@ async fn truncated_pre_is_rejected_even_when_text_exists() {
     assert_eq!(
         transport.requests.lock().unwrap().len(),
         1,
-        "截断的 Pre 不能被当成正常计划送进 Executor"
+        "截断的 Pre 不能被当成正常计划送进 Exec"
     );
 }
 
@@ -1179,7 +1179,7 @@ async fn pre_control_markers_do_not_have_an_independent_retry_budget() {
 }
 
 #[tokio::test]
-async fn pigfail_replanning_uses_the_same_executor_run_limit() {
+async fn pigfail_replanning_uses_the_same_exec_run_limit() {
     let transport = fake(vec![
         FakeTransport::text(200, "计划一"),
         FakeTransport::text(200, "候选一"),
@@ -1200,18 +1200,18 @@ async fn pigfail_replanning_uses_the_same_executor_run_limit() {
             .await
             .unwrap(),
     );
-    assert_eq!(result.ended_with, EndedWith::ExecutorLimit);
+    assert_eq!(result.ended_with, EndedWith::ExecLimit);
     assert_eq!(result.text, "候选四");
-    assert_eq!(result.path.last(), Some(&Pig::Executor));
+    assert_eq!(result.path.last(), Some(&Pig::Exec));
     assert_eq!(
         transport.requests.lock().unwrap().len(),
         11,
-        "第四次 Executor 后不得再进入 Post"
+        "第四次 Exec 后不得再进入 Post"
     );
 }
 
 #[tokio::test]
-async fn pignext_and_pigfail_share_one_executor_run_counter() {
+async fn pignext_and_pigfail_share_one_exec_run_counter() {
     let transport = fake(vec![
         FakeTransport::text(200, "计划一"),
         FakeTransport::text(200, "候选一"),
@@ -1230,20 +1230,20 @@ async fn pignext_and_pigfail_share_one_executor_run_counter() {
             .await
             .unwrap(),
     );
-    assert_eq!(result.ended_with, EndedWith::ExecutorLimit);
+    assert_eq!(result.ended_with, EndedWith::ExecLimit);
     assert_eq!(result.text, "候选四");
     assert_eq!(
         result.path,
         vec![
             Pig::Pre,
-            Pig::Executor,
+            Pig::Exec,
             Pig::Post,
-            Pig::Executor,
+            Pig::Exec,
             Pig::Post,
             Pig::Pre,
-            Pig::Executor,
+            Pig::Exec,
             Pig::Post,
-            Pig::Executor,
+            Pig::Exec,
         ]
     );
 }
@@ -1406,7 +1406,7 @@ async fn streaming_turn_pushes_filtered_deltas_as_they_arrive() {
             _ => None,
         })
         .collect();
-    assert_eq!(starts, vec!["pre", "executor", "post", "post"]);
+    assert_eq!(starts, vec!["pre", "exec", "post", "post"]);
     assert_eq!(
         result.text,
         "分析：需要X\n第二行\n\n草稿\n\n评审：还差一点\n\n继续做完"

@@ -4,13 +4,13 @@
 
 本文档描述 **pigs 当前代码实际行为**。在代码尚未修改前，不把“目标设计”或“legacy 行为”写成“已经实现”。
 
-pigs 是一个 Rust 前置代理。普通请求走透传；只有同时满足以下条件时才进入 Pre → Executor → Post 编排：
+pigs 是一个 Rust 前置代理。普通请求走透传；只有同时满足以下条件时才进入 Pre → Exec → Post 编排：
 
 1. HTTP 方法是 `POST`；
 2. 路径能识别为 OpenAI Chat、OpenAI Responses 或 Anthropic Messages；
-3. 请求 JSON 的 `model` 以 `-pigs`（模式 A）或 `-pig`（模式 B，兼容旧后缀 `-pigsb`）结尾；诊断专用后缀 `-pig3` 也进入模式 B，且成功执行时至少经过 Pre → Executor → Post 三个阶段。
+3. 请求 JSON 的 `model` 以 `-pigs`（模式 A）或 `-pig`（模式 B，兼容旧后缀 `-pigsb`）结尾；诊断专用后缀 `-pig3` 也进入模式 B，且成功执行时至少经过 Pre → Exec → Post 三个阶段。
 
-实验后缀 `-pig3`：入口在剥除模型名后，将 `force_full` 独立传给编排器；Pre 使用 `prompts/pre_full_{zh,en}.txt`，仅规划、不提供控制标记或简单任务判断，忽略 Pre 的提前终止信号。正常完成至少运行 Pre、Executor、Post；即使 `max_executor_runs=1`，第一次 Executor 后仍需进入 Post。若上游错误、工具暂停或协议异常，不能保证单次客户端请求已完成三个阶段。最终答案和 Post/Executor 行为保持模式 B 语义。旧实验日志中的 `-pigfull` 是历史真实模型名，现行后缀已改为 `-pig3`（不保留旧后缀别名）。此后缀不属于正式主评测矩阵。
+实验后缀 `-pig3`：入口在剥除模型名后，将 `force_full` 独立传给编排器；Pre 使用 `prompts/pre_full_{zh,en}.txt`，仅规划、不提供控制标记或简单任务判断，忽略 Pre 的提前终止信号。正常完成至少运行 Pre、Exec、Post；即使 `max_exec_runs=1`，第一次 Exec 后仍需进入 Post。若上游错误、工具暂停或协议异常，不能保证单次客户端请求已完成三个阶段。最终答案和 Post/Exec 行为保持模式 B 语义。旧实验日志中的 `-pigfull` 是历史真实模型名，现行后缀已改为 `-pig3`（不保留旧后缀别名）。此后缀不属于正式主评测矩阵。
 
 注意：`POST` 到已识别协议路径时，proxy 会先解析 JSON 才能读取 model。因此这类请求即使最终不带 PIGS 后缀，若 JSON 本身非法也会直接返回 400，而不是进入普通透传。
 
@@ -18,7 +18,7 @@ pigs 是一个 Rust 前置代理。普通请求走透传；只有同时满足以
 
 进入 PIGS 编排后，proxy 已经剥离 `-pigs` / `-pig` / `-pigsb` 后缀。orchestrator 读取实际上游 `model` 名称，将其转为 ASCII 小写，再按优先顺序匹配：包含 `deepseek` → 完整历史 v5 Pre；否则包含 `muse` → 完整历史 v6 Pre；均未命中 → 从 v5/v6 五问、简单路径和核验共同原则抽象的通用 Pre。无后缀请求仍直接透传，不执行 Pre。匹配是大小写不敏感的**子串**匹配，不要求模型 ID 精确相等。
 
-三组 Pre 均有中文、英文独立模板，语言按最后一条用户问题前 2000 字是否出现 CJK 汉字选取。选中的完整模板再展开 `{failure_paths}`，不在 v5/v6 后附加模型规则；模型名称路由本身不改变 Executor / Post 的提示词选择和 A/B 模式；实验性 `-pig3` 另行强制经过三个阶段。历史 `pre_user_{zh,en}.txt` 作为旧实现资料保留，正常路由改为使用 `pre_deepseek_*`、`pre_muse_*`、`pre_generic_*`。这些提示词与测试在 Git 中独立版本化。
+三组 Pre 均有中文、英文独立模板，语言按最后一条用户问题前 2000 字是否出现 CJK 汉字选取。选中的完整模板再展开 `{failure_paths}`，不在 v5/v6 后附加模型规则；模型名称路由本身不改变 Exec / Post 的提示词选择和 A/B 模式；实验性 `-pig3` 另行强制经过三个阶段。历史 `pre_user_{zh,en}.txt` 作为旧实现资料保留，正常路由改为使用 `pre_deepseek_*`、`pre_muse_*`、`pre_generic_*`。这些提示词与测试在 Git 中独立版本化。
 
 ## 编排请求体
 
@@ -27,17 +27,17 @@ pigs 是一个 Rust 前置代理。普通请求走透传；只有同时满足以
 当前编排对子请求 body 的业务修改如下：
 
 - 客户端模型名 `<name>-pigs` / `<name>-pig` 都改成 `<name>` 发给上游；回客户端时使用客户端原始模型名。`-pigs` 选择模式 A，`-pig` 选择模式 B。
-- Pre / Executor：只在进入该 pig 时，把相位指令追加到当前任务 user 文本；同一 pig 内的工具暂停/恢复不会再次注入相位指令。
-- Post：不从最初请求重新构造。Executor 完成后，先保存“Executor 已执行完毕、尚未追加 Post 指令”的完整 checkpoint，再在该 checkpoint 后只追加一条 Post user 指令进行核验。Post 只负责核验和路由，不自行修改任务结果；若输出 `PIGNEXT`，系统丢弃 Post 指令与 Post transcript，回到该 Executor checkpoint，并新增一条与普通 Executor 相同格式的 user 指令，其中 `{pre_output}` 改为 Post 去除控制标记后的核验反馈。
+- Pre / Exec：只在进入该 pig 时，把相位指令追加到当前任务 user 文本；同一 pig 内的工具暂停/恢复不会再次注入相位指令。
+- Post：不从最初请求重新构造。Exec 完成后，先保存“Exec 已执行完毕、尚未追加 Post 指令”的完整 checkpoint，再在该 checkpoint 后只追加一条 Post user 指令进行核验。Post 只负责核验和路由，不自行修改任务结果；若输出 `PIGNEXT`，系统丢弃 Post 指令与 Post transcript，回到该 Exec checkpoint，并新增一条与普通 Exec 相同格式的 user 指令，其中 `{pre_output}` 改为 Post 去除控制标记后的核验反馈。
 - 其它字段，例如 `tools`、`tool_choice`、`stream`、`temperature`、`max_tokens`、`thinking`、`reasoning`、`response_format`、`stream_options`、`parallel_tool_calls` 等，当前主链路不主动删除或改写。
 
-历史中的工具调用、工具结果、图片和其它非文本块继续保留。每个 pig 持有自己的基础请求与相位内原生对话记录：相位提示只在 pig 开始时注入一次，之后模型输出、工具调用和工具结果按原生顺序追加。Executor → Post 直接继承 Executor 完整 checkpoint；Post → Executor(PIGNEXT) 则先砍回这个 checkpoint，Post 自身的核验提示/轨迹不进入下一次 Executor，只把最终核验反馈作为新的 Executor“执行前分析”输入。
+历史中的工具调用、工具结果、图片和其它非文本块继续保留。每个 pig 持有自己的基础请求与相位内原生对话记录：相位提示只在 pig 开始时注入一次，之后模型输出、工具调用和工具结果按原生顺序追加。Exec → Post 直接继承 Exec 完整 checkpoint；Post → Exec(PIGNEXT) 则先砍回这个 checkpoint，Post 自身的核验提示/轨迹不进入下一次 Exec，只把最终核验反馈作为新的 Exec“执行前分析”输入。
 
 `pigs-protocol` 中仍保留 `set_stream`、`strip_tools` 等通用函数，但当前编排主链路不会调用它们。
 
 ## 工具调用与 continuation
 
-`tools` / `tool_choice` 会继续发给上游。若初次 Pre 请求带有非空 `tools` 且未显式设置 `tool_choice = none`，即使 Pre 输出 `PIGEND`，也不会直接走 SIMPLE_PATH；该 Pre 输出会作为计划进入 Executor，避免 Pre 的文本捷径吞掉客户端要求保留的 function-calling 语义。显式 `tool_choice = none` 时仍允许 Pre 简单路径直接结束。上游返回工具调用后：
+`tools` / `tool_choice` 会继续发给上游。若初次 Pre 请求带有非空 `tools` 且未显式设置 `tool_choice = none`，即使 Pre 输出 `PIGEND`，也不会直接走 SIMPLE_PATH；该 Pre 输出会作为计划进入 Exec，避免 Pre 的文本捷径吞掉客户端要求保留的 function-calling 语义。显式 `tool_choice = none` 时仍允许 Pre 简单路径直接结束。上游返回工具调用后：
 
 - 当前 pig 相位暂停；
 - 工具调用按三协议各自的原生形状交给客户端执行；ToolCall 只属于当前 Paused 响应，不进入持久 TurnState；
@@ -99,14 +99,14 @@ pigs 是一个 Rust 前置代理。普通请求走透传；只有同时满足以
 
 - `model` 使用客户端原始模型名（包括 `-pigs` 或 `-pig` 后缀）；
 - 模式 A（`-pigs`）：普通文本按执行顺序保留，控制标记会被过滤；
-- 模式 B（`-pig`）：Pre/Post 普通文本以及被 `PIGNEXT`/`PIGFAIL` 否决的 Executor 候选不会进入客户端业务正文。Simple Path 只提交 Pre 的最终答案；复杂路径通常只在 Post `PIGEND` 后提交当前 Executor candidate；若当前 Executor 已是本轮允许的最后一次执行，则该 Executor 完成后直接提交，不再进入 Post；
+- 模式 B（`-pig`）：Pre/Post 普通文本以及被 `PIGNEXT`/`PIGFAIL` 否决的 Exec 候选不会进入客户端业务正文。Simple Path 只提交 Pre 的最终答案；复杂路径通常只在 Post `PIGEND` 后提交当前 Exec candidate；若当前 Exec 已是本轮允许的最后一次执行，则该 Exec 完成后直接提交，不再进入 Post；
 - thinking / reasoning、工具调用和其它已解析的原生块按 `Part` 序列尽量保留；
 - `stop_reason` / `finish_reason` 取最后一轮解析到的值；
 - 响应 id、时间戳、协议壳由 pigs 新生成；
 - 非流式走 `synthesize_json`；
 - 流式走 `StreamEncoder` 合成 SSE。
 
-因此“编排响应原样透传上游响应”不是当前代码行为。模式 A 与模式 B 当前并存，通过 model 后缀选择；两者共用同一套 Pre/Executor/Post、PIGNEXT、工具 continuation 和核验逻辑，只在普通业务正文的可见性/提交时机上不同。
+因此“编排响应原样透传上游响应”不是当前代码行为。模式 A 与模式 B 当前并存，通过 model 后缀选择；两者共用同一套 Pre/Exec/Post、PIGNEXT、工具 continuation 和核验逻辑，只在普通业务正文的可见性/提交时机上不同。
 
 ## usage 的当前策略
 
@@ -123,7 +123,7 @@ usage 的统计范围是**单次客户端 API 请求**。工具暂停响应也�
 
 - 上游 SSE 增量会被解析；
 - 模式 A 的文本经过 `MarkerFilter` 后实时转发，避免 `PIGEND` / `PIGNEXT` / `PIGFAIL` 泄给客户端；
-- 模式 B 的普通业务文本不在阶段生成时转发：Simple 等 Pre `PIGEND` 后提交，Complex 等 Post `PIGEND` 后提交最后一次被接受的 Executor candidate；因此 `stream:true` 下业务正文是“验收后再以 SSE 发出”，不是 token 生成即提交；
+- 模式 B 的普通业务文本不在阶段生成时转发：Simple 等 Pre `PIGEND` 后提交，Complex 等 Post `PIGEND` 后提交最后一次被接受的 Exec candidate；因此 `stream:true` 下业务正文是“验收后再以 SSE 发出”，不是 token 生成即提交；
 - thinking / reasoning 增量在 A/B 中都按协议实时转发；
 - 工具调用以及部分无法边到边还原的原生块在收尾阶段补发；
 - 流式收尾由 `StreamEncoder::finish()` 自身保证关闭仍打开的协议块后再发送终止事件；Responses 的 `response.completed.response.output` 因此会包含已经提交的最终正文，不依赖调用方额外先发 `PigEvent::End`；
@@ -136,29 +136,29 @@ usage 的统计范围是**单次客户端 API 请求**。工具暂停响应也�
 Pre：
 
 - Pre 提示会要求总结任务目标和会影响结果的关键条件，并把题意不清、多种合理解释或关键条件存在较大不确定性视为难点，供简单/复杂路径判断；
-- `PIGEND` 使用严格检测：标记前必须已有非控制标记的实质文本，防止简单路径只有控制词而没有用户答案；满足后通常简单路径结束，但初次 Pre 若存在可用客户端 `tools`（且未显式 `tool_choice = none`），则把 Pre 输出保存为计划并进入 Executor；
-- Pre 不维护独立的重规划次数。除简单路径 `PIGEND` 外，`PIGFAIL`、`PIGNEXT` 或无标记输出都作为复杂计划进入 Executor；
+- `PIGEND` 使用严格检测：标记前必须已有非控制标记的实质文本，防止简单路径只有控制词而没有用户答案；满足后通常简单路径结束，但初次 Pre 若存在可用客户端 `tools`（且未显式 `tool_choice = none`），则把 Pre 输出保存为计划并进入 Exec；
+- Pre 不维护独立的重规划次数。除简单路径 `PIGEND` 外，`PIGFAIL`、`PIGNEXT` 或无标记输出都作为复杂计划进入 Exec；
 - 失败反馈由此前 Post 的 `PIGFAIL` 写入 `failure_paths`，供下一次 Pre 规划使用。
 
-Executor：
+Exec：
 
 - 不解析控制标记；
-- 一轮任务的执行次数只按高层 Executor 相位计数；同一 Executor 内因工具调用发生的暂停/恢复不重复计数；
-- Executor 执行上限来自 `[orchestration].max_executor_runs`，默认 4；最后一次允许的 Executor 完成后直接结束，不再进入 Post；
-- 尚未达到执行次数上限时，Executor 结束后进入 Post。
+- 一轮任务的执行次数只按高层 Exec 相位计数；同一 Exec 内因工具调用发生的暂停/恢复不重复计数；
+- Exec 执行上限来自 `[orchestration].max_exec_runs`，默认 4；最后一次允许的 Exec 完成后直接结束，不再进入 Post；
+- 尚未达到执行次数上限时，Exec 结束后进入 Post。
 
 Post：
 
 - Post 是纯核验器：可以用工具核验，但不自行继续执行、修改或重写任务结果；
-- `PIGEND` → 接受当前 Executor 结果并正常完成；仅输出一行 `PIGEND` 也合法；
-- `PIGNEXT` → 当前结果可继续修补；Post 应给出简短可执行反馈。系统砍回最近一次 Executor 完成时保存的 checkpoint，丢弃 Post 指令与 Post transcript，再用原 Executor 指令模板把 Post 反馈作为新的“执行前分析”交给下一次 Executor；
-- `PIGFAIL` → 当前执行路径需要重新规划，记录失败反馈并回 Pre，由 Pre 为下一次 Executor 形成新计划；
-- `PIGNEXT` 与 `PIGFAIL→Pre→Executor` 不再维护各自的次数预算，二者统一消耗同一个 Executor 执行次数上限；
+- `PIGEND` → 接受当前 Exec 结果并正常完成；仅输出一行 `PIGEND` 也合法；
+- `PIGNEXT` → 当前结果可继续修补；Post 应给出简短可执行反馈。系统砍回最近一次 Exec 完成时保存的 checkpoint，丢弃 Post 指令与 Post transcript，再用原 Exec 指令模板把 Post 反馈作为新的“执行前分析”交给下一次 Exec；
+- `PIGFAIL` → 当前执行路径需要重新规划，记录失败反馈并回 Pre，由 Pre 为下一次 Exec 形成新计划；
+- `PIGNEXT` 与 `PIGFAIL→Pre→Exec` 不再维护各自的次数预算，二者统一消耗同一个 Exec 执行次数上限；
 - 无标记 → 视为核验器协议未完成，留在 Post 做协议重试；重试上限来自 `[orchestration].max_post_protocol_retries`，默认 3，这个协议重试计数不属于任务执行次数。
 
-任何相位只要上游停止原因明确表示生成 token 上限截断（当前识别 OpenAI Chat 的 `length`、Anthropic 的 `max_tokens`、Responses 的 `max_output_tokens`），就返回截断错误，不把部分文本当作完整 Pre/Executor/Post 产出继续推进。
+任何相位只要上游停止原因明确表示生成 token 上限截断（当前识别 OpenAI Chat 的 `length`、Anthropic 的 `max_tokens`、Responses 的 `max_output_tokens`），就返回截断错误，不把部分文本当作完整 Pre/Exec/Post 产出继续推进。
 
-任务执行预算不再按 `PIGNEXT` 修补次数或 `PIGFAIL` 重规划次数分别统计，而只按 Executor 实际执行次数统计。达到 Executor 执行上限时，最后一次 Executor 直接结束，因此不会再因为“最后一个 Post 判定不通过”而产生 422。Post 无控制标记的协议重试若单独超限，仍返回预算错误；proxy 对这类预算错误返回 422，其它编排错误（包括 token 截断）通常返回 502。
+任务执行预算不再按 `PIGNEXT` 修补次数或 `PIGFAIL` 重规划次数分别统计，而只按 Exec 实际执行次数统计。达到 Exec 执行上限时，最后一次 Exec 直接结束，因此不会再因为“最后一个 Post 判定不通过”而产生 422。Post 无控制标记的协议重试若单独超限，仍返回预算错误；proxy 对这类预算错误返回 422，其它编排错误（包括 token 截断）通常返回 502。
 
 ## 配置与职责
 
@@ -170,7 +170,7 @@ Post：
 - 可选 `key`
 - `[logging].detail`：`off` / `basic` / `max`，当前测试阶段默认 `max`
 - `[logging].directory`：HTTP 抓包目录，默认 `logs/http`
-- `[orchestration].max_executor_runs`：Executor 高层执行次数上限，默认 `4`
+- `[orchestration].max_exec_runs`：Exec 高层执行次数上限，默认 `4`
 - `[orchestration].max_post_protocol_retries`：Post 无控制标记时的协议重试次数上限，默认 `3`
 - `[orchestration].usage_mode`：`max` / `sum`，默认 `max`
 - `[upstream].openai`
@@ -197,7 +197,7 @@ crate 职责：
 
 - `pigs`：CLI、配置加载、日志、启动；
 - `pigs-proxy`：HTTP 入口、分流、透传、loopback、客户端响应流；
-- `pigs-orchestrator`：Pre / Executor / Post 状态机、continuation；
+- `pigs-orchestrator`：Pre / Exec / Post 状态机、continuation；
 - `pigs-protocol`：协议判定、JSON/SSE 解析、请求体尾部手术、响应合成。
 
 `pigs-mini-agent/` 是独立 Git / Cargo 项目，不属于根 workspace。

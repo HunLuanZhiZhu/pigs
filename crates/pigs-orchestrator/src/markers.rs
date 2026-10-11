@@ -2,7 +2,7 @@
 
 /// 成功结束标记（整轮完成）。
 pub const PIGEND: &str = "PIGEND";
-/// 可修补标记（Post 验收后回到 Executor 继续执行）。
+/// 可修补标记（Post 验收后回到 Exec 继续执行）。
 pub const PIGNEXT: &str = "PIGNEXT";
 /// 失败路径标记（回到 Pre 重规划）。
 pub const PIGFAIL: &str = "PIGFAIL";
@@ -12,7 +12,7 @@ pub const PIGFAIL: &str = "PIGFAIL";
 pub enum Marker {
     /// PIGEND —— 整轮正常结束。
     End,
-    /// PIGNEXT —— 当前结果可继续修补，回 Executor。
+    /// PIGNEXT —— 当前结果可继续修补，回 Exec。
     Next,
     /// PIGFAIL —— 路径失败，需要重规划。
     Failed,
@@ -45,7 +45,7 @@ pub fn detect_marker(text: &str) -> Option<Marker> {
 }
 
 /// Post 使用的终止检测：只要求最后一个非空行是控制标记。
-/// Post 的任务结果已经存在于 Executor 上下文中，因此 `PIGEND` / `PIGNEXT` / `PIGFAIL` 单独一行也是合法路由信号。
+/// Post 的任务结果已经存在于 Exec 上下文中，因此 `PIGEND` / `PIGNEXT` / `PIGFAIL` 单独一行也是合法路由信号。
 pub fn detect_terminal_marker(text: &str) -> Option<Marker> {
     text.lines()
         .rev()
