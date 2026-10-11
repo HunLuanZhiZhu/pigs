@@ -201,6 +201,8 @@ pub enum Error {
     OutputTruncated(proto::Protocol, &'static str, String),
     #[error("上游响应既没有文本也没有工具调用（协议 {0:?}，pig {1}）")]
     NoText(proto::Protocol, &'static str),
+    #[error("Pre 控制协议错误: {0}")]
+    PreProtocol(String),
     #[error("编排预算耗尽: {0}")]
     Budget(String),
 }
@@ -463,23 +465,28 @@ impl Orchestrator {
             let raw = state.phase_raw_text();
             match phase {
                 // ---------------- Pre：规划 / 分流 ----------------
-                Pig::Pre => match detect_marker(&raw) {
-                    // 实验 -pig3 不允许 Pre 提前结束，即使上游意外生成控制标记。
-                    Some(Marker::End) if !state.force_full => {
+                Pig::Pre => {
+                    // -pig3 使用专门的纯规划 Pre，不要求控制标记，仍强制进入 Exec。
+                    // 正常模式下 PIGEND 无条件终止，即使请求附带了可用工具；停止优先。
+                    let marker = detect_marker(&raw);
+                    if !state.force_full && marker == Some(Marker::End) {
                         state.commit_text(strip_markers(&raw));
-                        return Ok(Outcome::Completed(state.complete(EndedWith::SimplePath)))
+                        return Ok(Outcome::Completed(state.complete(EndedWith::SimplePath)));
                     }
-                    // Pre 只负责给下一次 Exec 形成计划；PIGFAIL/PIGNEXT 在 Pre 没有独立的次数语义。
-                    // 除简单路径 PIGEND 外，其余输出都按复杂计划进入 Exec。
-                    Some(Marker::Failed) | Some(Marker::Next) | Some(Marker::End) | None => {
-                        state.pre_output = strip_markers(&raw);
-                        state.post_protocol_retries = 0;
-                        state.exec_checkpoint_body = None;
-                        state.discard_candidate();
-                        state.phase_raw.clear();
-                        state.phase = Pig::Exec;
-                        state.reset_phase_conversation();
+                    // 新 Pre 协议只有显式 PIGNEXT 可以继续执行；没有标记、
+                    // 意外的 PIGFAIL 或无实质内容的 PIGEND 都不得自动进入 Exec。
+                    if !state.force_full && marker != Some(Marker::Next) {
+                        return Err(Error::PreProtocol(format!(
+                            "需要以 PIGEND 或 PIGNEXT 作为最后一行，实际检测为 {marker:?}"
+                        )));
                     }
+                    state.pre_output = strip_markers(&raw);
+                    state.post_protocol_retries = 0;
+                    state.exec_checkpoint_body = None;
+                    state.discard_candidate();
+                    state.phase_raw.clear();
+                    state.phase = Pig::Exec;
+                    state.reset_phase_conversation();
                 },
                 // ---------------- Exec：执行 ----------------
                 Pig::Exec => {

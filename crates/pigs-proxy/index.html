@@ -20,7 +20,7 @@ table{border-collapse:collapse;width:100%}th,td{border:1px solid var(--line);pad
 <tr><td>其它请求</td><td>直接 passthrough。</td></tr>
 </table></div>
 
-<div class="tip"><strong>Pre 内容的路由：</strong>proxy 负责剥掉后缀并传入真实模型名，orchestrator 再按名称包含 <code>deepseek</code> / <code>muse</code> 选择分别的历史 v5 / v6 完整模板；均未命中时使用通用 Pre。普通透传请求完全不执行 Pre。</div>
+<div class="tip"><strong>临时提示词路由：</strong>proxy 仍负责去掉模型后缀，orchestrator 当前为正常 PIGS 请求统一选择 <code>test_pre_user</code> / <code>test_exec_user</code> / <code>test_post_user</code> 中英文模板。Pre 输出 <code>PIGEND</code> 终止，只有 <code>PIGNEXT</code> 才进入 Exec；无标记不默认执行。普通透传不执行 Pre，<code>-pig3</code> 使用独立纯规划 Pre。</div>
 
 <h2>上游地址</h2>
 <div class="card">

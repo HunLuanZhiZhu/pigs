@@ -14,11 +14,11 @@ pigs 是一个 Rust 前置代理。普通请求走透传；只有同时满足以
 
 注意：`POST` 到已识别协议路径时，proxy 会先解析 JSON 才能读取 model。因此这类请求即使最终不带 PIGS 后缀，若 JSON 本身非法也会直接返回 400，而不是进入普通透传。
 
-## Pre 提示词按模型路由
+论文中的阶段名为 **Pre Pig / Exec Pig / Post Pig**；代码中的阶段名为 `Pre` / `Exec` / `Post`。历史 BFCL 日志中的 `Executor` 保持原样，不更改既有数据。
 
-进入 PIGS 编排后，proxy 已经剥离 `-pigs` / `-pig` / `-pigsb` 后缀。orchestrator 读取实际上游 `model` 名称，将其转为 ASCII 小写，再按优先顺序匹配：包含 `deepseek` → 完整历史 v5 Pre；否则包含 `muse` → 完整历史 v6 Pre；均未命中 → 从 v5/v6 五问、简单路径和核验共同原则抽象的通用 Pre。无后缀请求仍直接透传，不执行 Pre。匹配是大小写不敏感的**子串**匹配，不要求模型 ID 精确相等。
+## 测试提示词与 Pre 路由
 
-三组 Pre 均有中文、英文独立模板，语言按最后一条用户问题前 2000 字是否出现 CJK 汉字选取。选中的完整模板再展开 `{failure_paths}`，不在 v5/v6 后附加模型规则；模型名称路由本身不改变 Exec / Post 的提示词选择和 A/B 模式；实验性 `-pig3` 另行强制经过三个阶段。历史 `pre_user_{zh,en}.txt` 作为旧实现资料保留，正常路由改为使用 `pre_deepseek_*`、`pre_muse_*`、`pre_generic_*`。这些提示词与测试在 Git 中独立版本化。
+当前测试阶段，正常 `-pig` / `-pigs` 编排统一使用 `prompts/test_pre_user_{zh,en}.txt`、`test_exec_user_{zh,en}.txt`、`test_post_user_{zh,en}.txt`。Pre 不再按模型名称区分 DeepSeek / Muse / generic 模板；历史正式模板留存且不修改。语言依最后一条用户问题判断，Pre 模板填充 `{failure_paths}`，Exec 模板填充 `{pre_output}`。无 PIGS 后缀的请求照常透传。实验性 `-pig3` 继续使用独立的 `pre_full_{zh,en}.txt`，只做规划并强制进入 Exec。
 
 ## 编排请求体
 
@@ -37,7 +37,7 @@ pigs 是一个 Rust 前置代理。普通请求走透传；只有同时满足以
 
 ## 工具调用与 continuation
 
-`tools` / `tool_choice` 会继续发给上游。若初次 Pre 请求带有非空 `tools` 且未显式设置 `tool_choice = none`，即使 Pre 输出 `PIGEND`，也不会直接走 SIMPLE_PATH；该 Pre 输出会作为计划进入 Exec，避免 Pre 的文本捷径吞掉客户端要求保留的 function-calling 语义。显式 `tool_choice = none` 时仍允许 Pre 简单路径直接结束。上游返回工具调用后：
+`tools` / `tool_choice` 会继续发给上游。正常模式下，Pre 的实质回复以 `PIGEND` 结尾即终止本轮，**即使客户端提供工具且 `tool_choice` 不是 `none`**；只有明确以 `PIGNEXT` 结尾才进入 Exec。Pre 返回 `PIGFAIL`、没有合法结尾标记或只有裸 `PIGEND` 而缺少实质正文，均报 Pre 协议错误（非流式通常 502），不得默认为继续执行。`-pig3` 仍不解析 Pre 控制标记。上游返回工具调用后：
 
 - 当前 pig 相位暂停；
 - 工具调用按三协议各自的原生形状交给客户端执行；ToolCall 只属于当前 Paused 响应，不进入持久 TurnState；
@@ -135,9 +135,10 @@ usage 的统计范围是**单次客户端 API 请求**。工具暂停响应也�
 
 Pre：
 
-- Pre 提示会要求总结任务目标和会影响结果的关键条件，并把题意不清、多种合理解释或关键条件存在较大不确定性视为难点，供简单/复杂路径判断；
-- `PIGEND` 使用严格检测：标记前必须已有非控制标记的实质文本，防止简单路径只有控制词而没有用户答案；满足后通常简单路径结束，但初次 Pre 若存在可用客户端 `tools`（且未显式 `tool_choice = none`），则把 Pre 输出保存为计划并进入 Exec；
-- Pre 不维护独立的重规划次数。除简单路径 `PIGEND` 外，`PIGFAIL`、`PIGNEXT` 或无标记输出都作为复杂计划进入 Exec；
+- Pre 采用停止优先原则：尽量只做任务范围、约束、信息缺口和计划分析；一般不得执行有副作用的动作（目前为提示词约束，未在工具层强制拦截）；
+- `PIGEND` 使用严格检测：前面必须已有实质正文，一旦生效即终止，不因客户端存在工具而强制进入 Exec；
+- 仅显式 `PIGNEXT` 才进入 Exec；`PIGFAIL` / 无有效标记均为协议错误，不能再被静默当作继续；
+- `-pig3` 的纯规划 Pre 无标记正常进入 Exec，不受上述显式分流规则约束；
 - 失败反馈由此前 Post 的 `PIGFAIL` 写入 `failure_paths`，供下一次 Pre 规划使用。
 
 Exec：

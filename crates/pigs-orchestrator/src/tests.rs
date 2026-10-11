@@ -314,7 +314,7 @@ async fn subrequests_pass_everything_through_untouched() {
     // 尾部追加相位指令（末条 user 消息被追加）
     let content = last_message_content(&body);
     assert!(content.starts_with("帮我完成任务Z"));
-    assert!(content.contains("本次需要你先思考以下问题的答案"));
+    assert!(content.contains("先思考以下问题的答案"));
     // query 原样带上
     assert_eq!(req.query.as_deref(), Some("beta=1"));
     // 头原样（含 accept-encoding：解压是本地的事，不改请求）
@@ -381,7 +381,7 @@ async fn pig3_still_visits_post_when_exec_budget_is_one() {
 #[tokio::test]
 async fn happy_path_three_pigs_with_pigend() {
     let transport = fake(vec![
-        FakeTransport::text(200, "分析：需要X和Y"),   // pre
+        FakeTransport::text(200, "分析：需要X和Y\nPIGNEXT"),   // pre
         FakeTransport::text(200, "执行结果……"),       // exec
         FakeTransport::text(200, "验收通过\nPIGEND"), // post
     ]);
@@ -412,7 +412,7 @@ async fn happy_path_three_pigs_with_pigend() {
         if i == 0 {
             assert!(
                 content.contains("帮我完成任务Z")
-                    && content.contains("本次需要你先思考以下问题的答案")
+                    && content.contains("先思考以下问题的答案")
             );
         } else if i == 1 {
             assert!(
@@ -439,9 +439,9 @@ async fn pre_route_uses_the_actual_upstream_model_across_protocols() {
         proto::Protocol::Responses,
     ] {
         for (model, expected_fragment) in [
-            ("DeepSeek-V4.1-Flash", "按通常语义直接执行"),
-            ("muse-spark-1.3-contributor", "整体执行与核验难度"),
-            ("unlisted-provider-model", "若是简单任务"),
+            ("DeepSeek-V4.1-Flash", "不得将未要求做的当做任务目标"),
+            ("muse-spark-1.3-contributor", "不得将未要求做的当做任务目标"),
+            ("unlisted-provider-model", "不得将未要求做的当做任务目标"),
         ] {
             let transport = fake(vec![FakeTransport::protocol_text(protocol, 200, "已完成\nPIGEND")]);
             let (rt, _) = runtime(transport.clone());
@@ -480,6 +480,41 @@ async fn simple_path_short_circuits_in_pre() {
 }
 
 #[tokio::test]
+async fn pre_pigend_stops_even_when_client_tools_are_available() {
+    for protocol in [
+        proto::Protocol::OpenAI,
+        proto::Protocol::Anthropic,
+        proto::Protocol::Responses,
+    ] {
+        let transport = fake(vec![FakeTransport::protocol_text(protocol, 200, "未执行额外操作\nPIGEND")]);
+        let (rt, _) = runtime(transport.clone());
+        let outcome = Orchestrator::new()
+            .run(input_mode_for_protocol(protocol, proto::PigsMode::B), rt)
+            .await
+            .unwrap();
+        let result = completed(outcome);
+        assert_eq!(result.ended_with, EndedWith::SimplePath);
+        assert_eq!(result.path, vec![Pig::Pre]);
+        assert_eq!(result.text, "未执行额外操作");
+        assert_eq!(transport.requests.lock().unwrap().len(), 1);
+    }
+}
+
+#[tokio::test]
+async fn pre_requires_explicit_next_marker_before_exec() {
+    for raw in ["只写分析，没有标记", "分析\nPIGFAIL", "PIGEND"] {
+        let transport = fake(vec![FakeTransport::text(200, raw)]);
+        let (rt, _) = runtime(transport.clone());
+        let error = Orchestrator::new()
+            .run(input(proto::Protocol::OpenAI), rt)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::PreProtocol(_)), "raw={raw:?}");
+        assert_eq!(transport.requests.lock().unwrap().len(), 1);
+    }
+}
+
+#[tokio::test]
 async fn mode_b_simple_commits_only_pre_answer() {
     let transport = fake(vec![FakeTransport::text(200, "答案是 4\nPIGEND")]);
     let (rt, _store) = runtime(transport);
@@ -506,7 +541,7 @@ async fn mode_b_simple_commits_only_pre_answer() {
 #[tokio::test]
 async fn mode_b_complex_commits_only_accepted_exec() {
     let transport = fake(vec![
-        FakeTransport::text(200, "内部分析"),
+        FakeTransport::text(200, "内部分析\nPIGNEXT"),
         FakeTransport::text(200, "最终业务答案"),
         FakeTransport::text(200, "核验通过\nPIGEND"),
     ]);
@@ -532,7 +567,7 @@ async fn mode_b_clean_business_text_works_for_all_three_protocols() {
         proto::Protocol::Responses,
     ] {
         let transport = fake(vec![
-            FakeTransport::protocol_text(protocol, 200, "内部分析"),
+            FakeTransport::protocol_text(protocol, 200, "内部分析\nPIGNEXT"),
             FakeTransport::protocol_text(protocol, 200, "协议无关的最终答案"),
             FakeTransport::protocol_text(protocol, 200, "PIGEND"),
         ]);
@@ -674,9 +709,9 @@ async fn resume_continues_same_phase_with_tool_result() {
     assert_eq!(roles(&body), vec!["system", "user", "assistant", "tool"]);
     assert_eq!(body["messages"][3]["content"], "输出", "工具结果原样保留");
     let phase_user = body["messages"][1]["content"].as_str().unwrap();
-    assert!(phase_user.contains("本次需要你先思考以下问题的答案"));
+    assert!(phase_user.contains("先思考以下问题的答案"));
     assert_eq!(
-        phase_user.matches("本次需要你先思考以下问题的答案").count(),
+        phase_user.matches("先思考以下问题的答案").count(),
         1
     );
     assert_eq!(
@@ -765,7 +800,7 @@ async fn multiple_tool_rounds_inside_one_phase() {
     for body in [&resume1, &resume2] {
         let phase_user = body["messages"][1]["content"].as_str().unwrap();
         assert_eq!(
-            phase_user.matches("本次需要你先思考以下问题的答案").count(),
+            phase_user.matches("先思考以下问题的答案").count(),
             1,
             "同一 Pre pig 内阶段提示只能出现一次"
         );
@@ -776,7 +811,7 @@ async fn multiple_tool_rounds_inside_one_phase() {
 #[tokio::test]
 async fn exec_tool_resumes_keep_one_phase_prompt() {
     let transport = fake(vec![
-        FakeTransport::text(200, "计划A"),
+        FakeTransport::text(200, "计划A\nPIGNEXT"),
         FakeTransport::tool_calls(200, &[("call_1", "Read")]),
         FakeTransport::tool_calls(200, &[("call_2", "Read")]),
         FakeTransport::text(200, "草稿完成"),
@@ -839,7 +874,7 @@ async fn exec_tool_resumes_keep_one_phase_prompt() {
     for body in [&exec_first, &exec_resume1, &exec_resume2] {
         let user = body["messages"][1]["content"].as_str().unwrap();
         assert_eq!(
-            user.matches("以上是本任务的执行前分析，可在执行过程中根据实际情况调整。")
+            user.matches("以上是本任务的执行前分析")
                 .count(),
             1,
             "Exec 阶段说明在同一 pig 中必须只有一份"
@@ -862,10 +897,10 @@ async fn exec_tool_resumes_keep_one_phase_prompt() {
 #[tokio::test]
 async fn post_pigfail_returns_to_pre_with_failure_paths() {
     let transport = fake(vec![
-        FakeTransport::text(200, "计划一"),
+        FakeTransport::text(200, "计划一\nPIGNEXT"),
         FakeTransport::text(200, "草稿一"),
         FakeTransport::text(200, "走偏了\nPIGFAIL"),
-        FakeTransport::text(200, "计划二（这次记住失败路径）"),
+        FakeTransport::text(200, "计划二（这次记住失败路径）\nPIGNEXT"),
         FakeTransport::text(200, "草稿二"),
         FakeTransport::text(200, "通过\nPIGEND"),
     ]);
@@ -917,7 +952,7 @@ async fn post_pigfail_returns_to_pre_with_failure_paths() {
 #[tokio::test]
 async fn post_accepts_marker_only_pigend() {
     let transport = fake(vec![
-        FakeTransport::text(200, "计划"),
+        FakeTransport::text(200, "计划\nPIGNEXT"),
         FakeTransport::text(200, "草稿完成"),
         FakeTransport::text(200, "PIGEND"),
     ]);
@@ -935,7 +970,7 @@ async fn post_accepts_marker_only_pigend() {
 #[tokio::test]
 async fn post_pignext_returns_to_exec_with_feedback_then_rechecks() {
     let transport = fake(vec![
-        FakeTransport::text(200, "计划"),
+        FakeTransport::text(200, "计划\nPIGNEXT"),
         FakeTransport::text(200, "草稿一"),
         FakeTransport::text(200, "缺少结论，需要补上\nPIGNEXT"),
         FakeTransport::text(200, "草稿二：已补上结论"),
@@ -976,7 +1011,7 @@ async fn post_pignext_returns_to_exec_with_feedback_then_rechecks() {
     assert_eq!(exec2_messages[checkpoint_len]["role"], "user");
     let next_instruction = exec2_messages[checkpoint_len]["content"].as_str().unwrap();
     assert!(next_instruction.starts_with("缺少结论，需要补上"));
-    assert!(next_instruction.contains("以上是本任务的执行前分析，可在执行过程中根据实际情况调整。"));
+    assert!(next_instruction.contains("以上是本任务的执行前分析"));
     assert!(!next_instruction.contains("PIGNEXT"));
     assert!(!next_instruction.contains("独立核验当前执行结果"));
 
@@ -998,7 +1033,7 @@ async fn post_pignext_returns_to_exec_with_feedback_then_rechecks() {
 #[tokio::test]
 async fn mode_b_pignext_discards_rejected_exec_and_commits_repair() {
     let transport = fake(vec![
-        FakeTransport::text(200, "计划"),
+        FakeTransport::text(200, "计划\nPIGNEXT"),
         FakeTransport::text(200, "错误草稿"),
         FakeTransport::text(200, "需要修正\nPIGNEXT"),
         FakeTransport::text(200, "修正后的最终答案"),
@@ -1020,7 +1055,7 @@ async fn mode_b_pignext_discards_rejected_exec_and_commits_repair() {
 #[tokio::test]
 async fn mode_a_last_exec_skips_post_at_execution_limit() {
     let mut responses = vec![
-        FakeTransport::text(200, "计划"),
+        FakeTransport::text(200, "计划\nPIGNEXT"),
         FakeTransport::text(200, "草稿1"),
     ];
     for i in 1..DEFAULT_MAX_EXEC_RUNS {
@@ -1049,7 +1084,7 @@ async fn mode_a_last_exec_skips_post_at_execution_limit() {
 #[tokio::test]
 async fn mode_b_last_exec_skips_post_at_execution_limit() {
     let mut responses = vec![
-        FakeTransport::text(200, "计划"),
+        FakeTransport::text(200, "计划\nPIGNEXT"),
         FakeTransport::text(200, "草稿1"),
     ];
     for i in 1..DEFAULT_MAX_EXEC_RUNS {
@@ -1080,7 +1115,7 @@ async fn mode_b_last_exec_skips_post_at_execution_limit() {
 #[tokio::test]
 async fn custom_exec_run_limit_is_honored() {
     let transport = fake(vec![
-        FakeTransport::text(200, "计划"),
+        FakeTransport::text(200, "计划\nPIGNEXT"),
         FakeTransport::text(200, "草稿1"),
         FakeTransport::text(200, "继续修\nPIGNEXT"),
         FakeTransport::text(200, "草稿2"),
@@ -1100,7 +1135,7 @@ async fn custom_exec_run_limit_is_honored() {
 #[tokio::test]
 async fn custom_post_protocol_retry_limit_is_honored() {
     let transport = fake(vec![
-        FakeTransport::text(200, "计划"),
+        FakeTransport::text(200, "计划\nPIGNEXT"),
         FakeTransport::text(200, "草稿"),
         FakeTransport::text(200, "没有控制标记"),
         FakeTransport::text(200, "还是没有控制标记"),
@@ -1141,7 +1176,7 @@ async fn truncated_pre_is_rejected_even_when_text_exists() {
 #[tokio::test]
 async fn post_without_marker_retries_post_until_budget() {
     let mut responses = vec![
-        FakeTransport::text(200, "计划"),
+        FakeTransport::text(200, "计划\nPIGNEXT"),
         FakeTransport::text(200, "草稿"),
     ];
     for _ in 0..4 {
@@ -1163,7 +1198,7 @@ async fn post_without_marker_retries_post_until_budget() {
 #[tokio::test]
 async fn pre_control_markers_do_not_have_an_independent_retry_budget() {
     let transport = fake(vec![
-        FakeTransport::text(200, "仍需规划\nPIGFAIL"),
+        FakeTransport::text(200, "仍需规划\nPIGNEXT"),
         FakeTransport::text(200, "执行结果"),
         FakeTransport::text(200, "PIGEND"),
     ]);
@@ -1181,16 +1216,16 @@ async fn pre_control_markers_do_not_have_an_independent_retry_budget() {
 #[tokio::test]
 async fn pigfail_replanning_uses_the_same_exec_run_limit() {
     let transport = fake(vec![
-        FakeTransport::text(200, "计划一"),
+        FakeTransport::text(200, "计划一\nPIGNEXT"),
         FakeTransport::text(200, "候选一"),
         FakeTransport::text(200, "路径一根本错误\nPIGFAIL"),
-        FakeTransport::text(200, "计划二"),
+        FakeTransport::text(200, "计划二\nPIGNEXT"),
         FakeTransport::text(200, "候选二"),
         FakeTransport::text(200, "路径二根本错误\nPIGFAIL"),
-        FakeTransport::text(200, "计划三"),
+        FakeTransport::text(200, "计划三\nPIGNEXT"),
         FakeTransport::text(200, "候选三"),
         FakeTransport::text(200, "路径三仍错误\nPIGFAIL"),
-        FakeTransport::text(200, "计划四"),
+        FakeTransport::text(200, "计划四\nPIGNEXT"),
         FakeTransport::text(200, "候选四"),
     ]);
     let (rt, _store) = runtime(transport.clone());
@@ -1213,12 +1248,12 @@ async fn pigfail_replanning_uses_the_same_exec_run_limit() {
 #[tokio::test]
 async fn pignext_and_pigfail_share_one_exec_run_counter() {
     let transport = fake(vec![
-        FakeTransport::text(200, "计划一"),
+        FakeTransport::text(200, "计划一\nPIGNEXT"),
         FakeTransport::text(200, "候选一"),
         FakeTransport::text(200, "继续修补\nPIGNEXT"),
         FakeTransport::text(200, "候选二"),
         FakeTransport::text(200, "路径错误\nPIGFAIL"),
-        FakeTransport::text(200, "计划三"),
+        FakeTransport::text(200, "计划三\nPIGNEXT"),
         FakeTransport::text(200, "候选三"),
         FakeTransport::text(200, "再修一次\nPIGNEXT"),
         FakeTransport::text(200, "候选四"),
@@ -1296,7 +1331,7 @@ async fn anthropic_protocol_body_surgery() {
     assert_eq!(strip_model(&body), "claude-x");
     let content = last_message_content(&body);
     assert!(
-        content.contains("帮我完成任务Z") && content.contains("本次需要你先思考以下问题的答案")
+        content.contains("帮我完成任务Z") && content.contains("先思考以下问题的答案")
     );
     // system / tools / tool_choice 一律原样
     assert_eq!(body["system"], "sys");
@@ -1308,7 +1343,7 @@ async fn anthropic_protocol_body_surgery() {
 async fn mode_b_streaming_suppresses_unaccepted_business_text_deltas() {
     let transport = fake_with_thinking(
         vec![
-            FakeTransport::text(200, "内部分析"),
+            FakeTransport::text(200, "内部分析\nPIGNEXT"),
             FakeTransport::text(200, "候选答案"),
             FakeTransport::text(200, "PIGEND"),
         ],
@@ -1340,7 +1375,7 @@ async fn mode_b_streaming_suppresses_unaccepted_business_text_deltas() {
 #[tokio::test]
 async fn streaming_turn_pushes_filtered_deltas_as_they_arrive() {
     let transport = fake(vec![
-        FakeTransport::text(200, "分析：需要X\n第二行"),
+        FakeTransport::text(200, "分析：需要X\n第二行\nPIGNEXT"),
         FakeTransport::text(200, "草稿\nPIGFAIL"),
         FakeTransport::text(200, "评审：还差一点"),
         FakeTransport::text(200, "继续做完\nPIGEND"),

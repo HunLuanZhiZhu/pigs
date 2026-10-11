@@ -17,7 +17,7 @@
 
 PIGS is a Rust front proxy for LLM APIs. Ordinary requests pass through normally; supported `POST` requests whose model name ends in `-pigs` or `-pig` enter an adaptive **Pre → Exec → Post** orchestration flow. The legacy `-pigsb` suffix remains supported. The experimental `-pig3` suffix forces a planning-only Pre followed by Exec/Post, retaining mode B's final-answer behavior; it is intended for diagnostic experiments, not the formal benchmark matrix.
 
-The Pre prompt is chosen from the **real upstream model name** after removing the PIGS suffix: names containing `deepseek` use the frozen **DeepSeek v5** full prompt; names containing `muse` use the frozen **Muse v6** full prompt; all others use a concise generic prompt abstracted from their common task analysis, execution, and verification requirements. Matching is ASCII case-insensitive; the user's language selects the Chinese or English edition. There is no model-specific addendum; this model-name routing does not select or alter Exec/Post prompts.
+**Temporary prompt experiment:** all normal PIGS requests currently use the `test_pre_user`, `test_exec_user`, and `test_post_user` templates in Chinese or English, selected by task language. The former model-specific Pre templates remain in the repository but are not active. Diagnostic `-pig3` retains its separate planning-only Pre template.
 
 The core idea is deliberately small:
 
@@ -87,7 +87,7 @@ A simple task may be completed directly in Pre.
 
 For safety, a Pre `PIGEND` is valid only when substantive user-facing text exists before the marker. A bare `PIGEND` cannot complete the simple path.
 
-If the initial request exposes usable client tools and does not explicitly set `tool_choice = none`, PIGS preserves function-calling semantics instead of allowing a Pre text shortcut to consume the tool path.
+**Stop-first Pre protocol:** `PIGEND` terminates even when client tools are available. Only a substantive Pre response ending in `PIGNEXT` advances to Exec; missing or invalid markers result in a protocol error, not implicit execution. The experimental `-pig3` planning-only path remains exempt.
 
 ### 2. Exec — do the work
 

@@ -30,8 +30,8 @@ nav a{display:inline-block;margin:4px 8px 4px 0;padding:8px 12px;border-radius:8
 <p>已识别协议为 OpenAI Chat <code>/chat/completions</code>、Anthropic Messages <code>/v1/messages</code>、OpenAI Responses <code>/responses</code>；协议判断也接受以这些后缀结束的路径。</p>
 </div>
 
-<h2>Pre 提示词路由</h2>
-<div class="card"><p>编排时使用已剥离 PIGS 后缀的真实 model 名，转为小写后按子串优先匹配：<code>deepseek</code> 使用历史 v5 完整 Pre，<code>muse</code> 使用历史 v6 完整 Pre，其余模型使用由两版共同原则抽象的通用 Pre。中文/英文由用户问题自动决定。不组合额外的模型附录；Exec、Post 和模式 A/B 共用原有逻辑。无 PIGS 后缀时不执行 Pre。</p></div>
+<h2>当前测试提示词与停止协议</h2>
+<div class="card"><p>正常编排已临时切换为 <code>test_pre_user</code> / <code>test_exec_user</code> / <code>test_post_user</code> 中英文模板，不再按模型选择 Pre 模板；历史模板保留。Pre 的 <code>PIGEND</code> 表示立即停止（有客户端工具也不强制继续），<code>PIGNEXT</code> 才允许进入 Exec；缺少或错误标记返回协议错误。<code>-pig3</code> 仍使用独立纯规划 Pre，强制进入 Exec。</p></div>
 
 <h2>编排做什么</h2>
 <div class="card">

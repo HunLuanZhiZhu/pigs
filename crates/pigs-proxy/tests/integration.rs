@@ -412,7 +412,7 @@ async fn sum_usage_mode_adds_all_phase_usage_before_returning() {
     fu.responses
         .lock()
         .unwrap()
-        .push(openai_text_response_with_usage("分析：需要X", 10, 1));
+        .push(openai_text_response_with_usage("分析：需要X\nPIGNEXT", 10, 1));
     fu.responses
         .lock()
         .unwrap()
@@ -463,7 +463,7 @@ async fn content_encoding_header_survives_passthrough() {
 async fn pig_flow_full_orchestration_via_loopback() {
     tracing_subscriber::fmt().with_max_level(tracing::Level::DEBUG).init();
     let (_up, upstream_url, fu) = spawn_fake_upstream().await;
-    fu.responses.lock().unwrap().push(openai_text_response("分析：需要X"));
+    fu.responses.lock().unwrap().push(openai_text_response("分析：需要X\nPIGNEXT"));
     fu.responses.lock().unwrap().push(openai_text_response("执行结果……"));
     fu.responses.lock().unwrap().push(openai_text_response("验收通过\nPIGEND"));
     let (_pigs, pigs_url) = spawn_pigs(&upstream_url).await;
@@ -506,7 +506,7 @@ async fn pig_flow_full_orchestration_via_loopback() {
             .as_str()
             .unwrap();
         if i == 0 {
-            assert!(content.contains("帮我完成任务Z") && content.contains("本次需要你先思考以下问题的答案"));
+            assert!(content.contains("帮我完成任务Z") && content.contains("先思考以下问题的答案"));
         } else if i == 1 {
             assert!(content.contains("分析：需要X"));
         } else {
@@ -554,7 +554,7 @@ async fn pig_flow_full_orchestration_via_loopback() {
 async fn pig_and_legacy_pigsb_non_stream_return_only_accepted_text() {
     for model in ["gpt-x-pig", "gpt-x-pigsb"] {
         let (_up, upstream_url, fu) = spawn_fake_upstream().await;
-        fu.responses.lock().unwrap().push(openai_text_response("内部分析"));
+        fu.responses.lock().unwrap().push(openai_text_response("内部分析\nPIGNEXT"));
         fu.responses.lock().unwrap().push(openai_text_response("最终业务答案"));
         fu.responses.lock().unwrap().push(openai_text_response("核验通过\nPIGEND"));
         let (_pigs, pigs_url) = spawn_pigs(&upstream_url).await;
@@ -582,7 +582,7 @@ async fn pig_and_legacy_pigsb_non_stream_return_only_accepted_text() {
 #[tokio::test]
 async fn pig_stream_buffers_business_text_until_post_accepts() {
     let (_up, upstream_url, fu) = spawn_fake_upstream().await;
-    fu.responses.lock().unwrap().push(openai_sse_response("内部分析"));
+    fu.responses.lock().unwrap().push(openai_sse_response("内部分析\nPIGNEXT"));
     fu.responses.lock().unwrap().push(openai_sse_response("最终业务答案"));
     fu.responses.lock().unwrap().push(openai_sse_response("核验通过\nPIGEND"));
     let (_pigs, pigs_url) = spawn_pigs(&upstream_url).await;
@@ -652,7 +652,7 @@ async fn pig_streaming_client_gets_sse() {
 async fn pig_streaming_end_to_end_streams_phases_without_markers() {
     let (_up, upstream_url, fu) = spawn_fake_upstream().await;
     let q = fu.responses.clone();
-    for text in ["分析：需要X\n第二行", "执行结果……\nPIGFAIL", "评审：继续\nPIGEND"] {
+    for text in ["分析：需要X\n第二行\nPIGNEXT", "执行结果……\nPIGFAIL", "评审：继续\nPIGEND"] {
         q.lock().unwrap().push(openai_sse_response(text));
     }
     let (_pigs, pigs_url) = spawn_pigs(&upstream_url).await;
@@ -703,7 +703,7 @@ async fn pig_streaming_is_progressive_not_buffered() {
     {
         let mut q = fu.slow_sse.lock().unwrap();
         // Pre → Exec → Post(带结尾标记，标记本身跨段到达)
-        q.push(vec!["分析一".into(), "分析二".into()]);
+        q.push(vec!["分析一".into(), "分析二\nPIGNEXT".into()]);
         q.push(vec!["执行草".into(), "稿完毕".into()]);
         q.push(vec!["验收通过".into(), "\nPIG".into(), "END".into()]);
     }
@@ -1037,8 +1037,8 @@ PIGEND", 8, 4));
     assert_eq!(roles, vec!["system", "user", "assistant", "tool"]);
     assert_eq!(msgs[3]["content"], "文件列表", "工具结果原样带上");
     let phase_user = msgs[1]["content"].as_str().unwrap();
-    assert!(phase_user.contains("本次需要你先思考以下问题的答案"));
-    assert_eq!(phase_user.matches("本次需要你先思考以下问题的答案").count(), 1);
+    assert!(phase_user.contains("先思考以下问题的答案"));
+    assert_eq!(phase_user.matches("先思考以下问题的答案").count(), 1);
     assert!(sent.get("tools").is_some(), "tools 全程都在");
 }
 
@@ -1049,7 +1049,7 @@ async fn failed_resume_rolls_back_continuation_for_retry() {
     let (_up, upstream_url, fu) = spawn_fake_upstream().await;
     {
         let mut q = fu.responses.lock().unwrap();
-        q.push(openai_text_response("计划"));
+        q.push(openai_text_response("计划\nPIGNEXT"));
         q.push(openai_tool_call_response("call_retry"));
         // 第一次 resume 的 Exec 收到非法 JSON，触发编排 502。
         q.push(("application/json", Bytes::from_static(b"not-json")));
@@ -1109,7 +1109,7 @@ async fn streaming_failed_resume_rolls_back_continuation_for_retry() {
     let (_up, upstream_url, fu) = spawn_fake_upstream().await;
     {
         let mut q = fu.responses.lock().unwrap();
-        q.push(openai_sse_response("计划"));
+        q.push(openai_sse_response("计划\nPIGNEXT"));
         q.push(openai_tool_call_response("call_stream_retry"));
         q.push(("application/json", Bytes::from_static(b"not-json")));
         q.push(openai_sse_response("恢复后执行完成"));
@@ -1228,7 +1228,7 @@ async fn exec_resume_keeps_one_phase_prompt_upstream() {
     let (_up, upstream_url, fu) = spawn_fake_upstream().await;
     {
         let mut q = fu.responses.lock().unwrap();
-        q.push(openai_text_response("计划A"));
+        q.push(openai_text_response("计划A\nPIGNEXT"));
         q.push(openai_tool_call_response("call_1"));
         q.push(openai_tool_call_response("call_2"));
         q.push(openai_text_response("草稿完成"));
@@ -1297,7 +1297,7 @@ async fn exec_resume_keeps_one_phase_prompt_upstream() {
     for body in [exec_first, exec_resume1, exec_resume2] {
         let user = body["messages"][1]["content"].as_str().unwrap();
         assert_eq!(
-            user.matches("以上是本任务的执行前分析，可在执行过程中根据实际情况调整。")
+            user.matches("以上是本任务的执行前分析")
                 .count(),
             1,
             "同一 Exec pig 的阶段说明不能重复注入"

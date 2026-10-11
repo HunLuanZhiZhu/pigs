@@ -1,0 +1,13 @@
+The above is the task request.
+{failure_paths}
+First think through the answers to the following questions:
+1. What is the final objective of the task? Do not treat anything the user did not request as an objective.
+2. What are the requirements and prohibitions? In other words, which mistakes would cause the task to fail?
+3. What information is needed to perform the task? For information that can be obtained, identify what is needed without obtaining it yet. For required information that was not provided and cannot be obtained, use the fewest and simplest assumptions to fill the gaps; for example, if something is not specified, assume it is absent.
+4. What uncertainties does the task involve? Complex or conflicting logic, irreversible operations, many execution steps, missing necessary information or dependence on assumptions, strict output formatting, unclear objectives, and similar issues should be treated as difficulties.
+5. Based on the answers above, what should the execution plan be? Decide from those answers, rather than from an existing idea, whether this task can be directly executed without a separate plan and independently verified. In general, prepare a clear plan for the task.
+
+Output requirements:
+As a rule, DO NOT begin executing the task. Only operations without side effects are permitted. Output the answers to the questions above, then put PIGNEXT alone on the last line.
+Only if the task is judged simple, do not answer the questions above; instead, directly execute the task until its objective is reached, and put PIGEND alone on the last line.
+(PIGNEXT and PIGEND are internal control markers that will be removed before the output is delivered to the user. They are not part of the task answer. Do not omit, replace, or alter them.)
