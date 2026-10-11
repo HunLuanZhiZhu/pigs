@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Register one OpenAI-compatible model at runtime, then run official BFCL V4 Multi-Turn."""
+"""Register an OpenAI-compatible model for official BFCL V4 Multi-Turn evaluation."""
 from __future__ import annotations
 
 import argparse
@@ -20,10 +20,13 @@ def main() -> int:
     p.add_argument('--threads', type=int, default=1)
     p.add_argument('--temperature', type=float, default=0.001)
     p.add_argument('--thinking-effort', default='low')
+    p.add_argument('--eval-type', choices=['openai_api', 'openai_responses_api'], default=None)
+    p.add_argument('--protocol', choices=['chat', 'responses'], default='chat',
+                   help='Alias for official BFCL Chat/Responses protocol selection.')
     p.add_argument('--request-timeout', type=float, default=1800.0)
     args = p.parse_args()
-    if args.request_timeout <= 0:
-        raise SystemExit('--request-timeout must be positive')
+    if args.request_timeout <= 0 or args.threads <= 0:
+        raise SystemExit('request timeout and threads must be positive')
 
     os.environ['OPENAI_BASE_URL'] = args.base_url
     os.environ['OPENAI_API_KEY'] = args.api_key
@@ -33,6 +36,7 @@ def main() -> int:
     from bfcl_eval.constants.model_config import ModelConfig, MODEL_CONFIG_MAPPING
     from bfcl_eval.eval_checker.eval_runner import main as evaluation_main
     from bfcl_eval.model_handler.api_inference.openai_completion import OpenAICompletionsHandler
+    from bfcl_eval.model_handler.api_inference.openai_response import OpenAIResponsesHandler
 
     class EvaluationOpenAICompletionsHandler(OpenAICompletionsHandler):
         evaluation_reasoning_effort = args.thinking_effort
@@ -47,11 +51,31 @@ def main() -> int:
             kwargs['reasoning_effort'] = self.evaluation_reasoning_effort
             return super().generate_with_backoff(**kwargs)
 
+    class EvaluationOpenAIResponsesHandler(OpenAIResponsesHandler):
+        evaluation_reasoning_effort = args.thinking_effort
+        evaluation_request_timeout = args.request_timeout
+
+        def _build_client_kwargs(self):
+            kwargs = super()._build_client_kwargs()
+            kwargs['timeout'] = self.evaluation_request_timeout
+            return kwargs
+
+        def generate_with_backoff(self, **kwargs):
+            # BFCL's official Responses handler owns the agent/tool loop.
+            # Only add the same low-effort setting used in the other evals.
+            kwargs['reasoning'] = {'effort': self.evaluation_reasoning_effort}
+            return super().generate_with_backoff(**kwargs)
+
+    use_responses = (args.eval_type == 'openai_responses_api'
+                     if args.eval_type is not None else args.protocol == 'responses')
+    handler = (EvaluationOpenAIResponsesHandler
+               if use_responses else EvaluationOpenAICompletionsHandler)
+
     MODEL_CONFIG_MAPPING[args.registry_name] = ModelConfig(
         model_name=args.wire_model,
         display_name=args.wire_model,
         url='', org='PIGS evaluation', license='N/A',
-        model_handler=EvaluationOpenAICompletionsHandler,
+        model_handler=handler,
         input_price=None, output_price=None,
         is_fc_model=True,
         underscore_to_dot=True,
@@ -71,6 +95,7 @@ def main() -> int:
         [args.registry_name], ['multi_turn'], str(args.result_dir), str(args.score_dir), False
     )
     return 0
+
 
 if __name__ == '__main__':
     raise SystemExit(main())

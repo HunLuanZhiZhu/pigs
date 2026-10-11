@@ -133,7 +133,15 @@ multi_turn_miss_param
 multi_turn_long_context
 ```
 
-Total: 800 tasks. The adapter registers an OpenAI-compatible model with the official BFCL handler and preserves the official interaction loop, simulated tools/environment, and scorer. Request timeout defaults to 1800 seconds.
+Total: 800 tasks. The adapter registers an OpenAI-compatible model with the official BFCL handler and preserves the official interaction loop, simulated tools/environment, and scorer. Request timeout defaults to 1800 seconds. Use `--protocol chat` for DeepSeek and `--protocol responses` for Muse; both preserve the BFCL official agent loop and scoring.
+
+### IFBench
+
+The dedicated `run_ifbench.py` runner evaluates all 300 official instructions using the locally cached dataset `/root/pigs-eval/datasets/ifbench/allenai_IFBench_test`. It uses EvalScope's strict/loose official IFBench scorer and the isolated `/root/pigs-eval/isolated-deps/ifbench` packages. Install the NLTK `stopwords` and `averaged_perceptron_tagger_eng` corpora under `/root/nltk_data` before full evaluation (the earlier three-sample smoke did not exercise those resources).
+
+### Historical evaluation orchestration (local-only)
+
+Dated multi-stage orchestration scripts and case-specific forensic analysis are kept as local research artifacts, not as maintained public evaluation entrypoints. Use the tracked dataset runners directly; the offline `prepare_bfcl_resume.py` can inspect saved BFCL results without making model requests. Restarting a paid evaluation requires explicit approval.
 
 ### SWE-bench Lite
 

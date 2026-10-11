@@ -17,6 +17,8 @@ def main()->int:
     p.add_argument('--bfcl-root',type=Path,default=BFCL_ROOT)
     p.add_argument('--bfcl-python',type=Path,default=BFCL_PYTHON)
     p.add_argument('--temperature',type=float,default=0.001)
+    p.add_argument('--protocol',choices=['chat','responses'],default='chat',
+                   help='BFCL official OpenAI Chat or Responses handler (Muse uses responses).')
     p.add_argument('--request-timeout',type=float,default=1800.0,help='Per OpenAI-compatible request timeout in seconds (default: 1800).')
     args=p.parse_args(); models=validate(args)
     if args.request_timeout<=0: raise SystemExit('--request-timeout must be positive')
@@ -28,6 +30,7 @@ def main()->int:
         'bfcl_commit':git_commit(args.bfcl_root),'bfcl_category':'multi_turn',
         'bfcl_subsets':['multi_turn_base','multi_turn_miss_func','multi_turn_miss_param','multi_turn_long_context'],
         'temperature':args.temperature,'request_timeout_seconds':args.request_timeout,
+        'protocol':args.protocol,
     })
     print(f'run_dir={root}'); print(f'progress_file={root/"progress.txt"}')
     if args.dry_run: return 0
@@ -39,7 +42,8 @@ def main()->int:
              '--base-url',args.base_url,'--api-key',args.api_key,'--session-id',job.session_id,
              '--result-dir',str(out/'results'),'--score-dir',str(out/'scores'),
              '--threads',str(args.sample_workers),'--temperature',str(args.temperature),
-             '--thinking-effort',args.thinking_effort,'--request-timeout',str(args.request_timeout)]
+             '--thinking-effort',args.thinking_effort,'--request-timeout',str(args.request_timeout),
+             '--protocol',args.protocol]
         return run_job(job,cmd,store,count_bfcl,args.progress_interval,cwd=args.bfcl_root,secrets=[args.api_key],pigs_log_source=args.pigs_log_dir)
 
     failed=run_pipelines(models,args.arms,jobs,args.model_workers,one); finalize(root,jobs)

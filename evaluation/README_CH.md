@@ -196,7 +196,15 @@ python /mnt/d/AIWorkSpace/pigs/evaluation/run_bfcl_multiturn.py --background
 - `multi_turn_miss_param`
 - `multi_turn_long_context`
 
-共 800 题。`bfcl_official_adapter.py` 只负责把任意 OpenAI-compatible 模型临时注册到官方 handler，并设置评测侧请求参数；不修改 BFCL 的 agent loop、工具环境或 scorer。BFCL 单请求 timeout 默认 1800 秒，可用 `--request-timeout SECONDS` 调整，并会写入 run manifest。
+共 800 题。`bfcl_official_adapter.py` 只负责把任意 OpenAI-compatible 模型临时注册到官方 handler，并设置评测侧请求参数；不修改 BFCL 的 agent loop、工具环境或 scorer。BFCL 单请求 timeout 默认 1800 秒，可用 `--request-timeout SECONDS` 调整，并会写入 run manifest。DeepSeek 使用 `--protocol chat`；Muse 使用 `--protocol responses`，保留 BFCL 官方多轮执行与评分过程。
+
+### IFBench
+
+新入口 `run_ifbench.py` 使用 EvalScope 官方 IFBench 适配器、缓存的本地数据集 `/root/pigs-eval/datasets/ifbench/allenai_IFBench_test`，进行完整 300 题严格/宽松指令遵循评测。独立依赖目录为 `/root/pigs-eval/isolated-deps/ifbench`。全量评测前，须将 NLTK 的 `stopwords` 和 `averaged_perceptron_tagger_eng` 语料安装到 `/root/nltk_data`；先前的三题试跑并未覆盖需要这些语料的所有约束。
+
+### 历史实验调度（仅本地保留）
+
+特定日期的多阶段实验调度脚本与逐题取证脚本属于本地研究材料，不作为公开仓库的通用评测入口。正式评测使用已纳入版本管理的数据集运行器；`prepare_bfcl_resume.py` 仅检查与准备保存的 BFCL 输出，不调用模型。恢复或启动付费评测需另行明确授权。
 
 ### SWE-bench Lite
 

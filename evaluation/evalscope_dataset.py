@@ -13,13 +13,19 @@ from eval_common import run_job, run_pipelines, tcp_preflight, validate
 DEFAULT_EVALSCOPE = EVAL_ROOT / 'venv/bin/evalscope'
 
 
-def run_dataset(dataset: str, evalscope_name: str, full_size: int, display_name: str) -> int:
+def run_dataset(dataset: str, evalscope_name: str, full_size: int, display_name: str,
+                local_dataset: Path | None = None) -> int:
     parser = argparse.ArgumentParser(description=f'Run {display_name} Base/PIGS evaluation.')
     add_common_args(parser, dataset)
     parser.add_argument('--evalscope', type=Path, default=DEFAULT_EVALSCOPE)
     parser.add_argument('--eval-type', default='openai_api', choices=['openai_api', 'openai_responses_api', 'anthropic_api'])
     parser.add_argument('--seed', type=int, default=20261001)
     parser.add_argument('--temperature', type=float, default=0.0)
+    parser.add_argument('--request-timeout', type=float, default=1800.0,
+                        help='Per API generation request timeout in seconds.')
+    if local_dataset is not None:
+        parser.add_argument('--dataset-local-path', type=Path, default=local_dataset,
+                            help='Existing local Hugging Face dataset directory.')
     parser.add_argument('--sample-retries', type=int, default=1, help='Retry failed/missing samples after the first full pass (default: 1).')
     parser.add_argument('--limit', type=int, default=None, help='Development only; omit for formal runs.')
     parser.add_argument('--resume-from', type=Path, default=None,
@@ -30,6 +36,10 @@ def run_dataset(dataset: str, evalscope_name: str, full_size: int, display_name:
         raise SystemExit('--limit must be > 0')
     if args.sample_retries < 0:
         raise SystemExit('--sample-retries must be >= 0')
+    if args.request_timeout <= 0:
+        raise SystemExit('--request-timeout must be positive')
+    if local_dataset is not None and not args.dataset_local_path.is_dir():
+        raise SystemExit(f'Local dataset not found: {args.dataset_local_path}')
     if args.resume_from is not None:
         if len(models) != 1 or len(args.arms) != 1:
             raise SystemExit('--resume-from requires exactly one model and one arm')
@@ -54,6 +64,8 @@ def run_dataset(dataset: str, evalscope_name: str, full_size: int, display_name:
         'limit': args.limit,
         'seed': args.seed,
         'temperature': args.temperature,
+        'request_timeout_seconds': args.request_timeout,
+        'dataset_local_path': str(args.dataset_local_path) if local_dataset is not None else None,
         'sample_retries': args.sample_retries,
         'resume_source': str(args.resume_from.resolve()) if args.resume_from else None,
     })
@@ -71,7 +83,7 @@ def run_dataset(dataset: str, evalscope_name: str, full_size: int, display_name:
             'temperature': args.temperature,
             'reasoning_effort': args.thinking_effort,
             'retries': 0,
-            'timeout': 1800,
+            'timeout': args.request_timeout,
             'stream': True,
             'extra_headers': {'x-opencode-session': job.session_id},
         }
@@ -92,6 +104,10 @@ def run_dataset(dataset: str, evalscope_name: str, full_size: int, display_name:
             '--ignore-errors',
             '--work-dir', job.output_dir,
         ]
+        if local_dataset is not None:
+            command += ['--dataset-args', json.dumps({evalscope_name: {
+                'local_path': str(args.dataset_local_path),
+            }}, separators=(',', ':'))]
         if args.limit:
             command += ['--limit', str(args.limit)]
         if resume_dir:
