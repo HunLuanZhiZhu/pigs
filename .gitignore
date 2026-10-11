@@ -1,5 +1,7 @@
 /target/
 /logs/
+# 本地实验结果、分析证据和生成的报告，不提交到公开源码仓库
+/reports/
 *.log
 request_body.json
 /references/
