@@ -46,7 +46,7 @@ vs
 MODEL-pig (single accepted output)
 ```
 
-Base, PIGS, and PIG must use the same provider route, reasoning effort, harness settings, concurrency, task order, tools, timeouts, and scorer. The legacy `-pigsb` suffix is still accepted as an alias for `-pig` to preserve reproducibility of historical runs.
+Base, PIGS, and PIG must use the same provider route, reasoning effort, harness settings, concurrency, task order, tools, timeouts, and scorer. The former `-pigsb` compatibility suffix is no longer accepted; historical run artifacts keep their original names only for provenance.
 
 ## 3. Benchmark matrix
 

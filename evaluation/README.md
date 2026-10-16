@@ -31,11 +31,11 @@ PIGS: MODEL-pigs   (combined phase output)
 PIG:  MODEL-pig    (one accepted business output)
 ```
 
-`--arms pigsb` remains available for reproducing older runs and sends `MODEL-pigsb`, an alias of `MODEL-pig`. New runs default to `base pigs pig`. Use `--arms base`, `--arms pigs`, or `--arms pig` to select only one arm. For formal experiments, separate run IDs per model are preferred so failures, provider behavior, and cost remain easy to audit.
+`--arms pig3` and `--arms pigs3` explicitly select the forced-full mode B/A variants. New runs still default to `base pigs pig`. The former `pigsb` arm is no longer accepted. For formal experiments, separate run IDs per model are preferred so failures, provider behavior, and cost remain easy to audit.
 
 Current model-selection policy is not “two fixed model families forever.” DeepSeek V4.1 Flash is the current anchor model. Additional formal models should be low-cost, publicly accessible/reproducible through a named API, and have a clear identity. MiMo remains useful as a compatibility/stress-test family but is not automatically a final core model.
 
-Current runtime **temporarily uses the same `test_pre_user`, `test_exec_user`, and `test_post_user` prompts** for all models, with Chinese/English selected by task language. Normal Pre requires `PIGNEXT` to enter Exec; `PIGEND` terminates irrespective of client tool availability. Older experiments used model-specific historical Pre prompts and different routing semantics; **old and new results are not directly comparable without controlling for this change**. Diagnostic `-pig3` keeps its planning-only Pre prompt.
+Current runtime **temporarily uses the same `test_pre_user`, `test_exec_user`, and `test_post_user` prompts** for all models, with Chinese/English selected by task language. Normal Pre explicitly answers all five questions before routing: complex tasks end Pre with `PIGNEXT` and enter Exec; simple tasks output `PIGEND` as an analysis/execution separator and continue work within Pre. `-pig` discards pre-marker analysis, whereas `-pigs` removes only the marker. Older experiments used model-specific historical Pre prompts and different routing semantics; **old and new results are not directly comparable without controlling for this change**. Forced-full `-pig3` / `-pigs3` keep the planning-only Pre prompt.
 
 ## Concurrency
 
@@ -96,7 +96,7 @@ mini-proxy :7946
 provider (currently OpenCode Go for the DeepSeek runs)
 ```
 
-Base requests use the unsuffixed model and pass through PIGS normally. PIGS/PIG-arm requests use the `-pigs`/`-pig` suffix and enter the same orchestration; `-pigsb` remains a compatible alias. Do not bypass this chain for formal runs.
+Base requests use the unsuffixed model and pass through PIGS normally. PIGS/PIG-arm requests use the `-pigs`/`-pig` suffix and enter the same orchestration. Do not bypass this chain for formal runs.
 
 ## Control benchmarks
 

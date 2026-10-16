@@ -15,7 +15,7 @@ nav a{display:inline-block;margin:4px 8px 4px 0;padding:8px 12px;border-radius:8
 </style>
 </head>
 <body><div class="wrap">
-<p class="muted"><strong>实验说明：</strong> <code>-pig3</code> 是诊断专用后缀：使用仅规划的 Pre 并禁止简单路径提前完成，随后进入 Exec / Post；最终输出沿用模式 B。普通 <code>-pig</code> 与 <code>-pigs</code> 行为不变。</p>
+<p class="muted"><strong>强制完整路径：</strong> <code>-pig3</code> / <code>-pigs3</code> 使用仅规划的 Pre 并禁止简单路径提前完成，随后进入 Exec / Post；分别对应模式 B / A。普通 <code>-pig</code> 与 <code>-pigs</code> 行为不变。</p>
 <h1>pigs 当前架构总览</h1>
 <p class="tagline">当前代码事实：普通请求走前置代理透传；POST 到三种协议路径且 model 以 <code>-pigs</code>（模式 A）或 <code>-pig</code>（模式 B）结尾时，进入 Pre → Exec → Post 编排。</p>
 
@@ -31,11 +31,11 @@ nav a{display:inline-block;margin:4px 8px 4px 0;padding:8px 12px;border-radius:8
 </div>
 
 <h2>当前测试提示词与停止协议</h2>
-<div class="card"><p>正常编排已临时切换为 <code>test_pre_user</code> / <code>test_exec_user</code> / <code>test_post_user</code> 中英文模板，不再按模型选择 Pre 模板；历史模板保留。Pre 的 <code>PIGEND</code> 表示立即停止（有客户端工具也不强制继续），<code>PIGNEXT</code> 才允许进入 Exec；缺少或错误标记返回协议错误。<code>-pig3</code> 仍使用独立纯规划 Pre，强制进入 Exec。</p></div>
+<div class="card"><p>正常编排已临时切换为 <code>test_pre_user</code> / <code>test_exec_user</code> / <code>test_post_user</code> 中英文模板，不再按模型选择 Pre 模板；历史模板保留。Pre 无论简单还是复杂任务都先显式回答五问：简单任务在中间输出 <code>PIGEND</code> 后继续执行，复杂任务以 <code>PIGNEXT</code> 结束 Pre 并进入 Exec；缺少或错误标记返回协议错误。<code>-pig3</code> / <code>-pigs3</code> 仍使用独立纯规划 Pre，强制进入 Exec。</p></div>
 
 <h2>编排做什么</h2>
 <div class="card">
-<p>编排把一次 <code>-pigs</code> / <code>-pig</code> 请求拆成若干上游请求。模型名发上游前去掉对应后缀；每个 pig 的相位提示只在进入该 pig 时注入一次。Pre 会显式整理目标、会影响结果的关键条件和歧义/不确定性，再决定简单或复杂路径。Exec 完成后，Post 不从原始请求重建，而是直接继承 Exec 的完整协议上下文，并只在末尾追加一条评审 user 消息，以尽量保持长前缀稳定。Post 是纯核验器：<code>PIGEND</code> 接受当前 Exec 结果，<code>PIGNEXT</code> 携带核验反馈回 Exec 继续修补，<code>PIGFAIL</code> 回 Pre 为下一次 Exec 重规划；Post 不自行修改业务结果。任务执行预算统一按高层 Exec 实际执行次数统计，上限由 <code>[orchestration].max_exec_runs</code> 配置，默认 3（首次执行 + 最多 2 次重试）；同一 Exec 内的工具暂停/恢复不重复计数。最后一次允许的 Exec 完成后直接结束，不再进入 Post。Pre 不维护独立重规划次数，PIGNEXT 与 PIGFAIL 也不维护各自的执行预算。工具调用不会在 pigs 内执行，而是暂停当前相位，交给客户端执行；恢复时复用该 pig 的基础请求，只追加后续原生对话，不重复注入相位提示。任何 phase 若上游明确以 token 上限原因结束，则按截断错误终止，不把半截输出继续送入下一 phase。输出模式当前并存：<code>-pigs</code> 为 A，继续累积各阶段普通文本；<code>-pig</code> 为 B，隐藏内部 Pre/Post 与被否决的 Exec 普通文本，通常只提交最终被接受的业务答案；若到达最后一次 Exec，则直接提交该次 Exec。B 下 reasoning 与工具调用仍按原协议可见，流式业务正文延迟到验收或最终 Exec 完成后发送。</p>
+<p>编排把一次 <code>-pigs</code> / <code>-pig</code> 请求拆成若干上游请求。模型名发上游前去掉对应后缀；每个 pig 的相位提示只在进入该 pig 时注入一次。Pre 会显式整理目标、会影响结果的关键条件和歧义/不确定性，再决定简单或复杂路径。Exec 完成后，Post 不从原始请求重建，而是直接继承 Exec 的完整协议上下文，并只在末尾追加一条评审 user 消息，以尽量保持长前缀稳定。Post 是纯核验器：<code>PIGEND</code> 接受当前 Exec 结果，<code>PIGNEXT</code> 携带核验反馈回 Exec 继续修补，<code>PIGFAIL</code> 回 Pre 为下一次 Exec 重规划；Post 不自行修改业务结果。任务执行预算统一按高层 Exec 实际执行次数统计，上限由 <code>[orchestration].max_exec_runs</code> 配置，默认 3（首次执行 + 最多 2 次重试）；同一 Exec 内的工具暂停/恢复不重复计数。最后一次允许的 Exec 完成后直接结束，不再进入 Post。Pre 不维护独立重规划次数，PIGNEXT 与 PIGFAIL 也不维护各自的执行预算。工具调用不会在 pigs 内执行，而是暂停当前相位，交给客户端执行；恢复时复用该 pig 的基础请求，只追加后续原生对话，不重复注入相位提示。任何 phase 若上游明确以 token 上限原因结束，则按截断错误终止，不把半截输出继续送入下一 phase。输出模式当前并存：<code>-pigs</code> 为 A，继续累积各阶段普通文本；<code>-pig</code> 为 B，隐藏内部 Pre/Post 与被否决的 Exec 普通文本，通常只提交最终被接受的业务答案；若到达最后一次 Exec，则直接提交该次 Exec。B 下 Pre 标记前的分析及其原生思考内容不对客户端输出，标记后的业务结果才提交；工具调用仅在合法分流后放行，流式业务正文仍延迟至相位完成后发送。</p>
 <p>客户端看到的编排响应由 <code>pigs-protocol</code> 重新合成，并不是某一次上游响应的原样转发。响应中的 model 使用客户端原始名称（包括 <code>-pigs</code> / <code>-pig</code> 后缀）。流式收尾会先关闭仍打开的协议块再发送终止事件；Responses 的 <code>response.completed.response.output</code> 因而保留最终提交正文。</p>
 </div>
 

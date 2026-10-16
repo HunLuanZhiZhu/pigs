@@ -8,9 +8,9 @@ pigs 是一个 Rust 前置代理。普通请求走透传；只有同时满足以
 
 1. HTTP 方法是 `POST`；
 2. 路径能识别为 OpenAI Chat、OpenAI Responses 或 Anthropic Messages；
-3. 请求 JSON 的 `model` 以 `-pigs`（模式 A）或 `-pig`（模式 B，兼容旧后缀 `-pigsb`）结尾；诊断专用后缀 `-pig3` 也进入模式 B，且成功执行时至少经过 Pre → Exec → Post 三个阶段。
+3. 请求 JSON 的 `model` 以 `-pigs`（模式 A）或 `-pig`（模式 B）结尾；强制完整路径后缀 `-pigs3` / `-pig3` 分别使用模式 A / B，且成功执行时至少经过 Pre → Exec → Post 三个阶段。旧 `-pigsb` 不再识别为 PIGS 后缀。
 
-实验后缀 `-pig3`：入口在剥除模型名后，将 `force_full` 独立传给编排器；Pre 使用 `prompts/pre_full_{zh,en}.txt`，仅规划、不提供控制标记或简单任务判断，忽略 Pre 的提前终止信号。正常完成至少运行 Pre、Exec、Post；即使 `max_exec_runs=1`，第一次 Exec 后仍需进入 Post。若上游错误、工具暂停或协议异常，不能保证单次客户端请求已完成三个阶段。最终答案和 Post/Exec 行为保持模式 B 语义。旧实验日志中的 `-pigfull` 是历史真实模型名，现行后缀已改为 `-pig3`（不保留旧后缀别名）。此后缀不属于正式主评测矩阵。
+强制完整路径后缀 `-pig3` / `-pigs3`：入口在剥除模型名后，将 `force_full` 独立传给编排器；Pre 使用 `prompts/pre_full_{zh,en}.txt`，仅规划、不提供控制标记或简单任务判断，忽略 Pre 的提前终止信号。正常完成至少运行 Pre、Exec、Post；即使 `max_exec_runs=1`，第一次 Exec 后仍需进入 Post。若上游错误、工具暂停或协议异常，不能保证单次客户端请求已完成三个阶段。`-pig3` 使用模式 B，只交付最终业务输出；`-pigs3` 使用模式 A，保留各阶段可见文本。旧实验日志中的 `-pigfull` 是历史真实模型名，现行后缀已改为 `-pig3`（不保留旧后缀别名）。
 
 注意：`POST` 到已识别协议路径时，proxy 会先解析 JSON 才能读取 model。因此这类请求即使最终不带 PIGS 后缀，若 JSON 本身非法也会直接返回 400，而不是进入普通透传。
 
@@ -18,7 +18,7 @@ pigs 是一个 Rust 前置代理。普通请求走透传；只有同时满足以
 
 ## 测试提示词与 Pre 路由
 
-当前测试阶段，正常 `-pig` / `-pigs` 编排统一使用 `prompts/test_pre_user_{zh,en}.txt`、`test_exec_user_{zh,en}.txt`、`test_post_user_{zh,en}.txt`。Pre 不再按模型名称区分 DeepSeek / Muse / generic 模板；历史正式模板留存且不修改。语言依最后一条用户问题判断，Pre 模板填充 `{failure_paths}`，Exec 模板填充 `{pre_output}`。无 PIGS 后缀的请求照常透传。实验性 `-pig3` 继续使用独立的 `pre_full_{zh,en}.txt`，只做规划并强制进入 Exec。
+当前测试阶段，正常 `-pig` / `-pigs` 编排统一使用 `prompts/test_pre_user_{zh,en}.txt`、`test_exec_user_{zh,en}.txt`、`test_post_user_{zh,en}.txt`。Pre 不再按模型名称区分 DeepSeek / Muse / generic 模板；历史正式模板留存且不修改。语言依最后一条用户问题判断，Pre 模板填充 `{failure_paths}`，Exec 模板填充 `{pre_output}`。现行正常 Pre 无论任务简单或复杂都要求显式回答五问，之后通过独占一行的 `PIGEND`（简单，后续继续执行）或以最后一行 `PIGNEXT`（复杂，进入 Exec）分流。无 PIGS 后缀的请求照常透传。强制完整路径的 `-pig3` / `-pigs3` 使用独立的 `pre_full_{zh,en}.txt`，只做规划并强制进入 Exec。
 
 ## 编排请求体
 
@@ -37,7 +37,7 @@ pigs 是一个 Rust 前置代理。普通请求走透传；只有同时满足以
 
 ## 工具调用与 continuation
 
-`tools` / `tool_choice` 会继续发给上游。正常模式下，Pre 的实质回复以 `PIGEND` 结尾即终止本轮，**即使客户端提供工具且 `tool_choice` 不是 `none`**；只有明确以 `PIGNEXT` 结尾才进入 Exec。Pre 返回 `PIGFAIL`、没有合法结尾标记或只有裸 `PIGEND` 而缺少实质正文，均报 Pre 协议错误（非流式通常 502），不得默认为继续执行。`-pig3` 仍不解析 Pre 控制标记。上游返回工具调用后：
+`tools` / `tool_choice` 会继续发给上游。正常模式下，Pre 必须先给出实质分析并输出独占一行的路由标记：`PIGNEXT` 必须是最后一行且不能与工具调用并发，随后进入 Exec；`PIGEND` 为简单任务的分析/执行分界，**允许标记后继续生成任务答案或在同一相位内调用工具**。首次合法分界之前绝不向客户端交付工具调用；在无工具调用、无标记后业务正文的情况下，Pre 不能以裸 `PIGEND` 完成。`PIGFAIL`、无合法标记或 `PIGNEXT` 后继续执行都属于 Pre 协议错误（非流式通常 502）。`-pig3` / `-pigs3` 仍不解析 Pre 控制标记。上游返回工具调用后：
 
 - 当前 pig 相位暂停；
 - 工具调用按三协议各自的原生形状交给客户端执行；ToolCall 只属于当前 Paused 响应，不进入持久 TurnState；
@@ -98,8 +98,8 @@ pigs 是一个 Rust 前置代理。普通请求走透传；只有同时满足以
 当前行为：
 
 - `model` 使用客户端原始模型名（包括 `-pigs` 或 `-pig` 后缀）；
-- 模式 A（`-pigs`）：普通文本按执行顺序保留，控制标记会被过滤；
-- 模式 B（`-pig`）：Pre/Post 普通文本以及被 `PIGNEXT`/`PIGFAIL` 否决的 Exec 候选不会进入客户端业务正文。Simple Path 只提交 Pre 的最终答案；复杂路径通常只在 Post `PIGEND` 后提交当前 Exec candidate；若当前 Exec 已是本轮允许的最后一次执行，则该 Exec 完成后直接提交，不再进入 Post；
+- 模式 A（`-pigs`）：Pre 五问、标记之后的简单任务回答、Exec/Post 各阶段正文均按执行顺序保留，仅过滤控制标记；
+- 模式 B（`-pig`）：Pre 中控制标记**之前**的五问分析及其原生思考块不进入客户端响应，简单路径只提交 `PIGEND` **之后**的业务正文；复杂路径沿用 Exec candidate + Post 验收后提交，隐藏 Pre/Post 普通文本和被否决的 Exec 候选；最后一次 Exec 达上限时仍直接提交；
 - thinking / reasoning、工具调用和其它已解析的原生块按 `Part` 序列尽量保留；
 - `stop_reason` / `finish_reason` 取最后一轮解析到的值；
 - 响应 id、时间戳、协议壳由 pigs 新生成；
@@ -122,9 +122,9 @@ usage 的统计范围是**单次客户端 API 请求**。工具暂停响应也�
 客户端 body 中 `stream:true` 时，编排采用流式处理；代码不会主动重写 `stream` 字段。
 
 - 上游 SSE 增量会被解析；
-- 模式 A 的文本经过 `MarkerFilter` 后实时转发，避免 `PIGEND` / `PIGNEXT` / `PIGFAIL` 泄给客户端；
-- 模式 B 的普通业务文本不在阶段生成时转发：Simple 等 Pre `PIGEND` 后提交，Complex 等 Post `PIGEND` 后提交最后一次被接受的 Exec candidate；因此 `stream:true` 下业务正文是“验收后再以 SSE 发出”，不是 token 生成即提交；
-- thinking / reasoning 增量在 A/B 中都按协议实时转发；
+- 模式 A 的文本经过 `MarkerFilter` 后实时转发，允许 Pre `PIGEND` 处于文本中间，只过滤控制标记、保留前后正文；
+- 模式 B 的普通业务文本不在阶段生成时转发：Simple 等 Pre 在 `PIGEND` 后继续执行完成时，只提交标记之后的正文；Complex 等 Post `PIGEND` 后提交最后一次被接受的 Exec candidate。因此 `stream:true` 下业务正文仍会在阶段完成时以 SSE 发出；
+- thinking / reasoning 增量在模式 A 正常转发；模式 B 正常 Pre 的路由标记**之前**不转发内部思考，简单路径 `PIGEND` 之后的增量恢复转发；其它相位保持原规则，`-pig3` / `-pigs3` 强制完整路径保持各自 A/B 输出规则；
 - 工具调用以及部分无法边到边还原的原生块在收尾阶段补发；
 - 流式收尾由 `StreamEncoder::finish()` 自身保证关闭仍打开的协议块后再发送终止事件；Responses 的 `response.completed.response.output` 因此会包含已经提交的最终正文，不依赖调用方额外先发 `PigEvent::End`；
 - 一旦客户端 SSE 已经开始，后续编排错误通过流内错误帧表达，HTTP 状态无法再改成错误码。
@@ -135,10 +135,10 @@ usage 的统计范围是**单次客户端 API 请求**。工具暂停响应也�
 
 Pre：
 
-- Pre 采用停止优先原则：尽量只做任务范围、约束、信息缺口和计划分析；一般不得执行有副作用的动作（目前为提示词约束，未在工具层强制拦截）；
-- `PIGEND` 使用严格检测：前面必须已有实质正文，一旦生效即终止，不因客户端存在工具而强制进入 Exec；
-- 仅显式 `PIGNEXT` 才进入 Exec；`PIGFAIL` / 无有效标记均为协议错误，不能再被静默当作继续；
-- `-pig3` 的纯规划 Pre 无标记正常进入 Exec，不受上述显式分流规则约束；
+- Pre 统一显式回答五问，先完成任务分析，再按路径分流（当前检查标记及实质前文，不对五问自然语言逐题打分）；
+- `PIGEND` 是简单路径中间的分析/执行分界：之前的分析在模式 B 隐藏、模式 A 保留；之后可直接给答案或通过工具继续执行，完成后不进入 Exec/Post；首次合法标记之前不得放行工具调用；
+- `PIGNEXT` 必须是复杂路径的最后一行，不能同时调用工具，进入 Exec；`PIGFAIL`、无有效标记或简单任务只有标记而没有后续实际答案均为协议错误；
+- `-pig3` / `-pigs3` 的纯规划 Pre 无标记正常进入 Exec，不受上述显式分流规则约束；
 - 失败反馈由此前 Post 的 `PIGFAIL` 写入 `failure_paths`，供下一次 Pre 规划使用。
 
 Exec：

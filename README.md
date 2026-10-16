@@ -15,9 +15,9 @@
 
 ---
 
-PIGS is a Rust front proxy for LLM APIs. Ordinary requests pass through normally; supported `POST` requests whose model name ends in `-pigs` or `-pig` enter an adaptive **Pre → Exec → Post** orchestration flow. The legacy `-pigsb` suffix remains supported. The experimental `-pig3` suffix forces a planning-only Pre followed by Exec/Post, retaining mode B's final-answer behavior; it is intended for diagnostic experiments, not the formal benchmark matrix.
+PIGS is a Rust front proxy for LLM APIs. Ordinary requests pass through normally; supported `POST` requests whose model name ends in `-pigs` or `-pig` enter an adaptive **Pre → Exec → Post** orchestration flow. The full-path suffixes `-pig3` and `-pigs3` force a planning-only Pre followed by Exec/Post; `-pig3` uses mode B final-answer output, while `-pigs3` uses mode A combined phase output.
 
-**Temporary prompt experiment:** all normal PIGS requests currently use the `test_pre_user`, `test_exec_user`, and `test_post_user` templates in Chinese or English, selected by task language. The former model-specific Pre templates remain in the repository but are not active. Diagnostic `-pig3` retains its separate planning-only Pre template.
+**Temporary prompt experiment:** all normal PIGS requests currently use the `test_pre_user`, `test_exec_user`, and `test_post_user` templates in Chinese or English, selected by task language. The former model-specific Pre templates remain in the repository but are not active. Full-path `-pig3` / `-pigs3` retain the separate planning-only Pre template.
 
 The core idea is deliberately small:
 
@@ -38,7 +38,7 @@ No custom client SDK is required. The client keeps speaking familiar OpenAI- or 
 |---|---|
 | **Adaptive routing** | Pre decides whether a task is genuinely simple or should enter the full execution path. |
 | **Three protocol surfaces** | OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages. |
-| **Suffix-based opt-in** | Add `-pigs` for combined phase output or `-pig` for one accepted business output (`-pigsb` is a legacy alias); no suffix means passthrough. |
+| **Suffix-based opt-in** | Add `-pigs` for combined phase output or `-pig` for one accepted business output; no suffix means passthrough. |
 | **Client-owned tools** | Tool calls are returned to the client; PIGS pauses and resumes the same phase after matching tool results arrive. |
 | **Streaming support** | SSE text and reasoning can be forwarded incrementally while internal control markers stay hidden. |
 | **Continuation state** | Multi-round tool interactions can resume without reinjecting the phase prompt. |
@@ -48,10 +48,10 @@ No custom client SDK is required. The client keeps speaking familiar OpenAI- or 
 ## 🧠 How PIGS works
 
 ```text
-                              model without -pigs / -pig / -pigsb
+                              model without a PIGS suffix
 Client ───────► PIGS ─────────────────────────────────► Upstream
                   │
-                  │ model ends in -pigs / -pig / -pigsb
+                  │ model ends in a PIGS suffix
                   ▼
                  Pre
           ┌───────┴────────┐
@@ -83,11 +83,12 @@ Pre analyzes the task before the full execution path is entered. It considers:
 - execution and verification strategy;
 - whether the task is genuinely simple.
 
-A simple task may be completed directly in Pre.
+Both simple and complex tasks must first answer all five Pre questions explicitly. The control marker then separates analysis from the next action:
 
-For safety, a Pre `PIGEND` is valid only when substantive user-facing text exists before the marker. A bare `PIGEND` cannot complete the simple path.
+- **Simple:** output `PIGEND` on its own line, then continue executing the task in Pre (including client tool calls when needed). `-pig` returns only the business text after `PIGEND`; `-pigs` retains both analysis and business text, removing only the marker.
+- **Complex:** end Pre with `PIGNEXT` on its own final line; then Exec performs the task. No tool call may be released before a valid Pre decision. `PIGNEXT` must not be followed by execution or accompanied by tool calls.
 
-**Stop-first Pre protocol:** `PIGEND` terminates even when client tools are available. Only a substantive Pre response ending in `PIGNEXT` advances to Exec; missing or invalid markers result in a protocol error, not implicit execution. The experimental `-pig3` planning-only path remains exempt.
+A missing/invalid decision or a simple path without an actual subsequent answer is a protocol error; `-pig3` / `-pigs3` use the separate planning-only forced-full path.
 
 ### 2. Exec — do the work
 
@@ -138,7 +139,7 @@ A request enters orchestration only when all three conditions are true:
 
 1. HTTP method is `POST`;
 2. the path matches one of the supported protocol surfaces;
-3. JSON `model` ends in `-pigs`, `-pig`, or the legacy alias `-pigsb`.
+3. JSON `model` ends in `-pigs`, `-pig`, `-pigs3`, or `-pig3`.
 
 Everything else uses the normal passthrough path.
 

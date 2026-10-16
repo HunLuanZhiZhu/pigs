@@ -37,11 +37,11 @@ MODEL-pigs  （拼接多个阶段的输出）
 MODEL-pig   （只提交一个有效业务结果）
 ```
 
-默认 `--arms base pigs pig`；可用 `--arms base`、`--arms pigs` 或 `--arms pig` 单独运行。历史 `--arms pigsb` 仍可使用，对应的 `MODEL-pigsb` 是 `MODEL-pig` 的兼容别名，不更改旧实验目录。
+默认 `--arms base pigs pig`。需要强制完整路径时可显式使用 `--arms pig3` 或 `--arms pigs3`，分别对应模式 B / A。旧 `pigsb` arm 已取消，不再接受。
 
 当前模型选择不再预设“必须固定 MiMo + DeepSeek 两家”。DeepSeek V4.1 Flash 是当前锚点模型；新增正式模型优先考虑低价、其他人可稳定访问、模型身份明确、API 行为可复现。MiMo 目前更适合作为兼容性/压力测试候选，不自动等同于最终核心模型。
 
-当前运行时**临时统一使用 `test_pre_user`、`test_exec_user`、`test_post_user` 的中英文版本**，不再按 DeepSeek / Muse 区分 Pre。正常模式下 Pre 只有明确以 `PIGNEXT` 结尾才进入 Exec，`PIGEND` 无论是否有工具均终止。旧实验所用提示词和分流协议不同，**没有经过受控复测不能将旧成绩直接归因于新版本**。诊断专用 `-pig3` 仍使用独立纯规划 Pre。
+当前运行时**临时统一使用 `test_pre_user`、`test_exec_user`、`test_post_user` 的中英文版本**，不再按 DeepSeek / Muse 区分 Pre。正常 Pre 对简单与复杂任务都先显式回答五问；复杂任务以 `PIGNEXT` 结束 Pre 并进入 Exec，简单任务在中间输出 `PIGEND` 后继续在 Pre 内执行。`-pig` 删除标记之前的分析，`-pigs` 仅删除控制标记。旧实验所用提示词和分流协议不同，**没有经过受控复测不能将旧成绩直接归因于新版本**。强制完整路径的 `-pig3` / `-pigs3` 仍使用独立纯规划 Pre。
 
 ### 两层并发
 
