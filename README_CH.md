@@ -17,7 +17,7 @@
 
 PIGS 是一个用 Rust 编写的 LLM 前置代理。普通请求正常透传；当受支持的 `POST` 请求中，模型名以 `-pigs` 或 `-pig` 结尾时，请求会进入自适应的 **Pre → Exec → Post** 编排流程。另有强制完整路径后缀 `-pig3` / `-pigs3`：Pre 只进行规划、不能提前结束，随后进入 Exec/Post；`-pig3` 使用模式 B 单一业务输出，`-pigs3` 使用模式 A 阶段输出。
 
-**临时测试提示词方案：**正常 PIGS 请求统一使用 `test_pre_user`、`test_exec_user`、`test_post_user` 中英文模板，语言根据任务自动选择；历史模型专属 Pre 提示词保留在仓库，但不再是当前运行时入口。强制完整路径的 `-pig3` / `-pigs3` 继续使用独立的纯规划 Pre。
+**当前提示词组合：**自适应 `-pig` / `-pigs` 的 Pre 由共享 `pre_analysis` + `pre_route` 组成；强制完整路径 `-pig3` / `-pigs3` 使用同一份 `pre_analysis`，但不追加 route 片段。Exec/Post 继续使用共享的 `exec_user` / `post_user`。历史及已替代提示词统一保留在 `crates/pigs-orchestrator/prompts/archive/`。
 
 核心使用方式非常简单：
 
@@ -88,7 +88,7 @@ Pre 在进入完整执行路径之前先分析任务，包括：
 - **简单任务：**单独一行输出 `PIGEND`，然后在 Pre 内继续执行任务，必要时允许工具往返；`-pig` 只返回 `PIGEND` 之后的业务正文，`-pigs` 保留分析与业务正文、仅删除控制标记。
 - **复杂任务：**回答五问后以最后一行 `PIGNEXT` 结束 Pre，随后进入 Exec。首次合法分流之前不会放行工具调用；`PIGNEXT` 后不得继续执行或同时请求工具。
 
-缺少或错误的控制标记、简单任务只有 `PIGEND` 而没有后续实际答案，都属于协议错误。强制完整路径的 `-pig3` / `-pigs3` 仍使用独立纯规划 Pre。
+缺少或错误的控制标记、简单任务只有 `PIGEND` 而没有后续实际答案，都属于协议错误。强制完整路径的 `-pig3` / `-pigs3` 与自适应模式共享同一 Pre 分析片段，但不追加路由片段。
 
 ### 2. Exec —— 真正执行任务
 

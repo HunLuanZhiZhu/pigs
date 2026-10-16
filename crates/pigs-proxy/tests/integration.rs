@@ -533,7 +533,7 @@ async fn pig_flow_full_orchestration_via_loopback() {
             .as_str()
             .unwrap();
         if i == 0 {
-            assert!(content.contains("帮我完成任务Z") && content.contains("先回答以下问题"));
+            assert!(content.contains("帮我完成任务Z") && content.contains("简洁回答以下问题"));
         } else if i == 1 {
             assert!(content.contains("分析：需要X"));
         } else {
@@ -635,8 +635,11 @@ async fn pigs3_forces_full_path_and_returns_all_phase_text() {
     let pre = reqs[0].1["messages"].as_array().unwrap().last().unwrap()["content"]
         .as_str()
         .unwrap();
-    assert!(pre.contains("不要在本阶段执行任务"));
+    assert!(pre.contains("简洁回答以下问题，不允许开始执行任务"));
+    assert!(pre.contains("任务的执行计划应该是什么"));
+    assert!(!pre.contains("判断任务为简单任务"));
     assert!(!pre.contains("PIGEND"));
+    assert!(!pre.contains("PIGNEXT"));
 }
 
 #[tokio::test]
@@ -1096,8 +1099,8 @@ async fn tool_pause_and_resume_round_trip() {
     assert_eq!(roles, vec!["system", "user", "assistant", "tool"]);
     assert_eq!(msgs[3]["content"], "文件列表", "工具结果原样带上");
     let phase_user = msgs[1]["content"].as_str().unwrap();
-    assert!(phase_user.contains("先回答以下问题"));
-    assert_eq!(phase_user.matches("先回答以下问题").count(), 1);
+    assert!(phase_user.contains("简洁回答以下问题"));
+    assert_eq!(phase_user.matches("简洁回答以下问题").count(), 1);
     assert!(sent.get("tools").is_some(), "tools 全程都在");
 }
 

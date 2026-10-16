@@ -17,7 +17,7 @@
 
 PIGS is a Rust front proxy for LLM APIs. Ordinary requests pass through normally; supported `POST` requests whose model name ends in `-pigs` or `-pig` enter an adaptive **Pre → Exec → Post** orchestration flow. The full-path suffixes `-pig3` and `-pigs3` force a planning-only Pre followed by Exec/Post; `-pig3` uses mode B final-answer output, while `-pigs3` uses mode A combined phase output.
 
-**Temporary prompt experiment:** all normal PIGS requests currently use the `test_pre_user`, `test_exec_user`, and `test_post_user` templates in Chinese or English, selected by task language. The former model-specific Pre templates remain in the repository but are not active. Full-path `-pig3` / `-pigs3` retain the separate planning-only Pre template.
+**Current prompt composition:** Adaptive `-pig` / `-pigs` Pre combines shared `pre_analysis` with `pre_route`; full-path `-pig3` / `-pigs3` uses the same `pre_analysis` without the route fragment. Exec/Post use the shared `exec_user` / `post_user` templates. Superseded prompts are retained under `crates/pigs-orchestrator/prompts/archive/`.
 
 The core idea is deliberately small:
 

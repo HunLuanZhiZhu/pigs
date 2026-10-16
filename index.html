@@ -31,7 +31,7 @@ nav a{display:inline-block;margin:4px 8px 4px 0;padding:8px 12px;border-radius:8
 </div>
 
 <h2>当前测试提示词与停止协议</h2>
-<div class="card"><p>正常编排已临时切换为 <code>test_pre_user</code> / <code>test_exec_user</code> / <code>test_post_user</code> 中英文模板，不再按模型选择 Pre 模板；历史模板保留。Pre 无论简单还是复杂任务都先显式回答五问：简单任务在中间输出 <code>PIGEND</code> 后继续执行，复杂任务以 <code>PIGNEXT</code> 结束 Pre 并进入 Exec；缺少或错误标记返回协议错误。<code>-pig3</code> / <code>-pigs3</code> 仍使用独立纯规划 Pre，强制进入 Exec。</p></div>
+<div class="card"><p>正常编排的 Pre 由共享 <code>pre_analysis</code> + 自适应专用 <code>pre_route</code> 组合，Exec/Post 使用共享中英文模板；历史模板归档保留。Pre 无论简单还是复杂任务都先显式回答五问：简单任务在中间输出 <code>PIGEND</code> 后继续执行，复杂任务以 <code>PIGNEXT</code> 结束 Pre 并进入 Exec；缺少或错误标记返回协议错误。<code>-pig3</code> / <code>-pigs3</code> 仅使用同一份共享 <code>pre_analysis</code>，不追加 route，并强制进入 Exec。</p></div>
 
 <h2>编排做什么</h2>
 <div class="card">

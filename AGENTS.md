@@ -10,7 +10,7 @@ pigs 是一个 Rust 前置代理。普通请求走透传；只有同时满足以
 2. 路径能识别为 OpenAI Chat、OpenAI Responses 或 Anthropic Messages；
 3. 请求 JSON 的 `model` 以 `-pigs`（模式 A）或 `-pig`（模式 B）结尾；强制完整路径后缀 `-pigs3` / `-pig3` 分别使用模式 A / B，且成功执行时至少经过 Pre → Exec → Post 三个阶段。旧 `-pigsb` 不再识别为 PIGS 后缀。
 
-强制完整路径后缀 `-pig3` / `-pigs3`：入口在剥除模型名后，将 `force_full` 独立传给编排器；Pre 使用 `prompts/pre_full_{zh,en}.txt`，仅规划、不提供控制标记或简单任务判断，忽略 Pre 的提前终止信号。正常完成至少运行 Pre、Exec、Post；即使 `max_exec_runs=1`，第一次 Exec 后仍需进入 Post。若上游错误、工具暂停或协议异常，不能保证单次客户端请求已完成三个阶段。`-pig3` 使用模式 B，只交付最终业务输出；`-pigs3` 使用模式 A，保留各阶段可见文本。旧实验日志中的 `-pigfull` 是历史真实模型名，现行后缀已改为 `-pig3`（不保留旧后缀别名）。
+强制完整路径后缀 `-pig3` / `-pigs3`：入口在剥除模型名后，将 `force_full` 独立传给编排器；Pre 仅使用共享的 `prompts/pre_analysis_{zh,en}.txt`，不追加 `pre_route`，因此只分析规划、不提供控制标记或简单任务判断，忽略 Pre 的提前终止信号。正常完成至少运行 Pre、Exec、Post；即使 `max_exec_runs=1`，第一次 Exec 后仍需进入 Post。若上游错误、工具暂停或协议异常，不能保证单次客户端请求已完成三个阶段。`-pig3` 使用模式 B，只交付最终业务输出；`-pigs3` 使用模式 A，保留各阶段可见文本。旧实验日志中的 `-pigfull` 是历史真实模型名，现行后缀已改为 `-pig3`（不保留旧后缀别名）。
 
 注意：`POST` 到已识别协议路径时，proxy 会先解析 JSON 才能读取 model。因此这类请求即使最终不带 PIGS 后缀，若 JSON 本身非法也会直接返回 400，而不是进入普通透传。
 
@@ -18,7 +18,7 @@ pigs 是一个 Rust 前置代理。普通请求走透传；只有同时满足以
 
 ## 测试提示词与 Pre 路由
 
-当前测试阶段，正常 `-pig` / `-pigs` 编排统一使用 `prompts/test_pre_user_{zh,en}.txt`、`test_exec_user_{zh,en}.txt`、`test_post_user_{zh,en}.txt`。Pre 不再按模型名称区分 DeepSeek / Muse / generic 模板；历史正式模板留存且不修改。语言依最后一条用户问题判断，Pre 模板填充 `{failure_paths}`，Exec 模板填充 `{pre_output}`。现行正常 Pre 无论任务简单或复杂都要求显式回答五问，之后通过独占一行的 `PIGEND`（简单，后续继续执行）或以最后一行 `PIGNEXT`（复杂，进入 Exec）分流。无 PIGS 后缀的请求照常透传。强制完整路径的 `-pig3` / `-pigs3` 使用独立的 `pre_full_{zh,en}.txt`，只做规划并强制进入 Exec。
+当前运行时，正常 `-pig` / `-pigs` 的 Pre 由共享 `prompts/pre_analysis_{zh,en}.txt` + `pre_route_{zh,en}.txt` 组合；Exec/Post 使用 `exec_user_{zh,en}.txt`、`post_user_{zh,en}.txt`。Pre 不再按模型名称区分 DeepSeek / Muse / generic 模板；历史正式模板已集中移入 `prompts/archive/` 留存，不参与当前运行时。语言依最后一条用户问题判断，Pre 模板填充 `{failure_paths}`，Exec 模板填充 `{pre_output}`。现行正常 Pre 无论任务简单或复杂都要求显式回答五问，之后通过独占一行的 `PIGEND`（简单，后续继续执行）或以最后一行 `PIGNEXT`（复杂，进入 Exec）分流。无 PIGS 后缀的请求照常透传。强制完整路径的 `-pig3` / `-pigs3` 只使用同一份 `pre_analysis_{zh,en}.txt`，不追加 route 片段，并强制进入 Exec。
 
 ## 编排请求体
 

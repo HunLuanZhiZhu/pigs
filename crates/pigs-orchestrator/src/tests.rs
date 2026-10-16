@@ -323,7 +323,7 @@ async fn subrequests_pass_everything_through_untouched() {
     // 尾部追加相位指令（末条 user 消息被追加）
     let content = last_message_content(&body);
     assert!(content.starts_with("帮我完成任务Z"));
-    assert!(content.contains("先回答以下问题"));
+    assert!(content.contains("简洁回答以下问题"));
     // query 原样带上
     assert_eq!(req.query.as_deref(), Some("beta=1"));
     // 头原样（含 accept-encoding：解压是本地的事，不改请求）
@@ -361,8 +361,11 @@ async fn pig3_ignores_pre_early_pigend() {
     let reqs = transport.requests.lock().unwrap();
     let pre_body: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
     let pre_prompt = last_message_content(&pre_body);
-    assert!(pre_prompt.contains("不要在本阶段执行任务"));
+    assert!(pre_prompt.contains("简洁回答以下问题，不允许开始执行任务"));
+    assert!(pre_prompt.contains("任务的执行计划应该是什么"));
+    assert!(!pre_prompt.contains("判断任务为简单任务"));
     assert!(!pre_prompt.contains("PIGEND"));
+    assert!(!pre_prompt.contains("PIGNEXT"));
 }
 
 #[tokio::test]
@@ -421,7 +424,7 @@ async fn happy_path_three_pigs_with_pigend() {
         if i == 0 {
             assert!(
                 content.contains("帮我完成任务Z")
-                    && content.contains("先回答以下问题")
+                    && content.contains("简洁回答以下问题")
             );
         } else if i == 1 {
             assert!(
@@ -918,9 +921,9 @@ async fn resume_continues_same_phase_with_tool_result() {
     assert_eq!(roles(&body), vec!["system", "user", "assistant", "tool"]);
     assert_eq!(body["messages"][3]["content"], "输出", "工具结果原样保留");
     let phase_user = body["messages"][1]["content"].as_str().unwrap();
-    assert!(phase_user.contains("先回答以下问题"));
+    assert!(phase_user.contains("简洁回答以下问题"));
     assert_eq!(
-        phase_user.matches("先回答以下问题").count(),
+        phase_user.matches("简洁回答以下问题").count(),
         1
     );
     assert_eq!(
@@ -1009,7 +1012,7 @@ async fn multiple_tool_rounds_inside_one_phase() {
     for body in [&resume1, &resume2] {
         let phase_user = body["messages"][1]["content"].as_str().unwrap();
         assert_eq!(
-            phase_user.matches("先回答以下问题").count(),
+            phase_user.matches("简洁回答以下问题").count(),
             1,
             "同一 Pre pig 内阶段提示只能出现一次"
         );
@@ -1623,7 +1626,7 @@ async fn anthropic_protocol_body_surgery() {
     assert_eq!(strip_model(&body), "claude-x");
     let content = last_message_content(&body);
     assert!(
-        content.contains("帮我完成任务Z") && content.contains("先回答以下问题")
+        content.contains("帮我完成任务Z") && content.contains("简洁回答以下问题")
     );
     // system / tools / tool_choice 一律原样
     assert_eq!(body["system"], "sys");

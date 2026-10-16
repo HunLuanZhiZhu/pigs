@@ -304,7 +304,7 @@ impl Orchestrator {
         match phase {
             Pig::Pre => {
                 let instruction = if state.force_full {
-                    prompts::pre_full_instruction(state.lang, &state.failure_paths)
+                    prompts::pre_analysis_instruction(state.lang, &state.failure_paths)
                 } else {
                     prompts::pre_instruction_for_model(
                         state.lang,

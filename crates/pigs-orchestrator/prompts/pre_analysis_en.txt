@@ -1,0 +1,8 @@
+The above is the task request
+{failure_paths}
+Answer the following questions concisely. Do not begin executing the task:
+1. What is the final objective? Do not add unrequested objectives
+2. What are the requirements and prohibitions? Which mistakes would cause failure?
+3. What information is needed? For obtainable information, specify what is needed without obtaining it yet. For necessary information neither provided nor obtainable, use the fewest and simplest assumptions, e.g. assume what is unspecified is absent
+4. What uncertainties exist? E.g. complex or conflicting logic, irreversible operations, many execution steps, missing necessary information or reliance on assumptions, strict or unclear output format, unclear objectives. Prefer the simplest interpretation
+5. What is the execution plan? Break the task into a clear plan

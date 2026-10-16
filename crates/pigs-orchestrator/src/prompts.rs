@@ -1,8 +1,8 @@
-//! 相位指令组装：按模型名称选择完整 Pre 模板，再按用户问题选择中英文。
+//! 相位指令组装：按用户问题选择中英文，并组合共享的 Pre 分析片段与自适应路由片段。
 //!
-//! 这里只负责"指令正文"，**不含用户原问题**——命令与产物的接法由编排层决定，
-//! DeepSeek v5 / Muse v6 模板保持历史原文；未命中的模型使用两者共同原则抽象的通用版：
-//! - Pre：模板 + 历次失败路径；
+//! 这里只负责"指令正文"，**不含用户原问题**——命令与产物的接法由编排层决定：
+//! - Adaptive Pre（-pig / -pigs）：共享分析片段 + 路由/执行许可片段 + 历次失败路径；
+//! - Full-path Pre（-pig3 / -pigs3）：仅共享分析片段 + 历次失败路径；
 //! - Exec：模板里填 `{pre_output}`（Pre 的分析）；
 //! - Post：纯模板（Exec 的草稿不走这里，而是作为 assistant 消息接回对话）。
 
@@ -13,28 +13,29 @@ fn norm(s: &'static str) -> String {
     s.replace("\r\n", "\n")
 }
 
-fn pre_template(lang: Lang) -> String {
+fn pre_analysis_template(lang: Lang) -> String {
     norm(match lang {
-        Lang::Zh => include_str!("../prompts/test_pre_user_zh.txt"),
-        Lang::En => include_str!("../prompts/test_pre_user_en.txt"),
+        Lang::Zh => include_str!("../prompts/pre_analysis_zh.txt"),
+        Lang::En => include_str!("../prompts/pre_analysis_en.txt"),
     })
 }
-fn pre_full_template(lang: Lang) -> String {
+
+fn pre_route_template(lang: Lang) -> String {
     norm(match lang {
-        Lang::Zh => include_str!("../prompts/pre_full_zh.txt"),
-        Lang::En => include_str!("../prompts/pre_full_en.txt"),
+        Lang::Zh => include_str!("../prompts/pre_route_zh.txt"),
+        Lang::En => include_str!("../prompts/pre_route_en.txt"),
     })
 }
 fn exec_template(lang: Lang) -> String {
     norm(match lang {
-        Lang::Zh => include_str!("../prompts/test_exec_user_zh.txt"),
-        Lang::En => include_str!("../prompts/test_exec_user_en.txt"),
+        Lang::Zh => include_str!("../prompts/exec_user_zh.txt"),
+        Lang::En => include_str!("../prompts/exec_user_en.txt"),
     })
 }
 fn post_template(lang: Lang) -> String {
     norm(match lang {
-        Lang::Zh => include_str!("../prompts/test_post_user_zh.txt"),
-        Lang::En => include_str!("../prompts/test_post_user_en.txt"),
+        Lang::Zh => include_str!("../prompts/post_user_zh.txt"),
+        Lang::En => include_str!("../prompts/post_user_en.txt"),
     })
 }
 
@@ -60,16 +61,17 @@ pub fn pre_instruction(lang: Lang, failure_paths: &[String]) -> String {
     pre_instruction_for_model(lang, failure_paths, "")
 }
 
-/// Pre pig 的指令：测试阶段统一使用 test 模板，不再按模型分流；保留函数签名兼容调用方。
+/// Adaptive Pre：共享分析片段 + 路由/执行许可片段；保留 model 参数仅为调用方兼容。
 pub fn pre_instruction_for_model(lang: Lang, failure_paths: &[String], _model: &str) -> String {
-    let template = pre_template(lang);
-    let fp = failure_paths_block(lang, failure_paths);
-    template.replace("{failure_paths}", &fp)
+    let analysis = pre_analysis_template(lang)
+        .replace("{failure_paths}", &failure_paths_block(lang, failure_paths));
+    format!("{}{}", analysis, pre_route_template(lang))
 }
 
-/// 仅用于 -pig3 实验的纯规划 Pre，不提供简单路径或控制标记说明。
-pub fn pre_full_instruction(lang: Lang, failure_paths: &[String]) -> String {
-    pre_full_template(lang).replace("{failure_paths}", &failure_paths_block(lang, failure_paths))
+/// Full-path Pre：与 Adaptive Pre 共享完全相同的分析片段，但不追加路由/控制标记说明。
+pub fn pre_analysis_instruction(lang: Lang, failure_paths: &[String]) -> String {
+    pre_analysis_template(lang)
+        .replace("{failure_paths}", &failure_paths_block(lang, failure_paths))
 }
 
 /// Exec pig 的指令：追加到最后一条 user 消息文本后面（含 Pre 的分析）。
@@ -114,7 +116,7 @@ mod tests {
     #[test]
     fn pre_instruction_embeds_failure_paths() {
         let p = pre_instruction(Lang::Zh, &[]);
-        assert!(p.contains("先回答以下问题"));
+        assert!(p.contains("简洁回答以下问题"));
         assert!(!p.contains("曾失败过"));
         assert!(p.contains("PIGEND"));
         assert!(p.contains("若为复杂任务，禁止直接开始执行任务"));
@@ -130,33 +132,36 @@ mod tests {
     }
 
     #[test]
-    fn experimental_pre_only_plans_and_has_no_control_markers() {
+    fn full_path_pre_reuses_analysis_and_has_no_route_markers() {
         for lang in [Lang::Zh, Lang::En] {
-            let prompt = pre_full_instruction(lang, &[]);
-            assert!(!prompt.contains("PIGEND"));
-            assert!(!prompt.contains("PIGNEXT"));
-            assert!(!prompt.contains("PIGFAIL"));
-            assert!(!prompt.contains("{failure_paths}"));
+            let full = pre_analysis_instruction(lang, &[]);
+            let adaptive = pre_instruction(lang, &[]);
+            let route = pre_route_template(lang);
+
+            assert_eq!(adaptive, format!("{full}{route}"));
+            assert!(!full.contains("PIGEND"));
+            assert!(!full.contains("PIGNEXT"));
+            assert!(!full.contains("PIGFAIL"));
+            assert!(!full.contains("{failure_paths}"));
         }
-        let zh = pre_full_instruction(Lang::Zh, &[]);
-        assert!(!zh.contains("判定为简单任务"));
-        assert!(zh.contains("不要在本阶段执行任务"));
+        let zh = pre_analysis_instruction(Lang::Zh, &[]);
+        assert!(zh.contains("简洁回答以下问题，不允许开始执行任务"));
+        assert!(zh.contains("任务最终需要完成的目标是什么"));
+        assert!(!zh.contains("判断任务为简单任务"));
     }
 
     #[test]
-    fn test_pre_is_shared_by_all_models() {
+    fn adaptive_pre_is_shared_by_all_models() {
         for lang in [Lang::Zh, Lang::En] {
             let generic = pre_instruction(lang, &[]);
             let unknown = pre_instruction_for_model(lang, &[], "unknown-model-pig");
             assert_eq!(generic, unknown);
 
-            let source = match lang {
-                Lang::Zh => include_str!("../prompts/test_pre_user_zh.txt"),
-                Lang::En => include_str!("../prompts/test_pre_user_en.txt"),
-            };
+            let analysis = pre_analysis_template(lang).replace("{failure_paths}", "");
+            let route = pre_route_template(lang);
             let deepseek = pre_instruction_for_model(lang, &[], "DeEpSeEk-v4.1-flash");
             let muse = pre_instruction_for_model(lang, &[], "MuSe-spark-1.3-contributor");
-            assert_eq!(generic, norm(source).replace("{failure_paths}", ""));
+            assert_eq!(generic, format!("{analysis}{route}"));
             assert_eq!(deepseek, generic);
             assert_eq!(muse, generic);
             assert!(generic.contains("PIGNEXT"));
@@ -175,7 +180,7 @@ mod tests {
         assert!(p.starts_with("计划X\n\n"));
         assert_eq!(
             p,
-            norm(include_str!("../prompts/test_exec_user_zh.txt"))
+            norm(include_str!("../prompts/exec_user_zh.txt"))
                 .replace("{pre_output}", "计划X")
         );
         assert!(p.contains("完成任务目标"));
@@ -190,7 +195,7 @@ mod tests {
     fn post_instruction_is_pure_template() {
         let p = post_instruction(Lang::Zh);
         assert!(p.starts_with("根据任务目标和任务要求，独立核验当前执行结果"));
-        assert_eq!(p, norm(include_str!("../prompts/test_post_user_zh.txt")));
+        assert_eq!(p, norm(include_str!("../prompts/post_user_zh.txt")));
         assert!(p.contains("核验过程中可以使用可用工具"));
         assert!(p.contains("已经进行任务相关的不可逆的操作"));
         assert!(p.contains("无论是否正确"));
@@ -202,8 +207,8 @@ mod tests {
     #[test]
     fn english_templates_exist() {
         let pre = pre_instruction(Lang::En, &[]);
-        assert!(pre.contains("First answer the following questions"));
-        assert!(pre.contains("classify the task as simple only if each aspect is simple"));
+        assert!(pre.contains("Answer the following questions concisely. Do not begin executing the task"));
+        assert!(pre.contains("classify the task as simple only if each question is simple"));
         assert!(pre.contains("only side-effect-free operations are allowed"));
         assert!(pre.contains("PIGNEXT"));
         assert!(exec_instruction(Lang::En, "PRE").contains("PRE"));

@@ -20,7 +20,7 @@ table{border-collapse:collapse;width:100%}th,td{border:1px solid var(--line);pad
 <tr><td>其它请求</td><td>直接 passthrough。</td></tr>
 </table></div>
 
-<div class="tip"><strong>临时提示词路由：</strong>proxy 仍负责去掉模型后缀，orchestrator 当前为正常 PIGS 请求统一选择 <code>test_pre_user</code> / <code>test_exec_user</code> / <code>test_post_user</code> 中英文模板。Pre 先回答五问，简单任务输出 <code>PIGEND</code> 后继续执行、复杂任务以 <code>PIGNEXT</code> 结束 Pre 并进入 Exec；无标记不默认执行。普通透传不执行 Pre，<code>-pig3</code> / <code>-pigs3</code> 使用独立纯规划 Pre。</div>
+<div class="tip"><strong>提示词路由：</strong>proxy 仍负责去掉模型后缀，orchestrator 当前将共享 <code>pre_analysis</code> 与自适应专用 <code>pre_route</code> 组合为正常 Pre，并继续使用 <code>exec_user</code> / <code>post_user</code>。Pre 先回答五问，简单任务输出 <code>PIGEND</code> 后继续执行、复杂任务以 <code>PIGNEXT</code> 结束 Pre 并进入 Exec；无标记不默认执行。普通透传不执行 Pre，<code>-pig3</code> / <code>-pigs3</code> 只使用共享 <code>pre_analysis</code> 并强制进入 Exec。</div>
 
 <h2>上游地址</h2>
 <div class="card">

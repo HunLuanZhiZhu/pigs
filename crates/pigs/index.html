@@ -40,7 +40,7 @@ code{background:#eef1f6;border-radius:4px;padding:1px 6px;font-family:Consolas,m
 </div>
 
 <h2>Pre 模型路由边界</h2>
-<div class="card"><p>CLI 不识别模型专属提示词。进入 PIGS 编排后，orchestrator 在正常编排中统一使用中英文 <code>test_pre_user</code> 模板（不再按模型品牌分流），语言选择由用户问题决定；强制完整路径的 <code>-pig3</code> / <code>-pigs3</code> 使用独立纯规划模板。这个选择不改变 CLI 或配置参数。</p></div>
+<div class="card"><p>CLI 不识别模型专属提示词。进入 PIGS 编排后，orchestrator 的 Pre 统一使用共享 <code>pre_analysis</code>；自适应模式额外追加 <code>pre_route</code>，强制完整路径则不追加。语言选择由用户问题决定。这个选择不改变 CLI 或配置参数。</p></div>
 
 <h2>职责边界</h2>
 <div class="warn"><p>这个 crate 当前不实现协议解析、<code>-pigs</code>/<code>-pig</code> 路由、编排或重试；这些逻辑分别在 <code>pigs-proxy</code>、<code>pigs-orchestrator</code> 与 <code>pigs-protocol</code>。当前 orchestrator 契约中，<code>-pigs</code> 选择模式 A、<code>-pig</code> 选择模式 B；两者共用状态机。Post 使用 <code>PIGEND</code>/<code>PIGNEXT</code>/<code>PIGFAIL</code> 做纯核验路由：PIGNEXT 回 Exec 修补；正常 Pre 先显式回答五问，简单任务以 <code>PIGEND</code> 为分析/执行分隔，复杂任务以 <code>PIGNEXT</code> 进入 Exec；Post 仍以末尾标记核验。明确的 token 上限停止原因视为截断错误；CLI 不覆盖这些语义。</p></div>

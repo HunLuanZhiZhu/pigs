@@ -30,8 +30,8 @@ code{background:#eef1f6;border-radius:4px;padding:1px 6px;font-family:Consolas,m
 <p>Pre 使用第一条独占行控制标记区分分析与后续内容（简单任务的标记可以位于正文中间），Post 仍使用最后非空行的终止标记检测。Post 只负责核验和路由，不自行执行修补。任务执行预算统一按 Exec 高层执行次数统计，上限由 <code>[orchestration].max_exec_runs</code> 配置，默认 3（首次执行 + 最多 2 次重试）；同一 Exec 内部的工具暂停/恢复不重复计数。最后一次允许的 Exec 完成后直接结束，因此不会再发送一个没有后续执行价值的 Post。<code>PIGNEXT</code> 与 <code>PIGFAIL→Pre→Exec</code> 都只会推动下一次 Exec，不维护各自的次数预算。任何相位若 <code>stop_reason</code> 明确表示 token 上限截断（<code>length</code> / <code>max_tokens</code> / <code>max_output_tokens</code>），会返回 <code>Error::OutputTruncated</code>。Post 无控制标记的协议重试若超限仍返回 <code>Error::Budget</code>；非流式 proxy 会把真正的预算错误映射为 HTTP 422，其它编排错误通常为 502。</p>
 </div>
 
-<h2>临时测试提示词</h2>
-<div class="card"><p>正常模式统一采用 <code>test_pre_user_{zh,en}.txt</code>、<code>test_exec_user_{zh,en}.txt</code>、<code>test_post_user_{zh,en}.txt</code>；根据用户任务语言选中英文，填入 <code>{failure_paths}</code> / <code>{pre_output}</code>。历史模型专属 Pre 模板仍保留文件但不激活。<code>-pig3</code> / <code>-pigs3</code> 继续使用独立的纯规划 Pre 模板。Pre 无论简单或复杂都先显式回答五问：简单任务的 <code>PIGEND</code> 之后继续执行，复杂任务以 <code>PIGNEXT</code> 结束 Pre。</p></div>
+<h2>当前提示词结构</h2>
+<div class="card"><p>Pre 使用可组合模板：自适应模式组合 <code>pre_analysis_{zh,en}.txt</code> + <code>pre_route_{zh,en}.txt</code>，强制完整路径仅使用同一份 <code>pre_analysis</code>；Exec/Post 使用 <code>exec_user</code> / <code>post_user</code>。历史及已替代模板统一移入 <code>prompts/archive/</code>。Pre 无论简单或复杂都先显式回答五问：简单任务的 <code>PIGEND</code> 之后继续执行，复杂任务以 <code>PIGNEXT</code> 结束 Pre。</p></div>
 
 <h2>子请求如何组装</h2>
 <div class="card">
