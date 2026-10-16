@@ -641,7 +641,7 @@ def job_common(job: dict[str, Any], updated_at: str | None) -> dict[str, Any]:
     return {
         "job_id": job.get("job_id"),
         "dataset": job.get("dataset"),
-        "model_label": job.get("model_label") or str(job.get("model", "")).removesuffix({"pigs": "-pigs", "pig": "-pig", "pigsb": "-pigsb"}.get(str(job.get("arm")), "")),
+        "model_label": job.get("model_label") or str(job.get("model", "")).removesuffix({"pigs": "-pigs", "pig": "-pig", "pig3": "-pig3", "pigs3": "-pigs3"}.get(str(job.get("arm")), "")),
         "arm": job.get("arm"),
         "model": job.get("model"),
         "thinking_effort": job.get("thinking_effort"),
@@ -728,7 +728,7 @@ def summarize_run(run_root: Path, pigs_log_dir: Path | None = None, write_files:
         row["official_metrics"] = metrics
         row["headline_metric"] = headline_metric(dataset, metrics)
 
-        if row["arm"] in {"pigs", "pig", "pigsb"}:
+        if row["arm"] in {"pigs", "pig", "pig3", "pigs3"}:
             local = job_dir / "pigs-http"
             selected = local if any(local.glob("*.txt")) else global_log_dir
             row["orchestration_log_dir"] = str(selected)
@@ -743,7 +743,7 @@ def summarize_run(run_root: Path, pigs_log_dir: Path | None = None, write_files:
         base = next((x for x in jobs_out if x["model_label"] == label and x["arm"] == "base"), None)
         if not base:
             continue
-        for arm in ("pigs", "pig", "pigsb"):
+        for arm in ("pigs", "pig", "pig3", "pigs3"):
             pigs = next((x for x in jobs_out if x["model_label"] == label and x["arm"] == arm), None)
             if not pigs:
                 continue

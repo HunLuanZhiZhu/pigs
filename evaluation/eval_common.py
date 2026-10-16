@@ -17,8 +17,8 @@ DEFAULT_BASE_URL = 'http://127.0.0.1:3927'
 DEFAULT_API_KEY = 'local-eval-placeholder'
 DEFAULT_MODELS = ['mimo-v2.6-flash', 'deepseek-v4.1-flash']
 DEFAULT_THINKING_EFFORT = 'low'
-ARMS = ['base', 'pigs', 'pig', 'pigsb']
-DEFAULT_ARMS = ['base', 'pigs', 'pig']  # pigsb remains accepted for historical compatibility
+ARMS = ['base', 'pigs', 'pig', 'pig3', 'pigs3']
+DEFAULT_ARMS = ['base', 'pigs', 'pig']  # pig3/pigs3 are explicit full-path arms
 
 @dataclass(frozen=True)
 class ModelSpec:
@@ -31,8 +31,10 @@ class ModelSpec:
             return f'{self.base_model}-pigs'
         if arm == 'pig':
             return f'{self.base_model}-pig'
-        if arm == 'pigsb':
-            return f'{self.base_model}-pigsb'
+        if arm == 'pig3':
+            return f'{self.base_model}-pig3'
+        if arm == 'pigs3':
+            return f'{self.base_model}-pigs3'
         raise ValueError(f'unsupported arm: {arm}')
 
 @dataclass
@@ -73,7 +75,8 @@ def parse_models(values: Iterable[str]) -> list[ModelSpec]:
     for raw in values:
         label, model = (raw.split('=',1) if '=' in raw else (raw,raw))
         label, model = slug(label.strip()), model.strip()
-        if not model or model.endswith(('-pigs', '-pig', '-pigsb')): raise SystemExit(f'invalid base model: {raw}')
+        if model.endswith('-pigsb'): raise SystemExit(f'legacy -pigsb suffix is no longer supported: {raw}')
+        if not model or model.endswith(('-pigs3', '-pig3', '-pigs', '-pig')): raise SystemExit(f'invalid base model: {raw}')
         if label in labels: raise SystemExit(f'duplicate model label: {label}')
         labels.add(label); out.append(ModelSpec(label,model))
     if not out: raise SystemExit('at least one model is required')
