@@ -1,6 +1,6 @@
-//! SSE 内容类型判定与流式解析辅助。
+//! SSE 内容类型判断辅助。 / Helper for detecting SSE content types.
 
-/// 响应 content-type 是否为 SSE 流。
+/// 判断响应是否为 SSE 流。 / Check whether the response content type indicates SSE.
 pub fn is_sse_content_type(content_type: Option<&str>) -> bool {
     content_type
         .map(|ct| ct.to_ascii_lowercase().contains("text/event-stream"))

@@ -1,40 +1,40 @@
-//! 子请求传输接口：编排器对"怎么发 HTTP"完全无感知，只依赖此 trait。
+//! 子请求传输接口：编排器只依赖此 trait，不关心 HTTP 发送细节。 / Subrequest transport interface: the orchestrator depends only on this trait, not HTTP mechanics.
 
 use bytes::Bytes;
 use std::sync::Arc;
 
-/// 流式响应中接收**带类型增量**的回调。
+/// 流式响应中接收**带类型增量**的回调。 / Callback for typed streaming deltas.
 ///
-/// 文本含控制标记（过滤由编排层负责）；思考增量原样转发、不过滤。
+/// 文本中的控制标记由编排层过滤；思考增量原样转发。 / The orchestrator filters text markers; reasoning deltas pass through unchanged.
 pub type LiveSink = Arc<dyn Fn(pigs_protocol::LiveEvent) + Send + Sync>;
 
-/// 旧名（只有文本）保留为别名，便于调用方渐进迁移。
+/// 旧名保留为别名，便于渐进迁移。 / Retain the legacy alias for gradual caller migration.
 pub type TextSink = LiveSink;
 
-/// 一个协议原生的子请求（发往上游 = 经 loopback 走 proxy 透传通道）。
+/// 协议原生子请求，经回环走代理透传通道。 / Protocol-native subrequest sent upstream through the loopback passthrough channel.
 #[derive(Debug, Clone)]
 pub struct SubRequest {
-    /// 协议路径（如 `/v1/messages`）。
+    /// 协议路径（如 `/v1/messages`）。 / Protocol path (for example, `/v1/messages`).
     pub path: String,
-    /// 原查询串（有就原样带上）。
+    /// 原查询串，原样保留。 / Original query string, preserved unchanged.
     pub query: Option<String>,
-    /// 需要随行的端到端头（鉴权、会话头等）。
+    /// 端到端请求头（鉴权、会话等）。 / End-to-end headers (authentication, session, etc.).
     pub headers: Vec<(String, String)>,
-    /// JSON body。
+    /// JSON 请求体。 / JSON request body.
     pub body: Bytes,
 }
 
-/// 子请求的响应。流式与非流式都返回**完整 body**（增量已另行回调）：
-/// 编排需要在全文上判定控制标记，所以累积的原文始终要拿得到。
+/// 子请求响应：流式与非流式都返回完整响应体（增量另行回调）。 / Subresponse: both modes return the full body; streaming deltas are reported separately.
+/// 编排需要完整原文来判定控制标记。 / The orchestrator needs the complete text to inspect control markers.
 #[derive(Debug, Clone)]
 pub struct SubResponse {
     pub status: u16,
-    /// 响应 content-type（判定 JSON / SSE 用）。
+    /// 响应内容类型，用于区分 JSON / SSE。 / Response content type for JSON/SSE detection.
     pub content_type: Option<String>,
     pub body: Bytes,
 }
 
-/// 传输错误（proxy 负责转成协议错误返回给客户端）。
+/// 传输错误，由代理转换为客户端协议错误。 / Transport error converted by the proxy into a client-facing protocol error.
 #[derive(Debug, thiserror::Error)]
 pub enum TransportError {
     #[error("子请求传输失败: {0}")]
@@ -45,16 +45,16 @@ pub enum TransportError {
 
 pub type TransportResult = std::result::Result<SubResponse, TransportError>;
 
-/// 传输抽象：生产实现 = proxy 的 loopback；测试实现 = 脚本化的假上游。
+/// 传输抽象：生产环境用代理回环，测试用模拟上游。 / Transport abstraction: proxy loopback in production, scripted mock upstream in tests.
 #[async_trait::async_trait]
 pub trait Transport: Send + Sync {
-    /// 非流式发送（客户端没要流式时走这里）。
+    /// 非流式发送。 / Non-streaming send.
     async fn send(&self, req: SubRequest) -> TransportResult;
 
-    /// 流式发送：上游 SSE 增量到达时即时回调 `sink`，同时返回累积的完整响应。
+    /// 流式发送：SSE 增量到达时回调 `sink`，并返回累积的完整响应。 / Streaming send: invoke `sink` on each SSE delta and return the accumulated full response.
     ///
-    /// 两者都由实现负责——回调用于"边收边转发"（文本与思考分开报），
-    /// 返回值用于在全文上判定 PIGEND/PIGFAIL 与工具调用。
+    /// 实现同时负责增量回调（区分文本和思考）与完整响应。 / Implementations handle both typed delta callbacks and the full response.
+    /// 完整响应用于判定控制标记和工具调用。 / The full response is used to detect control markers and tool calls.
     async fn send_streaming(
         &self,
         req: SubRequest,

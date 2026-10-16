@@ -61,8 +61,8 @@ def main() -> int:
             return kwargs
 
         def generate_with_backoff(self, **kwargs):
-            # BFCL's official Responses handler owns the agent/tool loop.
-            # Only add the same low-effort setting used in the other evals.
+            # BFCL 官方 Responses 处理器负责智能体/工具循环。 / BFCL's official Responses handler owns the agent/tool loop.
+            # 只追加其它评测一致的低推理预算设置。 / Only add the same low-effort setting used in other evaluations.
             kwargs['reasoning'] = {'effort': self.evaluation_reasoning_effort}
             return super().generate_with_backoff(**kwargs)
 

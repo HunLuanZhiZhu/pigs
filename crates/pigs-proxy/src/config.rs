@@ -1,24 +1,24 @@
-//! 配置：部署位置 + HTTP 诊断日志。模板即实际配置（include_str! 指向仓库根 config.toml）。
+//! 配置：部署、编排与 HTTP 诊断；嵌入根目录模板。 / Deployment, orchestration, and HTTP diagnostics configuration; embeds the root template.
 
 use serde::{Deserialize, Serialize};
 
-/// 嵌入模板 = 仓库根的 config.toml 本体，`--example` 可导出副本。
+/// 嵌入根目录配置模板，供 `--example` 导出。 / Embed the root configuration template for `--example` export.
 pub const EXAMPLE_CONFIG: &str = include_str!("../../../config.toml");
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
-    /// 监听地址。
+    /// 监听地址。 / Listen address.
     pub listen: String,
-    /// 留空 = 透传客户端 key；填了则覆盖。
+    /// 空值透传客户端密钥，非空值覆盖。 / Empty preserves the client key; nonempty overrides it.
     #[serde(default)]
     pub key: String,
-    /// HTTP 诊断日志。内部测试阶段默认 max。
+    /// HTTP 诊断日志，默认详细级别为 max。 / HTTP diagnostic logging, defaulting to max detail.
     #[serde(default)]
     pub logging: LoggingConfig,
-    /// PIGS 编排次数控制。
+    /// PIGS 编排次数限制。 / PIGS orchestration limits.
     #[serde(default)]
     pub orchestration: OrchestrationConfig,
-    /// 三个协议各一个上游地址：base + 客户端原样路径 = 上游 URL。
+    /// 每种协议独立配置上游基础地址。 / Separate upstream base URL for each protocol.
     pub upstream: Upstreams,
 }
 
@@ -51,10 +51,10 @@ impl std::str::FromStr for LogDetail {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoggingConfig {
-    /// off = 不生成 HTTP 明文抓包；basic = 只记元数据；max = 元数据 + 完整 body。
+    /// off 不记录；basic 记录元数据；max 记录元数据及完整请求体。 / off disables capture; basic logs metadata; max logs metadata and full bodies.
     #[serde(default)]
     pub detail: LogDetail,
-    /// HTTP 抓包文件目录。
+    /// HTTP 抓包文件目录。 / HTTP capture directory.
     #[serde(default = "default_http_log_dir")]
     pub directory: String,
 }
@@ -75,9 +75,9 @@ fn default_http_log_dir() -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum UsageMode {
-    /// 返回 total_tokens 最大的一次真实上游调用的完整 usage，供 coding agent 判断上下文占用。
+    /// 返回 token 最多的上游调用的完整 usage，用于上下文估计。 / Return the full usage of the largest upstream call for context-size estimation.
     Max,
-    /// 将本次客户端请求触发的真实上游调用 usage 数值字段逐项相加，供评测统计真实消耗。
+    /// 汇总本次请求全部上游调用的 usage 数值，供评测计费。 / Sum numeric usage fields across all upstream calls for evaluation.
     Sum,
 }
 
@@ -89,13 +89,13 @@ impl Default for UsageMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OrchestrationConfig {
-    /// 一轮任务最多允许多少次高层 Exec 执行；工具暂停/恢复不重复计数。
+    /// 每轮高层 Exec 执行上限；工具暂停/恢复不重复计数。 / Max high-level Exec runs per turn, excluding tool pause/resume.
     #[serde(default = "default_max_exec_runs", alias = "max_executor_runs")]
     pub max_exec_runs: u32,
-    /// Post 没有输出控制标记时，最多额外重试多少次协议响应。
+    /// Post 缺少控制标记时的协议重试次数上限。 / Max retries when Post omits a control marker.
     #[serde(default = "default_max_post_protocol_retries")]
     pub max_post_protocol_retries: u32,
-    /// 最终向下游汇报 usage 的语义：max（日常 coding agent）或 sum（评测真实消耗）。
+    /// 下游 usage 汇报模式：max 用于日常，sum 用于评测。 / Downstream usage mode: max for daily agents, sum for evaluation.
     #[serde(default)]
     pub usage_mode: UsageMode,
 }
@@ -118,23 +118,23 @@ fn default_max_post_protocol_retries() -> u32 {
     pigs_orchestrator::DEFAULT_MAX_POST_PROTOCOL_RETRIES
 }
 
-/// 三协议各自的上游前缀。
+/// 三种协议各自的上游前缀。 / Upstream base URLs for the three protocols.
 ///
-/// 路径约定：chat `/chat/completions`、responses `/responses` 不带版本段
-/// （版本属于 base）；anthropic `/v1/messages` 自带 `/v1`（版本属于协议，
-/// base 不带）——A 社的 v1 是协议的一部分，对其他协议不是。
+/// 路径约定：Chat 与 Responses 的路径不含版本段。 / Chat and Responses paths omit a version component.
+/// 版本属于基础地址；Anthropic `/v1/messages` 自带版本段。 / Their version belongs to the base URL; Anthropic includes `/v1` in its path.
+/// Anthropic 的基础地址不含该版本段。 / The Anthropic base URL excludes that version component.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Upstreams {
-    /// OpenAI Chat 上游（接 /chat/completions）。
+    /// OpenAI Chat 上游地址。 / Upstream base URL for OpenAI Chat.
     pub openai: String,
-    /// Responses 上游（接 /responses）。
+    /// Responses 上游地址。 / Upstream base URL for Responses.
     pub responses: String,
-    /// Anthropic 上游（接 /v1/messages）。
+    /// Anthropic 上游地址。 / Upstream base URL for Anthropic.
     pub anthropic: String,
 }
 
 impl Upstreams {
-    /// `--base-url` 统一覆盖用：三个协议指到同一个前缀。
+    /// `--base-url` 覆盖：三种协议共用一个基础地址。 / `--base-url` override: all three protocols share one base URL.
     pub fn same(base_url: &str) -> Self {
         Self {
             openai: base_url.to_string(),
@@ -145,7 +145,7 @@ impl Upstreams {
 }
 
 impl Config {
-    /// 从当前目录的 config.toml 加载。
+    /// 从指定配置文件加载。 / Load from the specified configuration file.
     pub fn load(path: &str) -> anyhow::Result<Self> {
         let raw = std::fs::read_to_string(path)?;
         let config: Self = toml::from_str(&raw)?;
@@ -160,7 +160,7 @@ impl Config {
         Ok(())
     }
 
-    /// 默认配置（首次运行生成用）。
+    /// 默认配置模板，供首次运行生成。 / Default template for initial configuration generation.
     pub fn example() -> &'static str {
         EXAMPLE_CONFIG
     }

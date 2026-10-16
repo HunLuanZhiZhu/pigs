@@ -1,15 +1,15 @@
-//! 从上游响应（JSON / SSE 全文 / SSE 增量）提取文本，以及把最终答复合成为协议正确的响应。
+//! 从 JSON/SSE 提取内容并合成协议正确的响应。 / Extract content from JSON/SSE and synthesize protocol-compliant responses.
 //!
-//! 两条相反方向的流式能力都在这里：
-//! - [`SseTextStream`]：**读**上游 SSE，按字节边界增量提取文本；
-//! - [`StreamEncoder`]：**写**客户端 SSE，边编排边逐段发帧。
+//! 同时处理上游读取和下游编码两种流式方向。 / Handle both upstream streaming input and downstream encoding.
+//! - [`SseTextStream`] 解析上游 SSE 增量。 / [`SseTextStream`] parses upstream SSE increments.
+//! - [`StreamEncoder`] 逐段写入客户端 SSE。 / [`StreamEncoder`] emits client SSE frames incrementally.
 
 use crate::output::{Part, ToolCall};
 use crate::route::Protocol;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-/// 从非流式 JSON 响应提取助手文本。
+/// 从非流式 JSON 中提取助手文本。 / Extract assistant text from non-streaming JSON.
 pub fn extract_response_text(protocol: Protocol, body: &Value) -> Option<String> {
     let join_blocks = |blocks: &Value, key: &str| -> Option<String> {
         blocks.as_array().map(|items| {
@@ -20,7 +20,7 @@ pub fn extract_response_text(protocol: Protocol, body: &Value) -> Option<String>
                     if ty.ends_with("text") {
                         b.get("text").and_then(|t| t.as_str()).map(str::to_string)
                     } else {
-                        // key 参数用于调试定位，不影响提取
+                        // 字段名仅供定位，不影响提取。 / Field names aid diagnostics without changing extraction.
                         let _ = key;
                         None
                     }
@@ -55,27 +55,27 @@ pub fn extract_response_text(protocol: Protocol, body: &Value) -> Option<String>
                 (!texts.is_empty()).then(|| texts.join(""))
             })
             .or_else(|| {
-                // 某些网关直接给扁平字段
+                // 兼容网关使用的扁平字段。 / Support flat fields emitted by some gateways.
                 body.get("output_text").and_then(|t| t.as_str()).map(String::from)
             }),
     }
 }
 
-/// 从单条 SSE 负载提取文本增量（按协议识别字段；其它事件返回 None）。
+/// 按协议从单条 SSE 事件提取文本增量。 / Extract a text delta from one protocol-specific SSE event.
 fn sse_payload_text(protocol: Protocol, payload: &Value) -> Option<String> {
     let ty = payload.get("type").and_then(|t| t.as_str());
     match protocol {
-        // Anthropic: content_block_delta → delta.text
+        // Anthropic：从 content_block_delta 提取 delta.text。 / Anthropic: extract delta.text.
         Protocol::Anthropic => (ty == Some("content_block_delta"))
             .then(|| payload.pointer("/delta/text").and_then(|t| t.as_str()))
             .flatten()
             .map(String::from),
-        // OpenAI Chat: choices[0].delta.content
+        // OpenAI Chat：从 choices 的 delta.content 提取。 / Chat: extract delta.content.
         Protocol::OpenAI => payload
             .pointer("/choices/0/delta/content")
             .and_then(|t| t.as_str())
             .map(String::from),
-        // Responses: response.output_text.delta → delta
+        // Responses：从 output_text.delta 提取。 / Responses: extract output_text.delta.
         Protocol::Responses => (ty == Some("response.output_text.delta"))
             .then(|| payload.get("delta").and_then(|t| t.as_str()))
             .flatten()
@@ -83,7 +83,7 @@ fn sse_payload_text(protocol: Protocol, payload: &Value) -> Option<String> {
     }
 }
 
-/// 解析一行 SSE（不含换行符）：`data:` 行走协议解析，其余行（`event:` / 注释 / 空行）忽略。
+/// 只解析 SSE 的 data 行，跳过事件头及空行。 / Parse SSE data lines, skipping event headers and blank lines.
 fn sse_line_events(protocol: Protocol, line: &str) -> Vec<LiveEvent> {
     let Some(data) = line.strip_prefix("data:") else {
         return Vec::new();
@@ -113,7 +113,7 @@ fn sse_line_events(protocol: Protocol, line: &str) -> Vec<LiveEvent> {
     events
 }
 
-/// Responses 的思考摘要增量（带 item_id）。
+/// 包含条目标识的 Responses 思考摘要增量。 / Responses reasoning-summary delta with item ID.
 fn sse_payload_thinking_summary(payload: &Value) -> Option<LiveEvent> {
     let ty = payload.get("type").and_then(|t| t.as_str());
     if ty != Some("response.reasoning_summary_text.delta") {
@@ -124,10 +124,10 @@ fn sse_payload_thinking_summary(payload: &Value) -> Option<LiveEvent> {
     Some(LiveEvent::ThinkingSummary { item_id, text })
 }
 
-/// 思考增量：Anthropic 的 `thinking_delta` / Chat 的 `reasoning_content`。
+/// 从 Anthropic/Chat 提取思考增量。 / Extract reasoning deltas from Anthropic/Chat.
 fn sse_payload_thinking(protocol: Protocol, payload: &Value) -> Option<String> {
     match protocol {
-        // Anthropic：外层是 content_block_delta，增量类型在 delta.type
+        // Anthropic 增量类型位于 delta.type。 / Anthropic delta type is in delta.type.
         Protocol::Anthropic => {
             let ty = payload.get("type").and_then(|t| t.as_str());
             let delta = payload.get("delta");
@@ -147,7 +147,7 @@ fn sse_payload_thinking(protocol: Protocol, payload: &Value) -> Option<String> {
     }
 }
 
-/// 思考块签名增量（Anthropic 的 `signature_delta`）。
+/// Anthropic 思考签名增量。 / Anthropic reasoning signature delta.
 fn sse_payload_signature(protocol: Protocol, payload: &Value) -> Option<String> {
     if protocol != Protocol::Anthropic {
         return None;
@@ -161,26 +161,26 @@ fn sse_payload_signature(protocol: Protocol, payload: &Value) -> Option<String> 
     .map(String::from)
 }
 
-/// 上游 SSE 的一个实时增量（客户端要按类型编码，不能混为一谈）。
+/// 上游 SSE 增量，按类型交由客户端编码。 / Typed upstream SSE delta for client encoding.
 #[derive(Debug, Clone, PartialEq)]
 pub enum LiveEvent {
-    /// 可见文本增量（要过控制标记过滤）。
+    /// 可见文本增量，需要过滤控制标记。 / Visible text delta requiring marker filtering.
     Text(String),
-    /// 思考增量（原样转发，不过滤）。
+    /// 原样转发的思考增量。 / Unfiltered reasoning delta.
     Thinking(String),
-    /// Responses 的思考摘要增量：**带上游给的 item_id**，
-    /// 客户端才能把增量归并到最后那条完整 reasoning 条目里（直连上游时就是这个形状）。
+    /// Responses 思考摘要保留原上游条目标识。 / Preserve the upstream item ID for Responses summaries.
+    /// 便于客户端将增量归并到最终推理条目。 / Allows clients to merge deltas into the final reasoning item.
     ThinkingSummary { item_id: String, text: String },
-    /// 思考块的签名增量（Anthropic 把签名放在思考块末尾）。
+    /// Anthropic 思考块末尾的签名增量。 / Signature delta at the end of an Anthropic thinking block.
     ThinkingSignature(String),
 }
 
-/// 增量 SSE 提取器：喂入任意字节边界的响应块，吐出本次新增的事件。
+/// 任意字节分块的增量 SSE 事件提取器。 / Incremental SSE event parser for arbitrary byte chunks.
 
-/// 增量 SSE 文本提取器（只取可见文本的旧入口，内部走 [`SseTextStream::push_events`]）。
+/// 仅提取可见文本的兼容接口。 / Legacy visible-text-only SSE extraction API.
 ///
-/// 上游 SSE 的块边界可以落在任何地方——一行中间，甚至一个中文字符的中间——
-/// 所以这里用字节缓冲按行切分：只处理完整行，尾部残缺字节留到下一次。
+/// SSE 块可在行或多字节字符中间截断。 / SSE chunks may split lines or multibyte characters.
+/// 使用缓冲按完整行解析，残缺尾部留到下次。 / Buffer bytes and parse complete lines, retaining partial tails.
 #[derive(Debug, Clone)]
 pub struct SseTextStream {
     protocol: Protocol,
@@ -195,7 +195,7 @@ impl SseTextStream {
         }
     }
 
-    /// 喂入一段响应字节，返回本次新增的**事件**（文本 / 思考 / 思考签名）。
+    /// 处理字节并返回新增的文本/思考/签名事件。 / Parse bytes into newly available text/reasoning/signature events.
     pub fn push_events(&mut self, chunk: &[u8]) -> Vec<LiveEvent> {
         self.buf.extend_from_slice(chunk);
         let mut events = Vec::new();
@@ -210,7 +210,7 @@ impl SseTextStream {
         events
     }
 
-    /// 喂入一段响应字节，返回本次新增的**可见文本**（丢弃思考等其它事件）。
+    /// 处理字节并只返回可见文本。 / Parse bytes into visible text only.
     pub fn push(&mut self, chunk: &[u8]) -> String {
         self.push_events(chunk)
             .into_iter()
@@ -221,7 +221,7 @@ impl SseTextStream {
             .collect()
     }
 
-    /// 流结束：处理末尾没有换行的残留行。
+    /// 流结束时解析末尾残缺行。 / Parse the final unterminated line at stream end.
     pub fn finish_events(&mut self) -> Vec<LiveEvent> {
         let rest = std::mem::take(&mut self.buf);
         let line = String::from_utf8_lossy(&rest);
@@ -232,7 +232,7 @@ impl SseTextStream {
         sse_line_events(self.protocol, line)
     }
 
-    /// 流结束：处理末尾没有换行的残留行（只要可见文本）。
+    /// 流结束时提取残留的可见文本。 / Extract remaining visible text at stream end.
     pub fn finish(&mut self) -> String {
         self.finish_events()
             .into_iter()
@@ -244,7 +244,7 @@ impl SseTextStream {
     }
 }
 
-/// 从 SSE 全文（多个 `data:` 行）提取助手文本。
+/// 从 SSE 全文提取助手文本。 / Extract assistant text from an SSE transcript.
 pub fn extract_sse_text(protocol: Protocol, sse: &str) -> Option<String> {
     let mut stream = SseTextStream::new(protocol);
     let mut text = stream.push(sse.as_bytes());
@@ -252,34 +252,34 @@ pub fn extract_sse_text(protocol: Protocol, sse: &str) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
-/// 有状态的客户端 SSE 编码器：编排还在进行时就逐段发帧。
+/// 有状态 SSE 编码器，可在编排过程中持续发帧。 / Stateful SSE encoder emitting frames during orchestration.
 ///
-/// 生命周期：`start` →（`push_text` → `end_pig`）* → `finish`；出错走 `error`。
-/// 每只 pig 的文本是一个独立的块（Anthropic 的 content_block / Responses 的
-/// message item），相位之间自动补一个空行；控制标记在编排层已剥掉，这里不管。
+/// 生命周期：start、各相位输出、finish；错误走 error。 / Lifecycle: start, per-phase output, finish; errors use error.
+/// 每相位正文使用独立内容块。 / Each phase uses a separate content block.
+/// 相位之间补空行；标记已在编排层过滤。 / Insert blank lines between phases; markers are filtered upstream.
 pub struct StreamEncoder {
     protocol: Protocol,
     model: String,
     id: String,
     created: u64,
-    /// Responses 协议的 sequence_number。
+    /// Responses 事件序列号。 / Responses event sequence number.
     sequence: u64,
-    /// 下一个可用的 content_block / output_item 索引。
+    /// 下一个内容块或输出项索引。 / Next content-block/output-item index.
     next_index: usize,
-    /// 是否已经发出过至少一段文本（决定是否补空行）。
+    /// 是否已发送文本，决定相位分隔。 / Whether text has been sent, controlling phase separation.
     wrote_text: bool,
-    /// 当前是否有打开的文本块。
+    /// 当前文本块是否开启。 / Whether a text block is open.
     open: bool,
-    /// Responses 当前 message item 的 id 与已累积文本（done 事件要回填）。
+    /// 当前 Responses 消息标识及累积文本。 / Active Responses message ID and accumulated text.
     item_id: String,
     item_text: String,
-    /// Responses 已完成的 output 数组（response.completed 要用）。
+    /// Responses 已完成输出项列表。 / Completed Responses output items.
     output: Vec<Value>,
-    /// 上游给的停止原因（最后一个相位的值，原样透传；没有则用协议默认值）。
+    /// 最后一相位停止原因，缺失时用协议默认。 / Final-phase stop reason, falling back to protocol default.
     stop_reason: Option<String>,
-    /// 上游给的 usage（跨相位累加后的结果，原样透传）。
+    /// 按策略聚合的上游 usage。 / Aggregated upstream usage according to policy.
     usage: Option<Value>,
-    /// 思考块是否开着（Anthropic 的块有 start/stop 生命周期，实时流要边开边发）。
+    /// Anthropic 思考块开启状态。 / Whether an Anthropic thinking block is open.
     open_thinking: bool,
 }
 
@@ -308,13 +308,13 @@ impl StreamEncoder {
         }
     }
 
-    /// 记录上游给的停止原因与 usage（原样透传，不改写；缺失时终止帧用协议默认值）。
+    /// 保存原生停止原因与 usage，缺失时用默认值。 / Store native stop reason/usage, using defaults when absent.
     pub fn set_finish(&mut self, stop_reason: Option<String>, usage: Option<Value>) {
         self.stop_reason = stop_reason;
         self.usage = usage;
     }
 
-    /// 发协议起始帧，让客户端流立刻开始（不依赖第一次上游增量）。
+    /// 立即发送协议起始帧。 / Emit the protocol start frame immediately.
     pub fn start(&mut self) -> String {
         match self.protocol {
             Protocol::OpenAI => data_frame(json!({
@@ -340,7 +340,7 @@ impl StreamEncoder {
                         "content": [],
                         "stop_reason": Value::Null,
                         "stop_sequence": Value::Null,
-                        // 官方 usage 必填数值字段，空对象会被官方客户端拒收（legacy format.rs:125 同款零值占位）
+                        // 协议要求数值 usage 字段；未知时用零占位。 / Protocol requires numeric usage fields; use zeros if not yet known.
                         "usage": {"input_tokens": 0, "output_tokens": 0}
                     }
                 }),
@@ -361,13 +361,13 @@ impl StreamEncoder {
         }
     }
 
-    /// 打开一只 pig 的文本块（相位间补空行）。
+    /// 开启相位文本块并补必要的空行。 / Open a phase text block, inserting separators if needed.
     fn open_block(&mut self) -> String {
         let boundary = if self.wrote_text { "\n\n" } else { "" };
         self.open = true;
         match self.protocol {
             Protocol::OpenAI => {
-                // Chat 没有块开始事件，空行作为普通增量发出即可
+                // Chat 没有块起始事件，用普通增量补空行。 / Chat lacks block-start frames; emit separators as text deltas.
                 if boundary.is_empty() {
                     String::new()
                 } else {
@@ -432,7 +432,7 @@ impl StreamEncoder {
         }
     }
 
-    /// 发出一段可见文本增量（先关思考块、需要时开文本块）。
+    /// 发送可见文本增量，处理思考/文本块切换。 / Emit visible text while managing reasoning/text block transitions.
     pub fn push_text(&mut self, text: &str) -> String {
         if text.is_empty() {
             return String::new();
@@ -462,14 +462,14 @@ impl StreamEncoder {
         frames
     }
 
-    /// 关闭当前 pig 的文本块（思考块也一并收尾）。
+    /// 关闭当前相位文本及思考块。 / Close the current phase text and reasoning blocks.
     pub fn end_pig(&mut self) -> String {
         if !self.open {
             return self.end_thinking();
         }
         self.open = false;
         match self.protocol {
-            // Chat 没有块结束事件
+            // Chat 协议没有内容块结束帧。 / Chat has no content-block end frame.
             Protocol::OpenAI => String::new(),
             Protocol::Anthropic => {
                 let index = self.next_index.saturating_sub(1);
@@ -482,14 +482,14 @@ impl StreamEncoder {
         }
     }
 
-    /// 把内容序列发给客户端：`Text` 走文本块，工具调用与其它原生块**原样**发出去。
+    /// 发送有序内容：文本编码成块，其它原生内容保留。 / Emit ordered parts: encode text blocks and preserve native items.
     ///
-    /// 流式路径下 `Text` 已经在增量阶段发过了，调用方要先把 `Text` 摘掉再传进来。
+    /// 流式已发文本不得在收尾重复提供。 / Do not resubmit text already streamed in deltas.
     pub fn push_parts(&mut self, parts: &[Part]) -> String {
         if parts.is_empty() {
             return String::new();
         }
-        // 发原生内容前先把开着的思考块与文本段收尾（Anthropic/Responses 的块要闭合）
+        // 发送原生块前关闭现有文本/思考块。 / Close active text/reasoning blocks before native items.
         let mut frames = self.end_thinking();
         frames.push_str(&self.end_pig());
         for part in parts {
@@ -503,13 +503,13 @@ impl StreamEncoder {
         frames
     }
 
-    /// 一段思考增量：边想边发（Anthropic 需要先开块，Chat 直接给字段）。
+    /// 实时发送思考增量，按协议处理块格式。 / Stream reasoning deltas using protocol-specific framing.
     pub fn push_reasoning(&mut self, text: &str) -> String {
         if text.is_empty() {
             return String::new();
         }
         match self.protocol {
-            // Chat：delta.reasoning_content（各家通用叫法）
+            // Chat 思考写入 delta.reasoning_content。 / Chat reasoning uses delta.reasoning_content.
             Protocol::OpenAI => data_frame(json!({
                 "id": self.id,
                 "object": "chat.completion.chunk",
@@ -552,13 +552,13 @@ impl StreamEncoder {
         }
     }
 
-    /// Responses 的思考摘要增量：`item_id` 用上游给的那个，客户端才能归并到最终条目。
+    /// Responses 思考摘要使用上游 item_id 供客户端关联。 / Responses summary uses the upstream item ID for merging.
     pub fn push_reasoning_summary(&mut self, item_id: &str, text: &str) -> String {
         if text.is_empty() {
             return String::new();
         }
         if self.protocol != Protocol::Responses {
-            // 别的协议没有这种事件形状，退化成普通思考增量
+            // 其它协议回退为普通思考增量。 / Other protocols fall back to regular reasoning deltas.
             return self.push_reasoning(text);
         }
         self.response_event(
@@ -572,7 +572,7 @@ impl StreamEncoder {
         )
     }
 
-    /// 思考块的签名增量（Anthropic：签名在思考块末尾，客户端回传时要带上）。
+    /// Anthropic 思考块签名增量，需要保留。 / Anthropic thinking signature delta retained for round trips.
     pub fn push_reasoning_signature(&mut self, signature: &str) -> String {
         if self.protocol != Protocol::Anthropic || !self.open_thinking || signature.is_empty() {
             return String::new();
@@ -587,7 +587,7 @@ impl StreamEncoder {
         )
     }
 
-    /// 收尾思考块（文本或其它内容开始前必须关掉）。
+    /// 在其他内容开始前关闭思考块。 / Close a thinking block before other content.
     fn end_thinking(&mut self) -> String {
         if !self.open_thinking {
             return String::new();
@@ -599,7 +599,7 @@ impl StreamEncoder {
         )
     }
 
-    /// 一个原生内容块 / output item：原样发出去，不解释、不改写。
+    /// 原样发送原生内容块或输出项。 / Emit a native content block/output item unchanged.
     fn push_native(&mut self, block: &Value) -> String {
         let kind = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
         match self.protocol {
@@ -608,7 +608,7 @@ impl StreamEncoder {
                 self.next_index += 1;
                 let mut frames = String::new();
                 if kind == "thinking" {
-                    // 思考块按协议的三段式发：start（空 thinking）→ thinking_delta → signature_delta → stop
+                    // 思考块按开始、增量、签名、结束序列发送。 / Emit thinking blocks as start, delta, signature, stop.
                     frames.push_str(&event_frame(
                         "content_block_start",
                         json!({
@@ -669,12 +669,12 @@ impl StreamEncoder {
                 self.output.push(block.clone());
                 frames
             }
-            // Chat 没有内容块的概念：原生块无处安放，只能不发（并在文档里登记）
+            // Chat 无原生内容块槽位，相关块无法编码。 / Chat has no native block slot for such items.
             Protocol::OpenAI => String::new(),
         }
     }
 
-    /// 单个工具调用的原生帧。
+    /// 单次工具调用的原生帧。 / Native frames for one tool call.
     fn push_tool_call(&mut self, call: &ToolCall) -> String {
         if self.stop_reason.is_none() {
             self.stop_reason = Some(match self.protocol {
@@ -742,11 +742,11 @@ impl StreamEncoder {
         }
     }
 
-    /// 发协议终止帧（成功的完整序列）。
+    /// 发送成功终止帧。 / Emit successful protocol terminal frames.
     pub fn finish(&mut self) -> String {
-        // finish() 是最终协议收尾点，不能依赖调用方一定先收到/发送 PigEvent::End。
-        // 尤其 Responses 的 response.completed 会从 self.output 构造最终 output；
-        // 若最后一个 message item 仍 open，客户端即使收过 text delta，终止响应也会是空 output。
+        // finish 负责最终收尾，不依赖外部 End 事件。 / finish owns finalization independently of End.
+        // Responses 完成事件从已收集输出构建。 / Responses completion is built from collected output.
+        // 未关闭的消息项会导致终止输出缺失。 / Leaving the final message open can yield empty output.
         let mut pending = self.end_thinking();
         pending.push_str(&self.end_pig());
         pending.push_str(&self.finish_frames());
@@ -754,7 +754,7 @@ impl StreamEncoder {
     }
 
     fn finish_frames(&mut self) -> String {
-        // 停止原因与 usage 一律用上游给的值；上游没给才退回协议默认
+        // 优先使用原生停止原因与 usage，缺失时才回退。 / Prefer upstream stop reason/usage; fall back only when absent.
         let stop_reason = self
             .stop_reason
             .clone()
@@ -763,7 +763,7 @@ impl StreamEncoder {
                 Protocol::Anthropic => "end_turn".into(),
                 Protocol::Responses => String::new(),
             });
-        // Anthropic 的 message_delta.usage 必填 output_tokens（数值）；上游真值原样透传，缺失时给合法占位
+        // Anthropic usage 须含数值 output_tokens。 / Anthropic usage requires numeric output_tokens.
         let usage = self.usage.clone().unwrap_or_else(|| match self.protocol {
             Protocol::Anthropic => json!({"output_tokens": 0}),
             _ => json!({}),
@@ -794,7 +794,7 @@ impl StreamEncoder {
                 event_frame("message_stop", json!({"type": "message_stop"}))
             ),
             Protocol::Responses => {
-                // Responses 用 status/incomplete_details 表达截断
+                // Responses 通过状态和不完整详情表达截断。 / Responses signals truncation with status/incomplete_details.
                 let (status, incomplete) = if stop_reason.is_empty() {
                     ("completed", Value::Null)
                 } else {
@@ -816,7 +816,7 @@ impl StreamEncoder {
         }
     }
 
-    /// 发流内错误帧（不含成功终止帧；调用前会先关掉仍开着的块）。
+    /// 发送流内错误，关闭未完成块，不发送成功终止帧。 / Emit stream error after closing blocks, without successful termination.
     pub fn error(&mut self, message: &str) -> String {
         let mut frames = self.end_pig();
         frames.push_str(&match self.protocol {
@@ -845,7 +845,7 @@ impl StreamEncoder {
         frames
     }
 
-    /// Chat 协议的一段文本增量帧。
+    /// Chat 文本增量帧。 / Chat text-delta frame.
     fn chat_delta(&self, text: &str) -> String {
         data_frame(json!({
             "id": self.id,
@@ -860,7 +860,7 @@ impl StreamEncoder {
         }))
     }
 
-    /// Responses 协议的一段文本增量帧（同时累积文本供 done 事件回填）。
+    /// Responses 文本增量帧，同时累积完成文本。 / Responses text-delta frame accumulating final text.
     fn responses_delta(&mut self, text: &str) -> String {
         self.item_text.push_str(text);
         let output_index = self.next_index.saturating_sub(1);
@@ -876,7 +876,7 @@ impl StreamEncoder {
         )
     }
 
-    /// Responses 协议：结束当前 message item（output_text.done → content_part.done → output_item.done）。
+    /// 结束当前 Responses 消息项及其内容块。 / Finish current Responses message and content blocks.
     fn responses_item_done(&mut self) -> String {
         let output_index = self.next_index.saturating_sub(1);
         let item_id = std::mem::take(&mut self.item_id);
@@ -917,7 +917,7 @@ impl StreamEncoder {
         frames
     }
 
-    /// Responses 协议：构造带 type + sequence_number 的事件帧。
+    /// 构造含类型和序号的 Responses 事件。 / Build a Responses event with type and sequence number.
     fn response_event(&mut self, event_type: &str, extra: Value) -> String {
         let mut value = extra.as_object().cloned().unwrap_or_default();
         value.insert("type".into(), json!(event_type));
@@ -927,10 +927,10 @@ impl StreamEncoder {
     }
 }
 
-/// 回给客户端的一轮内容：**按顺序**的内容序列 + 原样透传的停止原因与 usage。
+/// 客户端轮次内容：有序片段及原生停止原因/usage。 / Client turn content: ordered parts with native stop reason and usage.
 ///
-/// `model` 是客户端请求的那个名字（带 `-pigs`），原样回显；
-/// `parts` 里 `Text` 走文本块，`Reasoning`/`Native`/`ToolCall` 按协议原生形状发出，一律不改写。
+/// 回显客户端原始模型名。 / Echo the original client model name.
+/// 文本编码为块，思考/工具等维持原生形状。 / Encode text as blocks while preserving native reasoning/tools.
 #[derive(Debug, Clone)]
 pub struct ResponseContent<'a> {
     pub model: &'a str,
@@ -940,7 +940,7 @@ pub struct ResponseContent<'a> {
 }
 
 impl<'a> ResponseContent<'a> {
-    /// 只有一段文本的简单构造（测试与纯文本路径用）。
+    /// 单文本片段的便捷构造。 / Convenience constructor for a text-only response.
     pub fn text_only(model: &'a str, text: &'a str) -> Self {
         Self {
             model,
@@ -987,7 +987,7 @@ impl<'a> ResponseContent<'a> {
     }
 }
 
-/// 把一轮内容合成为协议正确的**非流式 JSON 响应**（客户端未要求流式时使用）。
+/// 将内容合成为非流式协议 JSON。 / Synthesize a protocol-correct nonstreaming JSON response.
 pub fn synthesize_json(protocol: Protocol, content: &ResponseContent) -> Value {
     let usage = content.usage_value();
     let text = content.texts();
@@ -1007,7 +1007,7 @@ pub fn synthesize_json(protocol: Protocol, content: &ResponseContent) -> Value {
                 json!(text)
             };
             if !reasoning.is_empty() {
-                // 协议原生思考字段：有就带上（名字与上游一致）
+                // 保留协议原生思考字段名。 / Preserve native reasoning field names.
                 message["reasoning_content"] = json!(reasoning);
             }
             if !tool_calls.is_empty() {
@@ -1105,8 +1105,8 @@ pub fn synthesize_json(protocol: Protocol, content: &ResponseContent) -> Value {
     }
 }
 
-/// 把一轮内容合成为**完整的 SSE 流文本**（客户端要求流式时使用）。
-/// 与实时流式走同一个编码器，保证两条路径的事件形状完全一致。
+/// 将内容合成为完整 SSE 流文本。 / Synthesize a complete SSE stream.
+/// 与实时流式共用编码器以保持事件形状一致。 / Reuse live-stream encoder for identical event shapes.
 pub fn synthesize_sse(protocol: Protocol, content: &ResponseContent) -> String {
     let mut encoder = StreamEncoder::new(protocol, content.model);
     encoder.set_finish(
@@ -1119,7 +1119,7 @@ pub fn synthesize_sse(protocol: Protocol, content: &ResponseContent) -> String {
     frames
 }
 
-/// 生成一个 `{prefix}_{uuid}` 形式的响应 ID。
+/// 生成前缀加 UUID 的响应标识。 / Generate a response ID from prefix and UUID.
 fn response_id(prefix: &str) -> String {
     format!("{prefix}_{}", Uuid::new_v4().simple())
 }
@@ -1131,12 +1131,12 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-/// 构造一个 `data: {value}\n\n` 形式的 SSE 数据帧。
+/// 构造 SSE 数据帧。 / Build an SSE data frame.
 fn data_frame(value: Value) -> String {
     format!("data: {value}\n\n")
 }
 
-/// 构造一个 `event: {event}\ndata: {value}\n\n` 形式的 SSE 事件帧。
+/// 构造 SSE 命名事件帧。 / Build a named SSE event frame.
 fn event_frame(event: &str, value: Value) -> String {
     format!("event: {event}\ndata: {value}\n\n")
 }
@@ -1163,7 +1163,7 @@ mod tests {
         ]});
         assert_eq!(extract_response_text(Protocol::Responses, &responses).unwrap(), "答案C");
 
-        // 扁平 output_text 兜底
+        // 回退到扁平 output_text。 / Fall back to flat output_text.
         let flat = json!({"output_text":"答案D"});
         assert_eq!(extract_response_text(Protocol::Responses, &flat).unwrap(), "答案D");
     }
@@ -1180,8 +1180,8 @@ mod tests {
         assert_eq!(extract_sse_text(Protocol::Responses, &responses).unwrap(), "ok");
     }
 
-    /// 增量提取：同一段 SSE 不论按什么字节边界切开，结果必须与整段一致
-    /// （切点落在多字节中文字符中间也要活下来）。
+    /// 任意字节分块都应得到相同 SSE 提取结果。 / Any chunk boundaries must yield identical SSE extraction.
+    /// 包括截断多字节字符的情况。 / This includes splits within multibyte characters.
     #[test]
     fn incremental_sse_extraction_is_boundary_agnostic() {
         let sse = "event: message_start\ndata: {\"type\":\"message_start\"}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"中文增量\"}}\n\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"尾巴\"}}\n\n";
@@ -1198,7 +1198,7 @@ mod tests {
             assert_eq!(got, whole, "按 {step} 字节切片时结果不一致");
         }
 
-        // 末尾没有换行的残留行也要收下
+        // 不丢弃未以换行结尾的最后一行。 / Preserve an unterminated final line.
         let mut stream = SseTextStream::new(Protocol::OpenAI);
         let tail = "data: {\"choices\":[{\"delta\":{\"content\":\"尾\"}}]}";
         assert_eq!(stream.push(tail.as_bytes()), "");
@@ -1218,7 +1218,7 @@ mod tests {
         assert_eq!(responses["status"], "completed");
     }
 
-    /// 实时增量提取：文本与思考必须分开报（这次就是靠它抓出了 Anthropic 嵌套字段的错）。
+    /// 实时事件需区分可见文本与思考。 / Live events must separate visible text from reasoning.
     #[test]
     fn live_events_split_text_and_thinking() {
         let sse = concat!(
@@ -1237,11 +1237,11 @@ mod tests {
                 LiveEvent::Text("答案".into()),
             ]
         );
-        // 只要文本的入口不把思考混进来
+        // 文本提取不能混入思考。 / Text extraction must exclude reasoning.
         let mut stream = SseTextStream::new(Protocol::Anthropic);
         assert_eq!(stream.push(sse.as_bytes()), "答案");
 
-        // Responses：思考摘要增量要带 item_id（客户端靠它与最终条目对上）
+        // Responses 摘要增量保留 item_id。 / Responses summary deltas retain item IDs.
         let mut stream = SseTextStream::new(Protocol::Responses);
         let chunk = "data: {\"type\":\"response.reasoning_summary_text.delta\",\"item_id\":\"rs_1\",\"output_index\":0,\"summary_index\":0,\"delta\":\"想\"}\n\n";
         assert_eq!(
@@ -1261,11 +1261,11 @@ mod tests {
         );
     }
 
-    /// 思考内容必须原样交给客户端：Anthropic 的 thinking 块、Responses 的 reasoning 条目、
-    /// Chat 的 reasoning_content 字段，一个都不许丢。
+    /// 思考内容应保留原生表示。 / Reasoning must retain its native representation.
+    /// 包括 Chat 的 reasoning_content 字段。 / Include Chat reasoning_content fields.
     #[test]
     fn thinking_reaches_the_client() {
-        // Anthropic：thinking 块按顺序排在文本前面，签名一起带走
+        // Anthropic 思考块与签名保序。 / Preserve Anthropic thinking blocks and signatures in order.
         let parts = vec![
             Part::Native(json!({"type": "thinking", "thinking": "先想", "signature": "sig"})),
             Part::Text("答案".into()),
@@ -1305,7 +1305,7 @@ mod tests {
         let sse = synthesize_sse(Protocol::OpenAI, &content);
         assert!(sse.contains("reasoning_content"));
 
-        // Responses：reasoning 条目原样透传（含加密内容）
+        // Responses 推理项（含密文）原样保留。 / Preserve Responses reasoning, including encrypted data.
         let reasoning = json!({"type": "reasoning", "id": "rs_1", "encrypted_content": "blob"});
         let parts = vec![Part::Native(reasoning.clone()), Part::Text("答案".into())];
         let content = ResponseContent {
@@ -1320,7 +1320,7 @@ mod tests {
         assert!(sse.contains("blob"));
     }
 
-    /// 上游给的 stop_reason 与 usage 必须原样透传（不许改写、不许清零）。
+    /// 上游停止原因与 usage 不得改写。 / Upstream stop reasons and usage must remain unchanged.
     #[test]
     fn synthesize_passes_through_stop_reason_and_usage() {
         let usage = json!({"input_tokens": 11, "output_tokens": 22});
@@ -1345,7 +1345,7 @@ mod tests {
         assert_eq!(responses["usage"], usage);
     }
 
-    /// 工具调用：三协议的非流式响应都必须带上原生调用，finish_reason 说 tool_calls。
+    /// 非流式响应保留原生工具调用及停止原因。 / Nonstreaming responses preserve native tool calls and stop reasons.
     #[test]
     fn synthesize_json_with_tool_calls() {
         let calls = [ToolCall {
@@ -1380,7 +1380,7 @@ mod tests {
         }
     }
 
-    /// 流式工具调用：回吐的帧必须能被自己的解析器还原成同一次调用。
+    /// 流式工具调用帧必须可被解析器还原。 / Streamed tool-call frames must round-trip through the parser.
     #[test]
     fn encoder_emits_tool_calls_that_round_trip() {
         for protocol in [Protocol::OpenAI, Protocol::Anthropic, Protocol::Responses] {
@@ -1418,7 +1418,7 @@ mod tests {
             assert_eq!(parsed.tool_calls[0].name, "Bash");
             assert_eq!(parsed.tool_calls[0].arguments_json(), "{\"command\":\"ls\"}");
             assert_eq!(parsed.text, "我先看一下", "{protocol:?} 文本丢失");
-            // 终止帧必须说"有工具调用"（三协议各自的表达）
+            // 终止帧需要按协议标识工具调用。 / Terminal frames must report tool-call termination.
             match protocol {
                 Protocol::OpenAI => assert!(frames.contains("\"tool_calls\"")),
                 Protocol::Anthropic => assert!(frames.contains("tool_use")),
@@ -1427,8 +1427,8 @@ mod tests {
         }
     }
 
-    /// 编码器逐段推进：三只 pig 的文本必须按序拼出、相位间有空行、
-    /// Responses 的 sequence_number 连续递增。
+    /// 编码器按相位顺序发送并插入空行。 / Encoder emits phases in order with blank-line separators.
+    /// Responses 事件序号连续递增。 / Responses sequence numbers increase contiguously.
     #[test]
     fn encoder_emits_pigs_progressively() {
         for protocol in [Protocol::OpenAI, Protocol::Anthropic, Protocol::Responses] {
@@ -1447,7 +1447,7 @@ mod tests {
                 "{protocol:?} 的相位拼接不一致"
             );
             if protocol == Protocol::Responses {
-                // sequence_number 从 0 起连续
+                // 事件序号从零开始连续递增。 / Event sequence numbers start at zero and increase.
                 let seqs: Vec<u64> = frames
                     .lines()
                     .filter_map(|l| l.strip_prefix("data: "))
@@ -1460,8 +1460,8 @@ mod tests {
         }
     }
 
-    /// finish() 本身必须关闭仍打开的 Responses message item，并把文本写进
-    /// response.completed.response.output；调用方漏掉显式 End 也不能得到空终止响应。
+    /// finish 必须关闭尚未完成的 Responses 消息项。 / finish must close any open Responses message.
+    /// 即使没有显式 End，最终输出也必须包含文本。 / Preserve final output even without an explicit End.
     #[test]
     fn responses_finish_closes_open_item_and_populates_completed_output() {
         let mut encoder = StreamEncoder::new(Protocol::Responses, "gpt-x-pig");
@@ -1478,7 +1478,7 @@ mod tests {
         assert!(frames.contains("response.output_item.done"));
     }
 
-    /// 流内错误帧不是成功终止帧，且 Anthropic/Responses 会先关掉打开的块。
+    /// 流内错误先关闭开放块，不能伪装成成功。 / Stream errors close open blocks without success termination.
     #[test]
     fn encoder_error_closes_open_block() {
         let mut encoder = StreamEncoder::new(Protocol::Anthropic, "m");
@@ -1489,7 +1489,7 @@ mod tests {
         assert!(!frames.contains("message_stop"));
     }
 
-    /// 取 `event: {event}\ndata: {json}\n\n` 帧里的 data JSON（官方形状回归用）。
+    /// 提取 SSE 事件中的 JSON 数据字段。 / Extract JSON data from an SSE event.
     fn frame_data(frames: &str, event: &str) -> Value {
         let marker = format!("event: {event}\ndata: ");
         let at = frames.find(&marker).unwrap_or_else(|| panic!("缺少 {event} 帧"));
@@ -1498,11 +1498,11 @@ mod tests {
         serde_json::from_str(&rest[..end]).expect("data 不是合法 JSON")
     }
 
-    /// 官方形状回归：合成帧的 usage 必须是数值字段齐全的对象，空 `{}` 会被官方客户端拒收。
+    /// 协议形状测试要求 usage 具备数值字段。 / Protocol tests require numeric usage fields.
     #[test]
     fn anthropic_stream_usage_shapes_are_official_valid() {
-        // ① message_start.usage：input_tokens / output_tokens 必填数值
-        //   （message_start 时刻上游 usage 未到，合法零值占位，legacy format.rs:125 同款）
+        // ① 起始 usage 必须具备数值 token 字段。 / Start-frame usage needs numeric token fields.
+        //   上游 usage 未到时使用合法零占位。 / Use valid zero placeholders before usage arrives.
         let mut encoder = StreamEncoder::new(Protocol::Anthropic, "claude-x-pigs".to_string());
         let start = encoder.start();
         let start_json = frame_data(&start, "message_start");
@@ -1512,7 +1512,7 @@ mod tests {
             "message_start.usage 必须含数值 input_tokens/output_tokens，实际: {usage}"
         );
 
-        // ② 上游没给 usage：收尾 message_delta.usage 也必须形状合法（output_tokens 数值必填）
+        // ② 缺失上游 usage 时仍需合法的收尾 usage。 / Terminal usage must be valid even when upstream omits it.
         let mut encoder = StreamEncoder::new(Protocol::Anthropic, "claude-x-pigs".to_string());
         let _ = encoder.start();
         encoder.set_finish(Some("end_turn".to_string()), None);
@@ -1525,7 +1525,7 @@ mod tests {
         );
         assert!(finish.contains("message_stop"));
 
-        // ③ 上游给了真值：原样透传，一个字段都不改
+        // ③ 原生 usage 真值应保持不变。 / Forward real upstream usage unchanged.
         let mut encoder = StreamEncoder::new(Protocol::Anthropic, "claude-x-pigs".to_string());
         let _ = encoder.start();
         encoder.set_finish(

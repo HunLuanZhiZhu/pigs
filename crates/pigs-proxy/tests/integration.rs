@@ -1,7 +1,7 @@
-//! 集成测试：真实 HTTP 链路 —— 假上游（wiremock 风格的手写 axum）+ 真实 pigs 服务。
+//! 集成测试：模拟上游与真实 PIGS 的 HTTP 链路。 / Integration tests: mock upstream and real PIGS HTTP service.
 //!
-//! 覆盖：无 -pigs 透传、content-encoding 完整透传（血泪教训回归）、-pigs 全链路编排
-//! （经 loopback 回环）、Pre 简单路径短路、流式合成。
+//! 覆盖普通透传、压缩编码保留和 PIGS 编排。 / Covers passthrough, content-encoding preservation, and orchestration.
+//! 包括回环、简单路径和流式合成。 / Includes loopback, simple-path completion, and streaming synthesis.
 
 use axum::body::Bytes;
 use axum::response::Response;
@@ -13,19 +13,19 @@ use pigs_proxy::{build_state, Config, Upstreams};
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 
-// ---------------- 假上游 ----------------
+// ---------------- 假上游 / Mock upstream ----------------
 
 #[derive(Clone)]
 struct FakeUpstreamState {
-    /// 每次收到的请求：(path, body, headers 回显)
+    /// 记录收到的路径、请求体和请求头。 / Record received path, body, and headers.
     requests: Arc<Mutex<Vec<(String, Value, Value)>>>, 
-    /// 按次序回放的响应：(content_type, body)
+    /// 按顺序回放内容类型和响应体。 / Replay content type and body in order.
     responses: Arc<Mutex<Vec<(&'static str, Bytes)>>>, 
-    /// 原样回显模式（透传测试）：回显收到的 headers + body
+    /// 透传回显模式：返回请求头与请求体。 / Echo headers and body for passthrough tests.
     echo_mode: Arc<Mutex<bool>>,
-    /// 慢速 SSE 脚本：每个子请求一段"分段文本"，段与段之间 sleep 150ms
+    /// 慢速 SSE 脚本按片段延迟发送。 / Slow SSE scripts emit chunks with delays.
     slow_sse: Arc<Mutex<Vec<Vec<String>>>>,
-    /// gzip 压缩响应队列：模拟"客户端带 accept-encoding，上游真的压缩了"
+    /// 模拟支持 accept-encoding 的压缩响应。 / Queue compressed responses when clients advertise accept-encoding.
     gz_responses: Arc<Mutex<Vec<Bytes>>>,
 }
 
@@ -37,7 +37,7 @@ fn gzip_pre_simple_response() -> Bytes {
     Bytes::from(encoder.finish().unwrap())
 }
 
-/// 把一段文本包成合法的 OpenAI chat SSE 帧。
+/// 将文本包装为 Chat SSE 帧。 / Wrap text into valid Chat SSE frames.
 fn sse_frame(text: &str) -> String {
     format!(
         "data: {}\n\n",
@@ -161,7 +161,7 @@ fn into_response(status: StatusCode, ct: &str, body: Bytes) -> Response<axum::bo
 
 type FakeUpstream = (tokio::task::JoinHandle<()>, String, FakeUpstreamState);
 
-/// 起假上游（127.0.0.1 随机端口），返回 (任务, base_url, 状态)。
+/// 启动随机端口的模拟上游。 / Start a mock upstream on an ephemeral local port.
 async fn spawn_fake_upstream() -> FakeUpstream {
     let state = FakeUpstreamState {
         requests: Arc::new(Mutex::new(vec![])),
@@ -179,9 +179,9 @@ async fn spawn_fake_upstream() -> FakeUpstream {
     (task, format!("http://{addr}"), state)
 }
 
-// ---------------- pigs 服务 ----------------
+// ---------------- pigs 服务 / PIGS service ----------------
 
-/// 起 pigs（127.0.0.1 随机端口，上游指向假上游），返回 (任务, base_url)。
+/// 启动连接模拟上游的本地 PIGS。 / Start local PIGS against the mock upstream.
 async fn spawn_pigs(upstream_url: &str) -> (tokio::task::JoinHandle<()>, String) {
     spawn_pigs_with_usage_mode(upstream_url, pigs_proxy::UsageMode::Max).await
 }
@@ -270,7 +270,7 @@ fn openai_text_response_with_usage(
     )
 }
 
-/// 假上游的 OpenAI 流式响应：把文本切成几段 delta（模拟真实 SSE）。
+/// 构造分块的 Chat SSE 响应。 / Build a chunked Chat SSE response.
 fn openai_sse_response(text: &str) -> (&'static str, Bytes) {
     let chunk = |t: &str| {
         format!(
@@ -293,7 +293,7 @@ fn openai_sse_response(text: &str) -> (&'static str, Bytes) {
 }
 
 
-/// 假上游的"模型要工具"响应（OpenAI Chat 形状）。
+/// 构造 Chat 工具调用响应。 / Build a Chat tool-call response.
 fn openai_pre_tool_call_response(id: &str) -> (&'static str, Bytes) {
     let (content_type, body) = openai_tool_call_response(id);
     let mut response: Value = serde_json::from_slice(&body).unwrap();
@@ -324,7 +324,7 @@ fn openai_tool_call_response(id: &str) -> (&'static str, Bytes) {
 }
 
 
-/// 假上游的 Anthropic 流式响应：先思考（含签名），再给文本。
+/// 构造先思考后文本的 Anthropic SSE。 / Build Anthropic SSE with thinking/signature before text.
 fn anthropic_sse_with_thinking() -> (&'static str, Bytes) {
     let frames = [
         json!({"type":"message_start","message":{"usage":{"input_tokens":9}}}),
@@ -349,7 +349,7 @@ data: {}
 }
 
 
-/// 假上游的 Responses 流式响应：先流思考摘要，再流文本，最后 completed 带权威 output[]。
+/// 构造摘要、文本及完成输出的 Responses SSE。 / Build Responses SSE with summary, text, and authoritative completed output.
 fn responses_sse_with_reasoning() -> (&'static str, Bytes) {
     let reasoning = json!({
         "id": "rs_1", "type": "reasoning",
@@ -388,7 +388,7 @@ data: {}
     ("text/event-stream", Bytes::from(sse))
 }
 
-// ---------------- 测试 ----------------
+// ---------------- 测试 / Tests ----------------
 
 #[tokio::test]
 async fn passthrough_echo_mode_forwards_auth_and_body() {
@@ -709,8 +709,8 @@ async fn pig_streaming_client_gets_sse() {
     assert!(body.contains("答案是 4"));
 }
 
-/// 流式客户端 + 上游流式：子请求必须带 `stream:true`，
-/// 客户端拿到的 SSE 必须是三只 pig 的实时拼接，且控制标记一个字都不许漏。
+/// 流式测试要求子请求保留 stream:true。 / Streaming test requires stream:true on subrequests.
+/// 客户端实时 SSE 必须按序拼接且不泄漏标记。 / Client SSE must concatenate phases in order without leaking markers.
 #[tokio::test]
 async fn pig_streaming_end_to_end_streams_phases_without_markers() {
     let (_up, upstream_url, fu) = spawn_fake_upstream().await;
@@ -757,9 +757,9 @@ async fn pig_streaming_end_to_end_streams_phases_without_markers() {
     assert!(sse.contains("data: [DONE]"));
 }
 
-/// 真·流式验证（时间维度）：上游分三段、每段间隔 150ms 才吐完。
-/// 若编排是"等全文再回"，首段文本要等整轮跑完才可能出现；
-/// 这里断言客户端在很早就拿到了第一只 pig 的文本，而整体耗时确实包含那些 sleep。
+/// 以分段延迟验证真实流式时序。 / Verify genuine streaming with delayed chunks.
+/// 等全文模式无法提前收到第一段。 / Buffered-only handling would delay the first chunk.
+/// 断言首段提前到达且总耗时包含全部延迟。 / Assert early first-chunk delivery with total elapsed delay.
 #[tokio::test]
 async fn pig_streaming_is_progressive_not_buffered() {
     let (_up, upstream_url, fu) = spawn_fake_upstream().await;
@@ -813,7 +813,7 @@ async fn pig_streaming_is_progressive_not_buffered() {
     assert!(reqs.iter().all(|(_p, body, _h)| body["stream"] == true));
 }
 
-/// max 模式：一次普通流式透传会分别记录客户端请求、上游请求、上游响应、客户端响应。
+/// max 诊断应记录四个 HTTP 传输阶段。 / Max diagnostics must record four HTTP exchange stages.
 #[tokio::test]
 async fn max_http_diagnostics_write_separate_plaintext_exchange_files() {
     let (_up, upstream_url, fu) = spawn_fake_upstream().await;
@@ -884,8 +884,8 @@ async fn max_http_diagnostics_write_separate_plaintext_exchange_files() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-/// 诊断回归：有 pending continuation 时，如果下一发普通请求没有工具结果，
-/// 日志必须把请求原文、pending 现场和新开判定原因记下来。
+/// 有待恢复现场但后续请求没有工具结果时，必须记录诊断。 / Diagnostics must capture requests lacking expected tool results.
+/// 包括请求内容、等待状态和新开决策原因。 / Include request body, pending state, and new-turn decision rationale.
 #[tokio::test]
 async fn diagnostics_explain_pending_turn_started_new_round() {
     let (_up, upstream_url, fu) = spawn_fake_upstream().await;
@@ -945,8 +945,8 @@ async fn diagnostics_explain_pending_turn_started_new_round() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-/// 回归：工具结果后即使追加普通 user reminder，也必须恢复原 continuation；
-/// continuation 判定不能借机删除或改写客户端后续消息。
+/// 工具结果后追加用户提醒也要恢复原续接。 / Resume the original continuation despite trailing reminders.
+/// 续接识别不得修改后续客户端消息。 / Continuation matching must preserve following client messages.
 #[tokio::test]
 async fn tool_result_followed_by_user_reminder_still_resumes() {
     let (_up, upstream_url, fu) = spawn_fake_upstream().await;
@@ -1005,8 +1005,8 @@ async fn tool_result_followed_by_user_reminder_still_resumes() {
     );
 }
 
-/// 回归：客户端带 `accept-encoding` 且上游**真的压缩**了响应时，编排必须照样能读。
-/// 现在不再剥请求头，而是**本机解压**——上游看到的请求与父请求逐字节一致。
+/// 压缩上游响应必须能被编排正确读取。 / Orchestration must read truly compressed upstream responses.
+/// 保留请求头并在本地解压响应体。 / Preserve request headers and decompress responses locally.
 #[tokio::test]
 async fn compressed_upstream_response_is_decompressed_locally() {
     let (_up, upstream_url, fu) = spawn_fake_upstream().await;
@@ -1031,8 +1031,8 @@ async fn compressed_upstream_response_is_decompressed_locally() {
     assert!(reqs.is_empty(), "压缩响应测试不再记录请求");
 }
 
-/// 工具调用全链路：模型要工具 → 调用原样交给客户端 → 客户端执行完带结果回来 →
-/// 接着**同一只 pig** 继续 → 最终答复。全程 tools 都在请求里。
+/// 完整工具链路包括调用交付和客户端结果回填。 / Full tool flow includes native call delivery and client results.
+/// 同一相位继续，工具字段持续保留。 / Continue the same phase with tools preserved in requests.
 #[tokio::test]
 async fn tool_pause_and_resume_round_trip() {
     let (_up, upstream_url, fu) = spawn_fake_upstream().await;
@@ -1104,8 +1104,8 @@ async fn tool_pause_and_resume_round_trip() {
     assert!(sent.get("tools").is_some(), "tools 全程都在");
 }
 
-/// 回归：resume 已匹配到 continuation 后若编排失败，旧现场必须 rollback 保留；
-/// 客户端重发同一批 tool result 应能再次恢复，而不是永久 409。
+/// 续接后执行失败必须回滚旧现场。 / Failed resume must roll back the previous continuation.
+/// 相同工具结果重发应可恢复，不能永久返回 409。 / Resending identical results must succeed instead of permanent 409.
 #[tokio::test]
 async fn failed_resume_rolls_back_continuation_for_retry() {
     let (_up, upstream_url, fu) = spawn_fake_upstream().await;
@@ -1164,8 +1164,8 @@ async fn failed_resume_rolls_back_continuation_for_retry() {
         .contains("恢复后执行完成"));
 }
 
-/// 流式回归：resume 的后台状态机失败后也必须 rollback claim；
-/// 下一次相同 tool result 不能因为旧 continuation 被提前消费而 409。
+/// 流式后台恢复失败也必须回滚认领。 / Failed streaming resume must roll back its claim.
+/// 重发工具结果不得因提前消费而收到 409。 / Replayed results must not get 409 due to premature consumption.
 #[tokio::test]
 async fn streaming_failed_resume_rolls_back_continuation_for_retry() {
     let (_up, upstream_url, fu) = spawn_fake_upstream().await;
@@ -1220,7 +1220,7 @@ async fn streaming_failed_resume_rolls_back_continuation_for_retry() {
     assert!(retried_sse.contains("data: [DONE]"));
 }
 
-/// 流式多轮工具回归：每次暂停只发本轮新调用；最终完成后不得重放任何历史调用。
+/// 流式多轮只交付新工具调用，不重复历史调用。 / Streaming multi-turn flow delivers only new tool calls.
 #[tokio::test]
 async fn streaming_tool_rounds_do_not_replay_consumed_calls() {
     let (_up, upstream_url, fu) = spawn_fake_upstream().await;
@@ -1284,7 +1284,7 @@ async fn streaming_tool_rounds_do_not_replay_consumed_calls() {
     );
 }
 
-/// 真实代理链路：Exec 的阶段说明只在进入该 pig 时放一次；工具恢复只追加原生对话。
+/// Exec 提示只注入一次，工具恢复只追加原生历史。 / Inject Exec prompt once; resumes append only native history.
 #[tokio::test]
 async fn exec_resume_keeps_one_phase_prompt_upstream() {
     let (_up, upstream_url, fu) = spawn_fake_upstream().await;
@@ -1379,7 +1379,7 @@ async fn exec_resume_keeps_one_phase_prompt_upstream() {
     assert_eq!(post_messages[exec_messages.len() + 1]["role"], "user");
 }
 
-/// 尾部带工具结果却没有对应现场 → 明确报错，不悄悄重跑一整轮。
+/// 工具结果无匹配现场时显式报错。 / Error explicitly on unmatched tool results.
 #[tokio::test]
 async fn orphan_tool_result_gets_conflict() {
     let (_up, upstream_url, _fu) = spawn_fake_upstream().await;
@@ -1397,7 +1397,7 @@ async fn orphan_tool_result_gets_conflict() {
     assert_eq!(resp.status(), 409);
 }
 
-/// 上游回到客户端的**内容**必须原样：Anthropic 的思考块、工具块、文本块按顺序都在。
+/// 保留 Anthropic 思考、工具和文本块原始顺序。 / Preserve native Anthropic thinking, tool, and text order.
 #[tokio::test]
 async fn anthropic_thinking_and_blocks_reach_the_client() {
     let (_up, upstream_url, fu) = spawn_fake_upstream().await;
@@ -1443,8 +1443,8 @@ async fn anthropic_thinking_and_blocks_reach_the_client() {
     assert_eq!(reqs[0].1["thinking"]["budget_tokens"], 512);
 }
 
-/// 思考必须**边想边流**：客户端要按顺序收到 start(thinking) → thinking_delta → signature_delta
-/// → stop → 文本帧，而且不能因为"收尾补发"而收到两份。
+/// Anthropic 思考流必须按启动、增量、签名顺序发送。 / Anthropic thinking streams start, deltas, then signature.
+/// 然后结束思考并发送文本，不能重复补发。 / Then close thinking and send text without duplicate finalization.
 #[tokio::test]
 async fn anthropic_thinking_streams_live_without_duplication() {
     let (_up, upstream_url, fu) = spawn_fake_upstream().await;
@@ -1484,8 +1484,8 @@ async fn anthropic_thinking_streams_live_without_duplication() {
     assert!(sse.contains("message_stop"));
 }
 
-/// Responses 协议：思考摘要**实时**流给客户端（带 item_id），完整 reasoning 条目
-/// （含 encrypted_content）在收尾照旧给——与直连上游时的形状一致，客户端可按 item_id 归并。
+/// Responses 思考摘要实时携带 item_id。 / Responses summary streams live with item ID.
+/// 完整推理项在收尾保留，便于按 ID 合并。 / Full reasoning is preserved at finish for ID-based merging.
 #[tokio::test]
 async fn responses_reasoning_streams_live_and_item_arrives_at_end() {
     let (_up, upstream_url, fu) = spawn_fake_upstream().await;
@@ -1530,10 +1530,10 @@ async fn responses_reasoning_streams_live_and_item_arrives_at_end() {
 }
 
 
-// ---------------- 按协议选 base 的回归 ----------------
+// ---------------- 按协议选基础地址 / Protocol base selection ----------------
 
-/// 同 spawn_pigs，但三个协议指到同一假上游的不同路径前缀（/oa /rs /an）——
-/// 用来验证"按协议选 base + 客户端路径逐字上浮"。
+/// 使用不同路径前缀模拟三协议上游。 / Use distinct URL prefixes to mock three protocol upstreams.
+/// 验证基础地址选择与路径原样拼接。 / Verify base selection and unmodified path joining.
 async fn spawn_pigs_with_bases(upstream_url: &str) -> (tokio::task::JoinHandle<()>, String) {
     let config = Config {
         listen: "127.0.0.1:0".into(),
@@ -1559,8 +1559,8 @@ async fn spawn_pigs_with_bases(upstream_url: &str) -> (tokio::task::JoinHandle<(
     (task, format!("http://{addr}"))
 }
 
-/// 回归：三协议各走各的 base（anthropic 的 /v1 属于协议路径，base 不带版本段），
-/// 客户端路径逐字上浮 —— 上游看到的路径 = 所选 base + 原路径，一个字不改。
+/// 三协议分别选择基础地址。 / Each protocol must select its own base URL.
+/// 上游路径必须严格等于基础地址加原路径。 / Upstream path must equal selected base plus original path.
 #[tokio::test]
 async fn per_protocol_bases_route_by_protocol_and_path_stays_verbatim() {
     let (_up, upstream_url, fu) = spawn_fake_upstream().await;

@@ -8,8 +8,8 @@ from eval_common import EVAL_ROOT
 from evalscope_dataset import run_dataset
 
 IFBENCH_DATA = EVAL_ROOT / 'datasets/ifbench/allenai_IFBench_test'
-# Dependencies from the earlier free-model scorer check are isolated from the
-# shared WSL venv. Inherit PYTHONPATH for all EvalScope subprocesses.
+# 早期免费模型评分器依赖独立于共享环境。 / Earlier free-model scorer dependencies are isolated from the
+# 所有 EvalScope 子进程须继承 PYTHONPATH。 / shared WSL venv; inherit PYTHONPATH for EvalScope subprocesses.
 IFBENCH_DEPS = EVAL_ROOT / 'isolated-deps/ifbench'
 
 

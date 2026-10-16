@@ -1,5 +1,5 @@
-//! pigs —— 可执行入口。电源开关：解析参数 → 读配置 → 起服务。
-//! 红线：这里不出现任何业务逻辑。
+//! pigs 可执行入口：参数、配置与服务启动。 / Binary entry point: parse arguments, load configuration, start server.
+//! 此处不实现业务逻辑。 / Keep business logic out of this entry point.
 
 mod logging;
 
@@ -42,7 +42,7 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    // 本地私有配置优先；都不存在时生成公开默认配置并继续启动。
+    // 优先使用本地配置，缺失时生成默认配置。 / Prefer local config; generate defaults if absent.
     let existing_config_path = resolve_existing_config_path(
         std::path::Path::new(LOCAL_CONFIG_PATH).exists(),
         std::path::Path::new(CONFIG_PATH).exists(),
@@ -58,7 +58,7 @@ async fn main() -> Result<()> {
         (pigs_proxy::Config::load(CONFIG_PATH)?, CONFIG_PATH)
     };
 
-    // CLI 覆盖
+    // 命令行参数覆盖配置。 / CLI arguments override configuration.
     let pick = |flag: &str| -> Option<String> {
         args.iter()
             .position(|a| a == flag)
@@ -86,7 +86,7 @@ async fn main() -> Result<()> {
         );
     }
 
-    // 日志：控制台 + logs/pigs.log.<日期>，RUST_LOG 可调级别
+    // 双路日志，可用 RUST_LOG 调整级别。 / Console/file logging with levels controlled by RUST_LOG.
     let _log_guard = logging::init()?;
     tracing::info!(
         listen = %config.listen,

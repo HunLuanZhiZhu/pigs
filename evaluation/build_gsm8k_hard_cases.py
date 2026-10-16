@@ -61,7 +61,7 @@ def correct(row):
 
 
 def extract_task(prompt: str) -> str:
-    # EvalScope GSM8K few-shot format; the task is the final paragraph.
+    # EvalScope 的 GSM8K 少样本格式，任务位于末段。 / EvalScope GSM8K few-shot format puts the task in the final paragraph.
     last = prompt.rsplit("\n\n", 1)[-1]
     return last.split("\nPlease reason step by step", 1)[0].strip()
 

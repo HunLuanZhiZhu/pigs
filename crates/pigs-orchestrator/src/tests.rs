@@ -1,4 +1,4 @@
-//! 编排器单元测试：脚本化假传输 + 准则合规断言 + 工具暂停/恢复。
+//! 编排器单元测试：模拟传输、协议约束及工具暂停/恢复。 / Orchestrator unit tests: mocked transport, protocol invariants, and tool pause/resume.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -6,12 +6,12 @@ use super::*;
 use bytes::Bytes;
 use serde_json::json;
 
-/// 脚本化假传输：按调用次序回放响应，并记录收到的每个子请求。
-/// 流式方法把脚本响应里的文本按小块喂给 sink（模拟上游增量）。
+/// 模拟传输按顺序回放响应并记录子请求。 / Scripted transport replays responses in order and records subrequests.
+/// 流式模拟将文本分块发送到 sink。 / Streaming mock feeds chunked text to the sink.
 pub(super) struct FakeTransport {
     responses: Mutex<Vec<SubResponse>>,
     requests: Mutex<Vec<SubRequest>>,
-    /// 有值 = 流式时先吐思考增量（再吐签名），模拟"边想边答"。
+    /// 提供该值时先发送思考和签名增量。 / When provided, emit reasoning and signature deltas first.
     thinking: Option<String>,
 }
 
@@ -24,7 +24,7 @@ impl FakeTransport {
         }
     }
 
-    /// 同时携带三种协议的文本形状，任何协议都能提取；带 usage 便于验证整对象选择。
+    /// 构造兼容三协议且带 usage 的假响应。 / Mock response carries all three protocol text shapes and usage.
     fn text(status: u16, text: &str) -> SubResponse {
         Self::json(
             status,
@@ -75,7 +75,7 @@ impl FakeTransport {
         )
     }
 
-    /// 模型要调用工具（OpenAI Chat 形状）。
+    /// 构造 Chat 工具调用响应。 / Build a Chat tool-call response.
     fn tool_calls(status: u16, calls: &[(&str, &str)]) -> SubResponse {
         let calls: Vec<serde_json::Value> = calls
             .iter()
@@ -186,7 +186,7 @@ fn input(protocol: proto::Protocol) -> TurnInput {
     }
 }
 
-/// 建一份运行时（默认非流式），返回 Runtime 与 continuation 存储。
+/// 构造默认非流式运行时及续接存储。 / Construct a nonstreaming runtime and continuation store.
 fn runtime(transport: Arc<FakeTransport>) -> (Runtime, Arc<Mutex<ContinuationStore>>) {
     let store = Arc::new(Mutex::new(ContinuationStore::default()));
     let rt = Runtime {
@@ -205,7 +205,7 @@ fn fake(responses: Vec<SubResponse>) -> Arc<FakeTransport> {
     })
 }
 
-/// 假传输 + "先思考再回答"的流式行为。
+/// 模拟先思考后回答的流式传输。 / Mock streamed reasoning followed by an answer.
 fn fake_with_thinking(responses: Vec<SubResponse>, thinking: &str) -> Arc<FakeTransport> {
     Arc::new(FakeTransport {
         responses: Mutex::new(responses),
@@ -277,7 +277,7 @@ fn last_message_content(body: &serde_json::Value) -> String {
         .to_string()
 }
 
-/// 造一发"带工具结果"的客户端请求（OpenAI 形状）：尾部是 tool 消息。
+/// 构造尾部包含 Chat 工具结果的恢复请求。 / Build a Chat resume request with a trailing tool result.
 fn resume_body(ids: &[&str]) -> TurnInput {
     let mut input = input(proto::Protocol::OpenAI);
     let messages = input.body["messages"].as_array_mut().unwrap();
@@ -292,8 +292,8 @@ fn resume_body(ids: &[&str]) -> TurnInput {
     input
 }
 
-/// 准则（AGENTS.md）：子请求**一个字段都不许改**——`tools`/`stream`/`temperature`/query/头全部原样，
-/// 只允许 model 剥后缀、尾部追加相位指令、（现行）补会话头。
+/// 校验协议不变量：工具、流式、温度、查询串与请求头保持原样。 / Verify transport fields such as tools, stream, temperature, query, and headers remain unchanged.
+/// 只允许模型后缀剥离、相位提示追加及补会话头。 / Only model-suffix removal, phase prompt append, and session injection are allowed.
 #[tokio::test]
 async fn subrequests_pass_everything_through_untouched() {
     let transport = fake(vec![FakeTransport::text(200, "分析\nPIGEND\n答案")]);
@@ -831,7 +831,7 @@ async fn mode_b_tool_pause_hides_ordinary_text_but_keeps_tool_call() {
         .any(|part| matches!(part, Part::ToolCall(call) if call.id == "call_b")));
 }
 
-/// 工具调用：相位**不结束**，调用原样交给客户端，现场存进 continuation。
+/// 工具调用暂停相位并保存续接现场。 / Tool calls pause the phase and persist continuation state.
 #[tokio::test]
 async fn tool_calls_pause_the_phase_and_give_native_calls_to_client() {
     let transport = fake(vec![FakeTransport::pre_tool_calls(200, &[("call_1", "Bash")])]);
@@ -873,12 +873,12 @@ async fn tool_calls_pause_the_phase_and_give_native_calls_to_client() {
     );
 }
 
-/// 恢复：客户端把工具结果发回来，接着**同一只 pig** 继续跑。
+/// 客户端回填工具结果后恢复同一相位。 / Client tool results resume the same phase.
 #[tokio::test]
 async fn resume_continues_same_phase_with_tool_result() {
     let transport = fake(vec![
-        FakeTransport::pre_tool_calls(200, &[("call_1", "Bash")]), // Pre 判定简单并开始执行
-        FakeTransport::text(200, "答案是 4"),                   // 工具结果回填后完成
+        FakeTransport::pre_tool_calls(200, &[("call_1", "Bash")]), // Pre 判为简单并执行 / Pre classifies as simple and starts execution
+        FakeTransport::text(200, "答案是 4"),                   // 工具结果回填后完成 / Complete after tool-result submission
     ]);
     let (rt, store) = runtime(transport.clone());
     let orchestrator = Orchestrator::new();
@@ -932,7 +932,7 @@ async fn resume_continues_same_phase_with_tool_result() {
     );
 }
 
-/// 多轮工具往返：每次暂停交出一批调用，结果回齐后相位继续，最终产出。
+/// 多轮工具暂停分别交付新调用并恢复。 / Repeated tool pauses deliver new calls and resume the phase.
 #[tokio::test]
 async fn multiple_tool_rounds_inside_one_phase() {
     let transport = fake(vec![
@@ -1019,7 +1019,7 @@ async fn multiple_tool_rounds_inside_one_phase() {
     }
 }
 
-/// Exec 连续工具恢复时，执行计划只在进入 Exec 时注入一次。
+/// Exec 提示只在首次进入相位时注入。 / Inject the Exec prompt once, not on tool resumes.
 #[tokio::test]
 async fn exec_tool_resumes_keep_one_phase_prompt() {
     let transport = fake(vec![
@@ -1666,7 +1666,7 @@ async fn mode_b_streaming_suppresses_unaccepted_business_text_deltas() {
     assert!(events.iter().any(|event| matches!(event, PigEvent::Thought(_))));
 }
 
-/// 流式编排：增量逐字到达并被实时过滤；客户端实时内容 == 最终答复。
+/// 流式增量即时过滤，最终内容与实时输出一致。 / Filter stream deltas live; streamed output matches the final answer.
 #[tokio::test]
 async fn streaming_turn_pushes_filtered_deltas_as_they_arrive() {
     let transport = fake(vec![
@@ -1750,8 +1750,8 @@ async fn streaming_turn_pushes_filtered_deltas_as_they_arrive() {
     assert!(!streamed.contains("PIGFAIL") && !streamed.contains("PIGEND"));
 }
 
-/// 思考要**边想边流**：进度事件里先来 Thought/ThoughtSignature，再来文本；
-/// 编码后的客户端流里思考是原生帧，文本里不含思考。
+/// 思考和签名增量先于正文发送。 / Reasoning and signature deltas precede visible text.
+/// 客户端流保留原生思考帧，不混入正文。 / Client streams preserve native reasoning frames separately from text.
 #[tokio::test]
 async fn live_thinking_is_streamed_before_text() {
     let transport = fake_with_thinking(
@@ -1842,7 +1842,7 @@ async fn live_thinking_is_streamed_before_text() {
     assert_eq!(result.text, "五问分析\n答案是 4");
 }
 
-/// 流式 + 工具调用：文本先流给客户端，暂停时把原生调用作为终止帧发出。
+/// 流式正文先发送，工具调用在暂停时交付。 / Stream visible text first and deliver native tool calls on pause.
 #[tokio::test]
 async fn streaming_tool_pause_emits_text_then_native_calls() {
     let transport = fake(vec![FakeTransport::pre_tool_calls(200, &[("call_1", "Bash")])]);

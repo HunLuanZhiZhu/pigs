@@ -1,46 +1,46 @@
-//! 请求体手术：按协议对 JSON body 做定位与修改。
+//! 请求体修改：定位并编辑各协议的 JSON 数据。 / Request rewriting: locate and modify protocol-specific JSON fields.
 //!
-//! 所有操作都基于 `serde_json::Value`，不构造 typed 模型——编排只需要改少数几个字段。
+//! 基于 `serde_json::Value` 修改少数字段，不构建完整强类型模型。 / Edit a few fields via `serde_json::Value` without a full typed schema.
 //!
-//! 相位之间的信息传递方式与 legacy `pigs-api/src/protocol.rs` 一致：
-//! - Pre / Exec 把指令**追加到最后一条 user 消息的文本上**（不动原有内容，
-//!   图片等非文本块也不会丢）；
-//! - Post 把上一只 pig 的产出作为**一条 assistant 消息接回对话**，再追加一条新的
-//!   user 消息作为验收指令——模型看到的是"我自己写的稿子"，而不是"用户塞来的材料"。
+//! 相位信息按历史协议方式传递。 / Phase context follows the historical protocol behavior.
+//! - Pre/Exec 指令追加到最后一条用户消息。 / Pre/Exec instructions append to the last user message.
+//!   保留图片等非文本块。 / Preserve images and other nontext blocks.
+//! - Post 将前一相位产出作为助手消息写回。 / Post restores the prior phase output as an assistant message.
+//!   然后以新用户消息提供验收指令。 / It then adds a new user message with the verification instruction.
 
 use crate::route::Protocol;
 use crate::{Error, Result};
 use serde_json::{json, Value};
 
-/// 相位指令的追加格式（与 legacy 一致）：空行 + 分隔线 + 空行 + 指令。
+/// 相位指令格式：空行、分隔线、空行、正文。 / Phase-instruction format: newline, separator, newline, instruction.
 pub const SUFFIX_SEPARATOR: &str = "\n\n---\n\n";
 
-/// 读取 body 中的 `model` 字段。
+/// 读取请求体中的模型名。 / Read the model field from the body.
 pub fn get_model(body: &Value) -> Option<&str> {
     body.get("model").and_then(|m| m.as_str())
 }
 
-/// 覆盖 `model` 字段。
+/// 覆盖请求体中的模型名。 / Override the model field.
 pub fn set_model(body: &mut Value, model: &str) {
     if let Some(obj) = body.as_object_mut() {
         obj.insert("model".into(), Value::String(model.into()));
     }
 }
 
-/// 设置流式标志（客户端要流式 → 子请求也流式）。
+/// 设置请求体流式标志。 / Set the streaming flag in the request body.
 pub fn set_stream(body: &mut Value, stream: bool) {
     if let Some(obj) = body.as_object_mut() {
         obj.insert("stream".into(), Value::Bool(stream));
     }
 }
 
-/// 客户端是否请求了流式。
+/// 判断客户端是否请求流式。 / Check whether the client requested streaming.
 pub fn has_client_stream(body: &Value) -> bool {
     body.get("stream").and_then(|s| s.as_bool()).unwrap_or(false)
 }
 
-/// 去掉工具定义字段（编排层不执行工具，去掉后模型会以纯文本作答）。
-/// 三种协议的工具字段名恰好都是 `tools`（Responses/Anthropic/OpenAI），附带清掉 `tool_choice`。
+/// 移除工具定义字段，使模型不能选择工具。 / Remove tool definitions to prevent tool selection.
+/// 三协议都使用 `tools`；同时移除 `tool_choice`。 / All three protocols use `tools`; also remove `tool_choice`.
 pub fn strip_tools(body: &mut Value) {
     if let Some(obj) = body.as_object_mut() {
         obj.remove("tools");
@@ -48,13 +48,13 @@ pub fn strip_tools(body: &mut Value) {
     }
 }
 
-/// 把相位指令追加到最后一条 user 消息的文本后面（Pre / Exec 相位用）。
+/// 将 Pre/Exec 指令追加到最后一条用户消息文本。 / Append Pre/Exec instructions to the last user message text.
 ///
-/// - OpenAI Chat / Anthropic：`messages` 数组里最后一条 `role=="user"`；
-/// - Responses：`input` 是字符串则直接拼接；是数组则改最后一条 user 项。
+/// - Chat/Anthropic：修改 `messages` 里的最后一条用户消息。 / Chat/Anthropic: modify the last user entry in `messages`.
+/// - Responses：字符串输入直接追加；数组输入修改最后一条用户项。 / Responses: append to string input or modify the final user item.
 ///
-/// 字符串 content → 直接拼接；块数组 → 追加到最后一块文本 part（没有则新建一块），
-/// 其余内容（图片、文档等）保持原样。
+/// 字符串内容直接追加；块数组修改最后文本块或新建文本块。 / Append to string content or the last text block, creating one if absent.
+/// 图片、文档等非文本内容保持原样。 / Keep images, documents, and other nontext content unchanged.
 pub fn append_to_last_user_text(body: &mut Value, protocol: Protocol, suffix: &str) -> Result<()> {
     let addition = format!("{SUFFIX_SEPARATOR}{suffix}");
     match protocol {
@@ -99,12 +99,12 @@ pub fn append_to_last_user_text(body: &mut Value, protocol: Protocol, suffix: &s
     }
 }
 
-/// 把相位指令追加到请求**尾部**。
+/// 将相位指令追加到请求尾部。 / Append phase instructions to the request tail.
 ///
-/// 规则：末条消息是 user → 追加到它的文本尾部（Pre/Exec 接在用户原话后面）；
-/// 末条是别的（assistant / tool 结果 / 全新请求）→ 新增一条 user 消息。
+/// 若末条为用户消息，则在其文本尾部追加。 / Append to the final message if it is from the user.
+/// 否则新建一条用户消息。 / Otherwise create a new user message.
 ///
-/// 只动尾部是刻意的：上游 prompt cache 按前缀命中，尾部追加才不打断缓存。
+/// 只追加尾部，以保持上游提示词前缀缓存命中。 / Append only at the tail to preserve upstream prompt-cache prefixes.
 pub fn append_instruction(body: &mut Value, protocol: Protocol, text: &str) -> Result<()> {
     let tail_is_user = match protocol {
         Protocol::OpenAI | Protocol::Anthropic => body
@@ -131,10 +131,10 @@ pub fn append_instruction(body: &mut Value, protocol: Protocol, text: &str) -> R
     }
 }
 
-/// 追加一条新的 user 消息（Post 相位的验收指令用）。
+/// 新增用户消息，用于 Post 验收指令。 / Add a user message for the Post verification instruction.
 ///
-/// Responses 的 `input` 若是字符串，会先被就地展开成一条 user 消息（legacy 同款处理），
-/// 以免丢掉原问题。
+/// Responses 字符串输入先展开成用户消息。 / Expand string-form Responses input into a user message.
+/// 以免丢失原问题。 / Preserve the original user request.
 pub fn push_user_message(body: &mut Value, protocol: Protocol, text: &str) -> Result<()> {
     match protocol {
         Protocol::OpenAI | Protocol::Anthropic => {
@@ -154,10 +154,10 @@ pub fn push_user_message(body: &mut Value, protocol: Protocol, text: &str) -> Re
     }
 }
 
-/// 把一组协议原生对话条目追加到请求尾部。
+/// 将协议原生对话记录追加到请求尾部。 / Append protocol-native conversation items.
 ///
-/// 用于同一 pig 内继续工具对话：阶段提示已经存在于基础请求中，后续只追加
-/// assistant/tool 对话记录，不再新增阶段 user 提示。
+/// 用于工具续接：阶段提示已在基础请求内。 / For tool continuation: the base request already contains the phase instruction.
+/// 后续只追加助手/工具记录，不重新注入阶段提示。 / Append assistant/tool history without reinjecting the phase prompt.
 pub fn append_transcript_items(
     body: &mut Value,
     protocol: Protocol,
@@ -178,7 +178,7 @@ pub fn append_transcript_items(
     }
 }
 
-/// 把上一只 pig 的产出作为一条 assistant 消息接回对话。
+/// 将上一相位产出接为助手消息。 / Restore prior-phase output as an assistant message.
 pub fn push_assistant_message(body: &mut Value, protocol: Protocol, text: &str) -> Result<()> {
     match protocol {
         Protocol::OpenAI | Protocol::Anthropic => {
@@ -199,7 +199,7 @@ pub fn push_assistant_message(body: &mut Value, protocol: Protocol, text: &str) 
     }
 }
 
-/// 提取最后一条 user 消息的文本（语言检测、日志用；提取不到返回空串）。
+/// 提取最后一条用户消息文本，供语言判断和日志使用。 / Extract the last user text for language detection and logging.
 pub fn extract_last_user_text(body: &Value, protocol: Protocol) -> String {
     let user_text = |content: &Value| -> String {
         match content {
@@ -238,14 +238,14 @@ pub fn extract_last_user_text(body: &Value, protocol: Protocol) -> String {
     }
 }
 
-/// OpenAI / Anthropic 的 `messages` 数组（缺失或类型不对 → 报错）。
+/// 读取 Chat/Anthropic 的消息数组，非法则报错。 / Read the Chat/Anthropic message array or return an error.
 fn messages_mut(body: &mut Value, protocol: Protocol) -> Result<&mut Vec<Value>> {
     body.get_mut("messages")
         .and_then(|m| m.as_array_mut())
         .ok_or(Error::NoUserMessage(protocol))
 }
 
-/// Responses 的 `input` 数组；字符串形式先展开成一条 user 消息（保留原问题）。
+/// 读取 Responses 输入数组；字符串输入先包装成用户消息。 / Read the Responses input array, wrapping string input as a user message.
 fn input_items_mut(body: &mut Value, protocol: Protocol) -> Result<&mut Vec<Value>> {
     let obj = body.as_object_mut().ok_or(Error::NoUserMessage(protocol))?;
     if let Some(Value::String(text)) = obj.get("input") {
@@ -267,15 +267,15 @@ fn input_items_mut(body: &mut Value, protocol: Protocol) -> Result<&mut Vec<Valu
         .ok_or(Error::NoUserMessage(protocol))
 }
 
-/// 往 content（字符串或块数组）里追加文本（legacy `append_to_text_content` 同款）。
+/// 向字符串或文本块内容追加文本。 / Append text to string or block-array content.
 fn append_to_text_content(content: &mut Value, addition: &str, protocol: Protocol) -> Result<()> {
     match content {
-        // 字符串：直接拼
+        // 字符串直接追加。 / Append directly to strings.
         Value::String(text) => {
             text.push_str(addition);
             Ok(())
         }
-        // 块数组：追加到最后一块文本 part；没有则新建
+        // 块数组修改最后文本块或新建文本块。 / Use the last text block or create one.
         Value::Array(parts) => {
             let appended = parts.iter_mut().rev().find_map(|part| {
                 let ty = part.get("type").and_then(|t| t.as_str())?;
@@ -341,7 +341,7 @@ mod tests {
         assert_eq!(blocks.len(), 2, "不该新增块，图片要留着");
         assert_eq!(blocks[0]["type"], "image");
         assert_eq!(blocks[1]["text"], "看图\n\n---\n\n指令");
-        // system 不受影响
+        // 系统消息不受影响。 / System messages are unchanged.
         assert_eq!(body["system"], "sys");
     }
 
@@ -402,7 +402,7 @@ mod tests {
         append_to_last_user_text(&mut body, Protocol::Responses, "P").unwrap();
         assert_eq!(body["input"][0]["content"][0]["text"], "q\n\n---\n\nP");
 
-        // 完全没有 input 字段 → 报错（不是静默丢弃）
+        // 缺少 input 字段时显式报错。 / Fail explicitly when the input field is absent.
         let mut body = json!({"model": "m"});
         let err = append_to_last_user_text(&mut body, Protocol::Responses, "P").unwrap_err();
         assert!(matches!(err, Error::NoUserMessage(_)));

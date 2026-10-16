@@ -30,9 +30,9 @@ SOURCES = {
     },
 }
 
-# Prior human-reviewed ambiguity / reference-answer conflicts.
-# Metadata for analysis ONLY; do not make model rules or choose scoring
-# exceptions on the basis of individual question IDs.
+# 已人工复核的歧义及参考答案冲突。 / Previously human-reviewed ambiguity and reference-answer conflicts.
+# 元数据仅用于分析，不能针对样本制定模型规则或评分例外。 / Analysis metadata only; do not create model rules or scoring
+# 不依据单个问题编号决定例外。 / exceptions using individual question IDs.
 REVIEW_FLAGS = {
     "ds_v4": {
         93: "Reference answer treats 10% faster running speed as a 10% decrease in time.",
@@ -158,8 +158,8 @@ def main() -> None:
     summary["overlap_count"] = len(overlap)
     summary["overlap_indices"] = overlap
     summary["union_count"] = len(union)
-    # Fixed deterministic common-correct controls. They check unintended
-    # regressions but do not prove Agent/task generalization.
+    # 使用固定的常见正确对照，检测非预期退化。 / Fixed common-correct controls check unintended
+    # 但不能证明智能体或任务泛化。 / regressions, not agent/task generalization.
     good = [i for i in range(1319)
             if all(correct(raw[model][arm].get(i))
                    for model in ("ds_v4", "muse")

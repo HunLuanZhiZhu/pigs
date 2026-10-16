@@ -1,7 +1,7 @@
-//! 相位状态与"工具调用暂停 → 客户端执行 → 结果回填继续"的句柄。
+//! 相位状态及工具调用暂停/恢复句柄。 / Phase state and handles for tool-call pause/resume.
 //!
-//! 一只 pig（相位）是一段对话区间：模型要工具 → 客户端执行 → 结果回填 → 模型继续，
-//! 直到模型这一轮不再要工具，相位才算产出。跨越这段等待的现场就存在 [`Continuation`] 里。
+//! 一个相位可跨越多次工具调用与结果回填。 / A phase can span multiple tool calls and returned results.
+//! 模型不再请求工具时相位才完成；等待现场保存在 [`Continuation`]。 / A phase finishes when no more tools are requested; [`Continuation`] stores its paused state.
 
 use crate::lang::Lang;
 use crate::{Pig, UsageMode};
@@ -10,53 +10,53 @@ use serde_json::Value;
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
-/// 一轮编排的现场（跨暂停保留）。
+/// 可跨工具暂停保留的一轮编排状态。 / Turn state persisted across tool pauses.
 #[derive(Debug, Clone)]
 pub struct TurnState {
-    /// 当前相位。
+    /// 当前相位。 / Current phase.
     pub phase: Pig,
-    /// 本轮输出模式。
+    /// 本轮输出模式。 / Current output mode.
     pub mode: PigsMode,
-    /// 实验模式：仅规划 Pre，禁止简单路径提前结束。
+    /// 强制完整路径：Pre 只规划，不提前结束。 / Forced-full path: planning-only Pre without early completion.
     pub force_full: bool,
-    /// 本轮最初的客户端请求 body。Pre / Exec 从这里构造；Post 直接继承 Exec 完整上下文。
+    /// 原始客户端请求体；Pre/Exec 基于此构造，Post 继承 Exec 上下文。 / Original client body for Pre/Exec; Post inherits the Exec context.
     pub root_body: Value,
-    /// 当前 pig 第一次进入时构造好的基础请求（已注入一次阶段提示）。
+    /// 当前相位初次进入时构造的基础请求。 / Base request created once on phase entry.
     pub phase_base_body: Option<Value>,
-    /// 当前 pig 内已经发生过的协议原生 assistant/tool 对话记录。
+    /// 相位内已有的协议原生助手/工具对话。 / Protocol-native assistant/tool history within the phase.
     pub phase_transcript: Vec<Value>,
-    /// 最近一次 Exec 完成后的完整上下文截面（尚未追加 Post 指令）。
-    /// Post 返回 PIGNEXT 时从这里恢复，再用 Post 反馈作为新的 Exec 分析输入。
+    /// 最近 Exec 完成时的完整上下文快照（尚无 Post 指令）。 / Complete snapshot after the last Exec, before Post instruction.
+    /// Post 返回 PIGNEXT 时从此快照恢复并注入核验反馈。 / Restore this snapshot on Post PIGNEXT and feed back verification notes.
     pub exec_checkpoint_body: Option<Value>,
-    /// 已走过的相位序列（诊断）。
+    /// 已进入的相位历史，供诊断。 / Entered-phase history for diagnostics.
     pub path: Vec<Pig>,
-    /// Pre 的分析（Exec 指令要用）。
+    /// Pre 分析，供 Exec 指令使用。 / Pre analysis consumed by Exec.
     pub pre_output: String,
-    /// Pre 已输出 PIGEND：后续工具往返继续在 Pre 执行，不再重新要求路由标记。
+    /// Pre 已输出 PIGEND 后，工具续接仍留在 Pre。 / After Pre PIGEND, tool continuation stays in Pre without rerouting.
     pub pre_simple_decided: bool,
-    /// 历次失败路径（Pre 重规划用）。
+    /// 失败路径历史，供 Pre 重规划。 / Failure history for Pre replanning.
     pub failure_paths: Vec<String>,
-    /// 模式 A 的各段可见文本；模式 B 只在最终提交时写入一段。
+    /// 模式 A 保留阶段文本，模式 B 只保留提交正文。 / Mode A retains phase text; Mode B retains committed business text.
     pub visible: Vec<String>,
-    /// 模式 B：当前 Exec 候选正文。Post 未接受前不对客户端可见。
+    /// 模式 B 的 Exec 候选，在 Post 接受前不可见。 / Mode B Exec candidate, hidden until Post accepts it.
     pub candidate_text: String,
-    /// 模式 B：已经提交的最终业务正文。
+    /// 模式 B 已提交的业务正文。 / Mode B committed business text.
     pub committed_text: String,
-    /// 持久内容序列（顺序权威）：文本已去控制标记；已交给客户端执行的 ToolCall 不持久化。
+    /// 持久内容序列保序并移除控制标记；工具调用不持久化。 / Persistent ordered parts exclude markers and consumed tool calls.
     pub parts: Vec<Part>,
-    /// 本相位各轮的原始文本（含控制标记，用于路由）。
+    /// 本相位原始文本轮次，含路由标记。 / Raw per-request phase text including routing markers.
     pub phase_raw: Vec<String>,
-    /// Exec 高层执行次数；同一次 Exec 内的工具暂停/恢复不重复计数。
+    /// Exec 高层执行次数，不重复计算工具续接。 / High-level Exec run count, excluding tool continuation.
     pub exec_runs: u32,
-    /// Post 无控制标记时的协议重试次数；它不是任务执行预算。
+    /// Post 协议重试次数，独立于任务执行预算。 / Post protocol retries, separate from execution budget.
     pub post_protocol_retries: u32,
-    /// 语言（按用户问题判定）。
+    /// 按用户问题判定的语言。 / Language inferred from the user request.
     pub lang: Lang,
-    /// 会话标识（所有子请求共用）。
+    /// 所有子请求共用的会话标识。 / Shared session identifier for all subrequests.
     pub session: String,
-    /// 本次客户端 API 请求按 usage 模式聚合后的 usage。
+    /// 本次客户端请求按指定模式聚合的 usage。 / Usage aggregated for this client request.
     pub usage: Option<Value>,
-    /// 最后一个相位给的停止原因（原样回传）。
+    /// 最后一相位返回的停止原因。 / Stop reason from the last phase.
     pub stop_reason: Option<String>,
 }
 
@@ -92,18 +92,18 @@ impl TurnState {
         }
     }
 
-    /// 清掉当前 pig 的临时对话现场。进入 Pre / Exec 新阶段或 Pre 重规划时调用。
+    /// 进入新相位或重规划时清理临时对话现场。 / Clear temporary conversation state when entering or replanning a phase.
     pub fn reset_phase_conversation(&mut self) {
         self.phase_base_body = None;
         self.phase_transcript.clear();
     }
 
-    /// 把当前模型输出整理成给客户端看的内容序列。
+    /// 将当前模型输出整理成客户端内容序列。 / Convert the model output to ordered client-facing parts.
     ///
-    /// 这里会保留 ToolCall；调用方只在 Paused 响应里使用它们。
+    /// 工具调用只在暂停响应中交付。 / Tool calls are delivered only in paused responses.
     pub(crate) fn client_parts_for_round(&self, output: &crate::proto::ModelOutput) -> Vec<Part> {
-        // 首次 Pre 输出的控制标记之前，非文本原生块也属于内部分析。
-        // 标记之后的原生内容与工具恢复轮次则应保留。
+        // 首次 Pre 标记前的非文本块属于内部分析。 / Native nontext blocks before the first Pre marker are internal analysis.
+        // 标记后的原生内容及工具续接应保留。 / Preserve post-marker parts and tool continuations.
         let first_pre_round = self.mode == PigsMode::B
             && self.phase == Pig::Pre
             && !self.force_full
@@ -125,7 +125,7 @@ impl TurnState {
                         seen_marker = crate::markers::split_pre_decision(&pre_text).is_some();
                     }
                     if self.mode == PigsMode::A {
-                        // 原生协议可能把 PIGEND 分成多个 Text 块，必须跨块过滤。
+                        // PIGEND 可能跨文本块，须跨块过滤。 / PIGEND may span text parts; filtering must cross boundaries.
                         let cleaned = marker_filter.push(text);
                         if !cleaned.is_empty() {
                             let piece = if has_text && !text_added {
@@ -138,8 +138,8 @@ impl TurnState {
                         }
                     }
                 }
-                // -pig 的首次 Pre 五问及其思考属于内部分析；
-                // 分界线之后的原生块与工具调用仍正常转发。
+                // -pig 隐藏首轮 Pre 的五问和思考。 / -pig hides initial Pre analysis and reasoning.
+                // 分界线后的原生块与工具调用正常转发。 / Forward native parts and tool calls after the boundary.
                 Part::ToolCall(call) => parts.push(Part::ToolCall(call.clone())),
                 other if seen_marker => parts.push(other.clone()),
                 _ => {},
@@ -159,28 +159,28 @@ impl TurnState {
         parts
     }
 
-    /// 记一轮模型输出：文本/思考等持久化；ToolCall 只属于暂停响应，不进入 continuation / 最终 Completed。
+    /// 记录模型轮次：持久化文本/思考，不持久化工具调用。 / Record a model turn; persist text/reasoning but not tool calls.
     pub fn record_round(
         &mut self,
         raw_text: &str,
         output: &crate::proto::ModelOutput,
         usage_mode: UsageMode,
     ) {
-        // 必须先处理首轮内容块，再登记本轮原文，才能判断标记前后。
+        // 先处理内容块，再保存原文，以确定控制边界。 / Process parts before storing raw text to establish marker boundaries.
         let client_parts = self.client_parts_for_round(output);
         self.phase_raw.push(raw_text.to_string());
         let visible = crate::markers::strip_markers(raw_text);
         if self.mode == PigsMode::A && !visible.is_empty() {
             self.visible.push(visible);
         }
-        // ToolCall 是一次性的暂停信号：客户端执行后就消费掉，不能在最终响应里再次出现。
+        // 工具调用只在暂停时交付一次，不得重放。 / Deliver a tool call once on pause; never replay it in final output.
         self.parts.extend(
             client_parts.into_iter().filter(|part| !matches!(part, Part::ToolCall(_))),
         );
         if let Some(usage) = &output.usage {
             match usage_mode {
                 UsageMode::Max => {
-                    // 只比较一次真实调用的总 token；胜出的 usage 整对象原样返回，不拼字段。
+                    // max 模式按单次调用 token 选 usage，不拼合字段。 / Max mode selects one call's entire usage by token count.
                     let larger = match &self.usage {
                         None => true,
                         Some(current) => usage_total_tokens(usage) > usage_total_tokens(current),
@@ -195,25 +195,25 @@ impl TurnState {
                 },
             }
         }
-        // 以**最后一轮**的值为准：工具暂停那一轮的 tool_calls 不该残留到最终答复
+        // 停止原因取最后一轮，避免保留过期工具状态。 / Use the final turn's stop reason, not stale tool-call status.
         self.stop_reason = output.stop_reason.clone();
     }
 
-    /// 记录当前 Exec 业务正文；模式 B 把它作为待验收 candidate。
+    /// 记录 Exec 正文；模式 B 将其设为待验收候选。 / Record Exec text as a pending candidate in Mode B.
     pub fn set_candidate(&mut self, text: String) {
         if self.mode == PigsMode::B {
             self.candidate_text = text;
         }
     }
 
-    /// 模式 B：丢弃当前 Exec 候选。
+    /// 模式 B 丢弃 Exec 候选。 / Discard the Mode B Exec candidate.
     pub fn discard_candidate(&mut self) {
         if self.mode == PigsMode::B {
             self.candidate_text.clear();
         }
     }
 
-    /// 模式 B：提交一段最终业务正文。
+    /// 模式 B 提交最终业务正文。 / Commit final business text in Mode B.
     pub fn commit_text(&mut self, text: String) {
         if self.mode == PigsMode::B {
             self.committed_text = text.clone();
@@ -224,7 +224,7 @@ impl TurnState {
         }
     }
 
-    /// 模式 B：接受当前 Exec candidate。
+    /// 模式 B 接受当前 Exec 候选。 / Accept the current Exec candidate in Mode B.
     pub fn commit_candidate(&mut self) {
         if self.mode == PigsMode::B {
             let text = std::mem::take(&mut self.candidate_text);
@@ -232,12 +232,12 @@ impl TurnState {
         }
     }
 
-    /// 本相位到目前为止的原始文本（含标记）——路由判定用它。
+    /// 返回本相位含标记的原始文本。 / Return raw phase text including routing markers.
     pub fn phase_raw_text(&self) -> String {
         self.phase_raw.join("\n\n")
     }
 
-    /// 最终答复：各段可见文本按顺序空行拼接。
+    /// 按顺序以空行拼接可见答复段。 / Join visible response segments with blank lines.
     pub fn final_text(&self) -> String {
         match self.mode {
             PigsMode::A => self
@@ -251,7 +251,7 @@ impl TurnState {
         }
     }
 
-    /// 收尾：把现场变成一轮结果。
+    /// 将编排状态收尾为一轮结果。 / Finalize the turn state into an outcome.
     pub fn complete(mut self, ended_with: crate::EndedWith) -> crate::TurnResult {
         let text = self.final_text();
         if self.mode == PigsMode::B && !text.is_empty() {
@@ -270,8 +270,8 @@ impl TurnState {
     }
 }
 
-/// 一次真实上游调用的总 token。优先使用协议直接给出的 total_tokens；
-/// 缺失时只用主输入/输出字段回退计算，缓存与 reasoning 详情都是其子集，不重复相加。
+/// 单次上游调用 token：优先读取 `total_tokens`。 / Tokens for one upstream call: prefer `total_tokens`.
+/// 缺失时回退为输入加输出，避免重复计算缓存/推理子字段。 / Otherwise sum primary input/output counts without double-counting subfields.
 fn usage_total_tokens(usage: &Value) -> u64 {
     if let Some(total) = usage.get("total_tokens").and_then(Value::as_u64) {
         return total;
@@ -289,8 +289,8 @@ fn usage_total_tokens(usage: &Value) -> u64 {
     input.saturating_add(output)
 }
 
-/// sum 模式：同路径的数值字段逐项相加；对象递归合并；只在某次调用出现的字段原样保留。
-/// usage 正常只有数值/对象字段；若遇到同路径的非数值元数据，保留第一份，避免伪造语义。
+/// sum 模式递归相加数值字段，保留独有字段。 / Sum mode recursively adds numeric fields and preserves unique fields.
+/// 相同路径上的非数值字段保留首值。 / Keep the first value for conflicting nonnumeric metadata.
 fn sum_usage_json(current: &mut Value, next: &Value) {
     match (current, next) {
         (Value::Object(current), Value::Object(next)) => {
@@ -318,16 +318,16 @@ fn sum_usage_json(current: &mut Value, next: &Value) {
     }
 }
 
-/// 一条 continuation：等着客户端把工具结果送回来的相位现场。
+/// 等待客户端工具结果的相位续接现场。 / Paused phase state awaiting client tool results.
 #[derive(Debug, Clone)]
 pub struct Continuation {
-    /// 恢复时放回存储用的 id（诊断/日志）。
+    /// 续接存储标识，供日志诊断。 / Continuation ID for storage and diagnostics.
     pub id: String,
-    /// 正在等待结果的工具调用 id。
+    /// 待回填的工具调用标识。 / Pending tool-call IDs.
     pub pending: Vec<String>,
-    /// 相位现场。
+    /// 相位现场。 / Phase state.
     pub state: TurnState,
-    /// 创建时刻（TTL 用）。
+    /// 创建时间，供 TTL 清理。 / Creation time for TTL expiration.
     pub created: Instant,
 }
 
@@ -342,25 +342,25 @@ pub struct ContinuationSummary {
     pub in_flight: bool,
 }
 
-/// continuation claim 的匹配结果。
+/// 续接认领的匹配结果。 / Continuation claim result.
 #[derive(Debug, Clone)]
 pub enum ClaimMatch {
-    /// 已原子占用该 continuation；调用方必须在 resume 结束后 commit 或 rollback。
+    /// 已原子认领，续接后必须提交或回滚。 / Atomically claimed; caller must commit or roll back after resume.
     Claimed(Continuation),
-    /// 最新匹配现场已被另一个 resume 请求占用，不能并发恢复同一现场。
+    /// 匹配现场已被其他恢复请求占用。 / Matched state is in flight for another resume.
     InFlight(String),
-    /// 没有任何匹配现场。
+    /// 没有匹配现场。 / No matching state.
     NoMatch,
 }
 
-/// 内存 continuation 存储：容量与 TTL 有界，按客户端请求中出现的工具结果 id 匹配；真实 proxy 恢复还限定 A/B 模式一致。
+/// 内存续接存储：限制容量/TTL，按工具结果标识和输出模式匹配。 / In-memory continuation store bounded by capacity/TTL and matched by tool-result IDs and output mode.
 ///
-/// 匹配规则：某条 continuation 的**全部** pending id 都出现在当前请求的工具结果里，
-/// 就算它的恢复请求。若历史长对话同时命中多条遗留现场，优先取最新的一条。
+/// 匹配需要当前请求包含所有待回填 ID。 / A match requires every pending ID in the current request.
+/// 多个现场同时匹配时优先最新项。 / Prefer the newest continuation when several match.
 #[derive(Debug)]
 pub struct ContinuationStore {
     entries: Vec<Continuation>,
-    /// 正在被某个 resume 请求占用、但尚未成功消费的 continuation id。
+    /// 已认领但尚未提交的续接标识。 / Claimed but not yet consumed continuation IDs.
     in_flight: HashSet<String>,
     max: usize,
     ttl: Duration,
@@ -384,7 +384,7 @@ impl ContinuationStore {
         }
     }
 
-    /// 存入一条 continuation，返回它的 id（同时清理过期项与超容量的最旧项）。
+    /// 保存续接并返回 ID，同时清理超时或超容量记录。 / Store a continuation and return its ID while evicting expired or excess entries.
     pub fn insert(&mut self, mut continuation: Continuation) -> String {
         self.evict_expired();
         self.counter += 1;
@@ -392,8 +392,8 @@ impl ContinuationStore {
         continuation.id = id.clone();
         continuation.created = Instant::now();
         self.entries.push(continuation);
-        // 正在恢复中的现场绝不能因为另一个新 continuation 插入而被容量淘汰。
-        // 若所有旧现场都处于 in-flight，允许短暂超过 max；resume 收尾后会恢复到正常容量。
+        // 正在恢复的现场不得被容量清理。 / Never evict an in-flight continuation.
+        // 全部在途时可暂时超容量，随后恢复限制。 / Temporarily exceed capacity if all entries are in flight.
         while self.entries.len() > self.max {
             let Some(index) = self
                 .entries
@@ -407,8 +407,8 @@ impl ContinuationStore {
         id
     }
 
-    /// 原子占用匹配的 continuation，但不删除。resume 成功后调用 [`commit_claim`]，
-    /// 失败则调用 [`rollback_claim`]，避免瞬时上游错误把现场永久销毁。
+    /// 原子认领匹配项而不删除，成功后提交。 / Atomically claim without deleting; commit after successful resume.
+    /// 失败则回滚，保留现场以便重试。 / Roll back on failure to preserve state for retry.
     pub fn claim_match_for_mode(&mut self, result_ids: &[String], mode: PigsMode) -> ClaimMatch {
         self.claim_match_inner(result_ids, Some(mode))
     }
@@ -434,7 +434,7 @@ impl ContinuationStore {
         ClaimMatch::Claimed(self.entries[index].clone())
     }
 
-    /// resume 成功：正式消费已 claim 的旧 continuation。
+    /// 恢复成功后消费认领项。 / Consume the claimed continuation after successful resume.
     pub fn commit_claim(&mut self, id: &str) -> bool {
         if !self.in_flight.remove(id) {
             return false;
@@ -447,12 +447,12 @@ impl ContinuationStore {
         }
     }
 
-    /// resume 失败：仅解除占用，原 continuation 保留，允许相同工具结果再次恢复。
+    /// 恢复失败只解除认领，允许重试。 / Release the claim on failure, allowing retry.
     pub fn rollback_claim(&mut self, id: &str) -> bool {
         self.in_flight.remove(id)
     }
 
-    /// 测试/低层调用兼容接口：claim 后立即 commit，保持旧的 destructive-take 语义。
+    /// 兼容接口：认领后立即消费。 / Compatibility API: claim then immediately consume.
     pub fn take_match(&mut self, result_ids: &[String]) -> Option<Continuation> {
         match self.claim_match_inner(result_ids, None) {
             ClaimMatch::Claimed(continuation) => {
@@ -463,7 +463,7 @@ impl ContinuationStore {
         }
     }
 
-    /// 测试/低层调用兼容接口；proxy 的真实恢复路径必须使用 claim/commit/rollback。
+    /// 低层兼容接口；正式恢复必须显式认领/提交/回滚。 / Low-level compatibility API; production requires explicit claim/commit/rollback.
     pub fn take_match_for_mode(
         &mut self,
         result_ids: &[String],
@@ -482,7 +482,7 @@ impl ContinuationStore {
         self.entries.len()
     }
 
-    /// 诊断用快照：不会消费 continuation；先清理已过期项再返回当前等待现场。
+    /// 诊断快照：清理过期记录后返回待恢复项，不消费。 / Diagnostic snapshot: remove expired entries and list pending states without consuming.
     pub fn summaries(&mut self) -> Vec<ContinuationSummary> {
         self.evict_expired();
         self.entries
@@ -519,7 +519,7 @@ mod tests {
         TurnState::new(Lang::Zh, "sess".into(), json!({"messages": []}))
     }
 
-    /// 构造一个只带 usage 的模型输出（其余字段空）。
+    /// 构造仅含 usage 的模型输出。 / Build a model output containing only usage.
     fn output_with_usage(usage: Value) -> crate::proto::ModelOutput {
         crate::proto::ModelOutput {
             text: String::new(),
@@ -532,7 +532,7 @@ mod tests {
 
     #[test]
     fn usage_max_keeps_largest_total_object_verbatim() {
-        // max 只按 total_tokens 选一次真实调用，胜出的整个 JSON 原样返回。
+        // max 选择最大 token 调用的完整 usage JSON。 / Max selects the whole usage JSON of the highest-token call.
         let mut state = state();
         state.record_round(
             "第一轮",
@@ -629,9 +629,9 @@ mod tests {
         let id = store.insert(cont);
         assert_eq!(store.len(), 1);
 
-        // 只回来一个结果 → 不匹配（还要等另一个）
+        // 工具结果未全部到达，不匹配。 / No match until all tool results arrive.
         assert!(store.take_match(&["call_1".into()]).is_none());
-        // 两个都回来 → 匹配并被取出
+        // 全部工具结果到达后完成匹配。 / Match once all tool results arrive.
         let taken = store
             .take_match(&["call_1".into(), "call_2".into()])
             .unwrap();
@@ -759,7 +759,7 @@ mod tests {
 
     #[test]
     fn store_is_bounded_and_expires() {
-        // TTL 为 0 → 任何条目都立刻过期：匹配不到
+        // TTL 为零则全部立即过期。 / Zero TTL immediately expires every entry.
         let mut store = ContinuationStore::new(4, Duration::ZERO);
         store.insert(Continuation {
             id: String::new(),
@@ -772,7 +772,7 @@ mod tests {
             "过期条目不许匹配"
         );
 
-        // 容量上限：只保留最新的 max 条
+        // 容量清理保留最新记录。 / Capacity eviction keeps the newest entries.
         let mut store = ContinuationStore::new(2, Duration::from_secs(60));
         for id in ["a", "b", "c"] {
             store.insert(Continuation {

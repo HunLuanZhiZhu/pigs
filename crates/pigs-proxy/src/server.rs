@@ -1,8 +1,8 @@
-//! axum 服务：fallback 接住所有路径与方法，按需分流。
+//! axum 服务：统一接收各方法/路径并按需分流。 / Axum service: accept all methods/paths and dispatch as needed.
 //!
-//! PIGS（-pigs / -pig / -pigs3 / -pig3）请求的两种情形：
-//! - 客户端的第一发 → 新开一轮编排；
-//! - 请求中包含当前 pending continuation 所等待的工具结果 → 接着被暂停的相位继续。
+//! PIGS 请求支持新编排与工具续接两种情况。 / PIGS requests either start a turn or resume a tool-paused turn.
+//! - 首次请求开启新编排。 / The initial client request starts a new turn.
+//! - 包含待回填工具结果的请求恢复暂停相位。 / A request with pending tool results resumes the paused phase.
 
 use crate::config::Config;
 use crate::diagnostics::{header_pairs, ExchangeLog, HttpDiagnostics};
@@ -22,11 +22,11 @@ pub struct AppState {
     pub diagnostics: Arc<HttpDiagnostics>,
     pub config: Arc<Config>,
     pub upstream: Arc<Upstream>,
-    /// 回环内部令牌（进程启动时随机生成）。
+    /// 启动时生成的回环内部令牌。 / Random loopback token generated at startup.
     pub loopback_token: Arc<String>,
-    /// 回环目标（http://127.0.0.1:port）。
+    /// 本机回环服务地址。 / Local loopback endpoint.
     pub self_url: Arc<String>,
-    /// 工具调用暂停的现场（跨请求保留：客户端执行完工具会带结果回来）。
+    /// 跨请求保存的工具暂停现场。 / Persisted state for paused tool calls across client requests.
     pub store: Arc<Mutex<orch::state::ContinuationStore>>,
 }
 
@@ -34,10 +34,10 @@ pub fn router(state: AppState) -> Router {
     Router::new().fallback(handle).with_state(state)
 }
 
-/// 单一入口：所有路径、所有方法。
-/// - 回环子请求（带内部令牌）→ 直接透传（防递归）；
-/// - POST 三协议路径 + model 带 `-pigs` / `-pig` / `-pigs3` / `-pig3` → 编排（新开或恢复）；
-/// - 其余一切 → 原样透传。
+/// 单入口处理所有路径和 HTTP 方法。 / Single handler for all paths and HTTP methods.
+/// - 内部回环请求直接透传，防止递归。 / Internal loopback requests pass through to avoid recursion.
+/// - 已识别协议的 POST + PIGS 后缀进入编排。 / Recognized POST requests with PIGS suffixes enter orchestration.
+/// - 其它请求均透传。 / All other requests pass through.
 async fn handle(
     State(state): State<AppState>,
     OriginalUri(uri): OriginalUri,
@@ -60,7 +60,7 @@ async fn handle(
             .diagnostics
             .begin_exchange(internal, method.as_str(), &path, query, &headers, &body);
 
-    // 编排分支：POST 协议路径 + model 带 PIGS 后缀（回环子请求不走此分支）
+    // 仅外部 POST 协议请求按模型后缀进入编排。 / Only external POST protocol requests use suffix routing.
     if !internal && method == Method::POST {
         if let Some(protocol) = pigs_protocol::protocol_from_path(&path) {
             match serde_json::from_slice::<Value>(&body) {
@@ -71,7 +71,7 @@ async fn handle(
                         .unwrap_or("")
                         .to_string();
                     if let Some((real_model, mode)) = pigs_protocol::parse_pigs_model(&model) {
-                        // 唯一允许的字段改动：发给上游用真名，回客户端用原名
+                        // 上游用真实模型名，客户端回显原名。 / Use the stripped model upstream and echo the client model downstream.
                         pigs_protocol::set_model(&mut parsed, &real_model);
                         return orchestrate(
                             &state,
@@ -87,7 +87,7 @@ async fn handle(
                         )
                         .await;
                     }
-                    // 无 PIGS 后缀 → 落到下面的透传
+                    // 未识别 PIGS 后缀则透传。 / Missing PIGS suffix falls through to passthrough.
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "请求 body 不是合法 JSON");
@@ -101,11 +101,11 @@ async fn handle(
         }
     }
 
-    // 透传（含回环子请求、无 PIGS 后缀主请求、models 等其他路径）
+    // 回环及其它普通请求均走透传。 / Loopback and ordinary requests use passthrough.
     passthrough(&state, method, &path, query, &headers, body, exchange).await
 }
 
-/// 编排：判断这一发是新开一轮还是恢复被工具调用暂停的相位，然后交给状态机。
+/// 识别新请求或工具恢复，并交给状态机。 / Distinguish new turns from tool resumes and delegate to the state machine.
 #[allow(clippy::too_many_arguments)]
 async fn orchestrate(
     state: &AppState,
@@ -138,8 +138,8 @@ async fn orchestrate(
         client_session: orch::find_client_session(&state.upstream.forward_headers(headers)),
     };
 
-    // continuation 按请求中出现的全部工具结果匹配；尾部连续结果只保留作诊断，
-    // 用来解释客户端是否在工具结果之后又追加了 reminder / 普通消息。
+    // 续接按全部工具结果匹配，尾部连续结果仅供诊断。 / Match continuations using all tool results; trailing results are diagnostic only.
+    // 可据此观察工具结果后追加的提醒或用户消息。 / This reveals reminders or user messages appended after tool results.
     let all_result_ids = pigs_protocol::all_tool_result_ids(protocol, &parsed);
     let trailing_result_ids = pigs_protocol::trailing_tool_result_ids(protocol, &parsed);
     let client_session = input
@@ -332,9 +332,9 @@ async fn orchestrate(
     }
 }
 
-/// 流式编排：起后台任务跑状态机，帧通过 channel 推给客户端。
+/// 流式编排在异步任务中运行，并通过通道发送帧。 / Run streaming orchestration asynchronously and send frames through a channel.
 ///
-/// 文本边到边转；模型要工具时把原生调用作为终止帧发出（相位到此暂停，等客户端执行）。
+/// 文本实时转发；工具调用导致暂停并交付原生调用。 / Forward text live; tool calls pause the phase and are delivered natively.
 #[allow(clippy::too_many_arguments)]
 fn orchestrate_streaming(
     transport: Arc<dyn orch::transport::Transport>,
@@ -353,7 +353,7 @@ fn orchestrate_streaming(
         client_model.to_string(),
     )));
     let output_mode = input.mode;
-    // 起始帧：让客户端立刻拿到合法的流开头
+    // 先发送协议起始帧。 / Emit a valid protocol start frame immediately.
     if let Ok(mut encoder) = encoder.lock() {
         let _ = tx.send(Ok(Bytes::from(encoder.start())));
     }
@@ -367,7 +367,7 @@ fn orchestrate_streaming(
             };
             let frames = match &event {
                 orch::PigEvent::Delta(text) => encoder.push_text(text),
-                // 思考也边想边流（Anthropic 需要块生命周期，编码器内部管）
+                // 思考增量实时发送，编码器处理 Anthropic 块生命周期。 / Stream reasoning deltas; the encoder manages Anthropic block lifecycles.
                 orch::PigEvent::Thought(text) => encoder.push_reasoning(text),
                 orch::PigEvent::ThoughtSummary { item_id, text } => {
                     encoder.push_reasoning_summary(item_id, text)
@@ -419,8 +419,8 @@ fn orchestrate_streaming(
                         content.stop_reason.map(String::from),
                         content.usage.cloned(),
                     );
-                    // 实时阶段已经流过的内容不要再发一遍（文本、思考增量），
-                    // 这里只补"没法边到边流"的原生内容：工具调用、redacted_thinking 等完整块
+                    // 避免重复发送已流出的文本与思考。 / Avoid replaying already-streamed text or reasoning.
+                    // 这里只补发工具调用及其它完整原生块。 / Emit only native blocks unavailable as live deltas.
                     let tail: Vec<pigs_protocol::Part> = content
                         .parts
                         .iter()
@@ -441,7 +441,7 @@ fn orchestrate_streaming(
         if !frames.is_empty() {
             let _ = tx.send(Ok(Bytes::from(frames)));
         }
-        // tx 在此 drop：channel 关闭，客户端流正常收尾
+        // 发送器释放后通道关闭，客户端流结束。 / Dropping the sender closes the client stream.
     });
 
     let response_headers = vec![
@@ -477,12 +477,12 @@ fn orchestrate_streaming(
         .unwrap()
 }
 
-/// 这条内容在实时阶段是否已经流给客户端了（避免收尾重复发）。
+/// 判断内容是否已实时发送，避免收尾重复。 / Check whether a part was already streamed to prevent duplication.
 ///
-/// - 文本：模式 A 在增量阶段逐段流过；模式 B 不流阶段正文，验收后收尾补发 committed text；
-/// - `reasoning_content`（Chat 思考字段）：增量阶段流过；
-/// - `thinking` 原生块：增量阶段按 thinking_delta 流过（签名单发）；
-/// - `redacted_thinking` 等完整块、以及工具调用：没法边到边流，收尾时给。
+/// - 文本：模式 A 实时发，模式 B 在验收后补发。 / Text: Mode A streams live; Mode B emits accepted text later.
+/// - Chat 思考字段在增量阶段发送。 / Chat reasoning is sent in deltas.
+/// - 原生思考块按增量发送，签名单发。 / Native thinking streams by delta; signatures use separate events.
+/// - 其它完整块及工具调用在收尾发送。 / Other native blocks and tool calls are emitted at finalization.
 fn already_streamed(part: &pigs_protocol::Part, mode: pigs_protocol::PigsMode) -> bool {
     match part {
         pigs_protocol::Part::Text(_) => mode == pigs_protocol::PigsMode::A,
@@ -494,7 +494,7 @@ fn already_streamed(part: &pigs_protocol::Part, mode: pigs_protocol::PigsMode) -
     }
 }
 
-/// 把编排产出变成回客户端的内容（model 名用客户端请求的那个，usage/stop_reason 原样）。
+/// 组装客户端响应，回显模型名并保留 usage/停止原因。 / Build client output with the original model and native usage/stop reason.
 fn final_content<'a>(
     client_model: &'a str,
     outcome: &'a orch::Outcome,
@@ -509,7 +509,7 @@ fn final_content<'a>(
         orch::Outcome::Paused(paused) => pigs_protocol::ResponseContent {
             model: client_model,
             parts: &paused.parts,
-            // 上游这一轮怎么停的就怎么说（工具暂停通常是 tool_calls / tool_use）
+            // 原样保留上游停止原因。 / Preserve the upstream stop reason.
             stop_reason: paused.stop_reason.as_deref(),
             usage: paused.usage.as_ref(),
         },
@@ -562,7 +562,7 @@ fn log_outcome(outcome: &orch::Outcome, exchange: &ExchangeLog) {
     }
 }
 
-/// 原样透传：转发请求，响应流式回传（content-encoding 跟 body 一起走）。
+/// 透传请求并流式返回响应，保留编码头。 / Proxy the request and stream the response with content-encoding intact.
 async fn passthrough(
     state: &AppState,
     method: Method,
@@ -601,7 +601,7 @@ async fn passthrough(
             let mut client_headers = Vec::new();
             for (name, value) in resp_headers.iter() {
                 let lower = name.as_str().to_lowercase();
-                // 只跳过逐跳头；content-encoding 必须跟着 body 走（血泪教训）
+                // 仅过滤逐跳头，保留内容编码。 / Strip only hop-by-hop headers; keep content-encoding.
                 if matches!(
                     lower.as_str(),
                     "connection" | "transfer-encoding" | "content-length"
@@ -689,17 +689,17 @@ fn logged_error_response(
         .unwrap()
 }
 
-/// 编排子请求的回环传输：POST 到本服务的透传入口，带内部令牌防递归。
+/// 子请求经带令牌的本机回环透传。 / Subrequests use token-protected loopback passthrough.
 struct LoopbackTransport {
-    /// 自动解压的客户端：请求头照原样发（含客户端的 accept-encoding），
-    /// 响应体压缩由本机解开——这样上游看到的请求与父请求逐字节一致。
+    /// 回环客户端保留请求头并自动解压响应。 / Loopback client preserves request headers and decompresses responses.
+    /// 保留父请求传输语义并在本机处理响应压缩。 / Preserve parent request semantics while handling response compression locally.
     client: reqwest::Client,
     self_url: String,
     token: String,
 }
 
 impl LoopbackTransport {
-    /// 组一个回环请求（路径 + 查询串 + 内部令牌 + 端到端头）。
+    /// 构造包含原路径、查询串、令牌和端到端头的回环请求。 / Build a loopback request with path, query, token, and end-to-end headers.
     fn request(&self, req: &orch::transport::SubRequest) -> reqwest::RequestBuilder {
         let mut url = format!("{}/{}", self.self_url, req.path.trim_start_matches('/'));
         if let Some(query) = req.query.as_deref().filter(|q| !q.is_empty()) {
@@ -753,8 +753,8 @@ impl orch::transport::Transport for LoopbackTransport {
         })
     }
 
-    /// 流式：把回环响应（上游 SSE）按块解析出文本增量，边收边交给 `sink`，
-    /// 同时累积完整 body —— 编排还要在全文上判定 PIGEND/PIGFAIL 与工具调用。
+    /// 流式解析上游 SSE 并即时回调 `sink`。 / Incrementally parse upstream SSE and invoke `sink`.
+    /// 同时保留完整响应以检查控制标记及工具调用。 / Also retain the full response for marker/tool-call detection.
     async fn send_streaming(
         &self,
         req: orch::transport::SubRequest,
@@ -770,14 +770,14 @@ impl orch::transport::Transport for LoopbackTransport {
         let status = resp.status().as_u16();
         let content_type = Self::content_type(&resp);
 
-        // 上游无视 stream 回了整体 JSON → 一次性把文本推给 sink
+        // 若上游返回 JSON 而非流，直接一次性回调。 / If upstream returns JSON despite streaming, emit one callback.
         if !pigs_protocol::is_sse_content_type(content_type.as_deref()) {
             let body = resp.bytes().await.map_err(|e| {
                 orch::transport::TransportError::Send(format!("回环响应读取失败: {e}"))
             })?;
             if let Ok(value) = serde_json::from_slice::<Value>(&body) {
                 let output = pigs_protocol::parse_json_output(protocol, &value);
-                // 上游回了整体 JSON：文本与思考一次性报给编排层（顺序按内容序列）
+                // JSON 整体响应按内容顺序回传文本和思考。 / Deliver text and reasoning from whole JSON in content order.
                 for part in &output.parts {
                     match part {
                         pigs_protocol::Part::Text(text) => {

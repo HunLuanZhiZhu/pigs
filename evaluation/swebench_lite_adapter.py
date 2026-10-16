@@ -43,7 +43,7 @@ def main()->int:
     score_dir=args.output_dir/'scoring'; score_dir.mkdir(parents=True,exist_ok=True)
     score_cmd=[str(args.swebench),'eval','lite','--predictions',str(preds),'--run-id',args.score_run_id,
                '--workers',str(args.workers)]
-    # Current CLI also supports -p/-j; use long options for manifest readability.
+    # CLI 也支持短参数，但使用长参数便于阅读清单。 / CLI supports -p/-j; use long flags for readable manifests.
     return subprocess.call(score_cmd,env=env,cwd=score_dir)
 
 if __name__=='__main__': raise SystemExit(main())

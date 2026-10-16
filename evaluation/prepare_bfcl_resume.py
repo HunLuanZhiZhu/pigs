@@ -43,7 +43,7 @@ def pid_running(pid: int | None) -> bool:
 
 
 def stage_state(source: Path) -> dict | None:
-    # Typical source: <run-root>/<stage>/attempt-N/results
+    # 常见来源是指定运行目录下的阶段和尝试号。 / Typical source: <run-root>/<stage>/attempt-N/results
     for parent in source.parents:
         manifest_path = parent / "manifest.json"
         if not manifest_path.is_file():

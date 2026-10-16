@@ -23,8 +23,8 @@ from evalscope.metrics.math.parser import extract_answer, math_equal
 
 BASE = Path("/root/pigs-eval/outputs/formal/gsm8k/muse13-gsm8k-responses-v5-low-c4-20261005/base/reviews/muse-spark-1.3-contributor/gsm8k_main.jsonl")
 OLD_PIG = Path("/root/pigs-eval/outputs/formal/gsm8k/muse13-gsm8k-pig-newpre-responses-resume-low-c4-20261008/muse13/pig/20261008_141306/reviews/muse-spark-1.3-contributor-pig/gsm8k_main.jsonl")
-# These are complete classes from the FULL run, not randomly or
-# outcome-selectively sampled purported benchmark subsets.
+# 这些类别来自完整评测，而非随机或结果筛选。 / Classes come from the full run, not random or
+# 不应伪称为随机基准子集。 / outcome-selected purported benchmark subsets.
 PRE_SHARED_ERRORS = (12, 306, 368, 403, 423, 454, 552, 590, 649, 749,
                      768, 782, 814, 823, 952, 962, 1001, 1042, 1048, 1161, 1309)
 PRE_REGRESSIONS = (182, 409, 652, 835, 956, 1016)

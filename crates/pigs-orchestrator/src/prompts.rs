@@ -1,15 +1,15 @@
-//! 相位指令组装：按用户问题选择中英文，并组合共享的 Pre 分析片段与自适应路由片段。
+//! 相位指令组装：按任务语言选择模板并组合 Pre 片段。 / Assemble phase instructions by task language and compose Pre fragments.
 //!
-//! 这里只负责"指令正文"，**不含用户原问题**——命令与产物的接法由编排层决定：
-//! - Adaptive Pre（-pig / -pigs）：共享分析片段 + 路由/执行许可片段 + 历次失败路径；
-//! - Full-path Pre（-pig3 / -pigs3）：仅共享分析片段 + 历次失败路径；
-//! - Exec：模板里填 `{pre_output}`（Pre 的分析）；
-//! - Post：纯模板（Exec 的草稿不走这里，而是作为 assistant 消息接回对话）。
+//! 这里只组装指令正文，不包含原始用户问题；编排层负责消息拼接。 / Build instruction text only; the orchestrator attaches the original request.
+//! - 自适应 Pre：共享分析、路由许可与失败历史。 / Adaptive Pre combines analysis, routing permission, and failure history.
+//! - 强制完整 Pre：只使用分析片段与失败历史。 / Forced-full Pre uses only analysis and failure history.
+//! - Exec：插入 Pre 分析 `{pre_output}`。 / Exec interpolates the Pre analysis.
+//! - Post：纯模板；Exec 草稿另以助手消息保留。 / Post is template-only; the Exec draft stays in an assistant message.
 
 use crate::lang::Lang;
 
 fn norm(s: &'static str) -> String {
-    // Windows 检出会让 include_str! 带上 CRLF，统一归一为 LF
+    // Windows 检出可能产生 CRLF，统一转为 LF。 / Normalize Windows CRLF to LF.
     s.replace("\r\n", "\n")
 }
 
@@ -39,7 +39,7 @@ fn post_template(lang: Lang) -> String {
     })
 }
 
-/// Post 缺少合法终止标记时，作为新的 user 消息追加的协议纠正提醒。
+/// Post 缺少合法终止标记时追加的协议提醒。 / Protocol reminder appended as a new user message when Post lacks a valid terminal marker.
 pub fn control_protocol_retry_instruction(lang: Lang) -> String {
     norm(match lang {
         Lang::Zh => include_str!("../prompts/control_protocol_retry_zh.txt"),
@@ -56,36 +56,36 @@ fn failure_paths_template(lang: Lang) -> String {
     })
 }
 
-/// 通用 Pre：供未识别模型和独立调用者使用。
+/// 通用 Pre 指令入口。 / Generic Pre instruction entry point.
 pub fn pre_instruction(lang: Lang, failure_paths: &[String]) -> String {
     pre_instruction_for_model(lang, failure_paths, "")
 }
 
-/// Adaptive Pre：共享分析片段 + 路由/执行许可片段；保留 model 参数仅为调用方兼容。
+/// 自适应 Pre：组合分析与路由片段；模型参数保留供调用方兼容。 / Adaptive Pre combines analysis and routing; the model argument remains for caller compatibility.
 pub fn pre_instruction_for_model(lang: Lang, failure_paths: &[String], _model: &str) -> String {
     let analysis = pre_analysis_template(lang)
         .replace("{failure_paths}", &failure_paths_block(lang, failure_paths));
     format!("{}{}", analysis, pre_route_template(lang))
 }
 
-/// Full-path Pre：与 Adaptive Pre 共享完全相同的分析片段，但不追加路由/控制标记说明。
+/// 强制完整 Pre：复用相同分析片段，不追加路由标记说明。 / Forced-full Pre reuses the same analysis without routing-marker instructions.
 pub fn pre_analysis_instruction(lang: Lang, failure_paths: &[String]) -> String {
     pre_analysis_template(lang)
         .replace("{failure_paths}", &failure_paths_block(lang, failure_paths))
 }
 
-/// Exec pig 的指令：追加到最后一条 user 消息文本后面（含 Pre 的分析）。
+/// Exec 指令追加到最后一条用户消息，包含 Pre 分析。 / Append the Exec instruction to the latest user message, including Pre analysis.
 pub fn exec_instruction(lang: Lang, pre_output: &str) -> String {
     exec_template(lang).replace("{pre_output}", pre_output)
 }
 
-/// Post pig 的指令：作为**新的一条** user 消息追加（草稿已作为 assistant 消息在场）。
+/// Post 指令作为新用户消息追加；草稿已在助手消息中。 / Append Post as a new user message; the draft is already in an assistant message.
 pub fn post_instruction(lang: Lang) -> String {
     post_template(lang)
 }
 
 
-/// 失败路径块：空列表 → 空串；非空 → 模板 + 编号列表（legacy 同款编号格式）。
+/// 失败路径块：空列表返回空串，否则生成编号历史。 / Failure-history block: empty when no failures, otherwise a numbered list.
 fn failure_paths_block(lang: Lang, paths: &[String]) -> String {
     if paths.is_empty() {
         return String::new();
@@ -185,9 +185,9 @@ mod tests {
         );
         assert!(p.contains("完成任务目标"));
         assert!(!p.contains("多种合理理解") && !p.contains("简单、直观"));
-        // 不含用户问题（问题留在原 user 消息里，由 body 手术追加）
+        // 不包含原始问题；它留在用户消息中。 / The original user question stays in its user message.
         assert!(!p.contains("帮我完成任务"));
-        // 不再有 legacy 之外的自造块
+        // 不引入额外的历史自定义区块。 / Do not introduce extra legacy-style sections.
         assert!(!p.contains("评审反馈") && !p.contains("上轮"));
     }
 

@@ -1,8 +1,8 @@
-//! pigs-protocol —— 三种协议的公共字典。
+//! pigs-protocol：三种协议的共享类型与操作。 / Shared types and operations for three API protocols.
 //!
-//! 全仓库最底层 crate：路径路由、`-pigs` / `-pig` / `-pigs3` / `-pig3` 后缀与模式规则、请求体手术（改 model / 关流式 /
-//! 去 tools / 替换最后一条 user 消息）、响应文本提取（JSON 与 SSE）、最终答复合成。
-//! 只依赖 serde_json，不做任何 HTTP。
+//! 底层协议模块：路径路由、模型后缀、请求体修改、响应解析与合成。 / Low-level protocol layer: routing, model suffixes, request rewriting, response parsing, and synthesis.
+//! 提供 JSON 与 SSE 的处理能力。 / Supports JSON and SSE payloads.
+//! 不执行 HTTP 通信。 / Does not perform HTTP I/O.
 
 pub mod output;
 pub mod response;
@@ -27,7 +27,7 @@ pub use surgery::{
     strip_tools, SUFFIX_SEPARATOR,
 };
 
-/// 编解码错误。
+/// 编解码错误。 / Codec error.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("请求 body 不是合法 JSON: {0}")]

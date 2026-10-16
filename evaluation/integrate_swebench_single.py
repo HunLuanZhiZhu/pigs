@@ -45,7 +45,7 @@ def main() -> None:
     merged = primary | supplement
     assert len(merged) == 300
 
-    # Save originals first, then atomically replace predictions.
+    # 先保存原始预测，再原子替换结果。 / Save originals before atomically replacing predictions.
     shutil.copy2(original_file, backup)
     orig_sha = hashlib.sha256(backup.read_bytes()).hexdigest()
     tmp = original / "preds.supplement.tmp"

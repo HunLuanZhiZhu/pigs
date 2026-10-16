@@ -176,7 +176,7 @@ def phase_zh(phase: str) -> str:
 def tool_zh(tool: str) -> str:
     if tool in TOOL_ZH:
         return TOOL_ZH[tool]
-    # 不能把未知函数当作已知的“成功操作”
+    # 未知函数不能视为已知成功操作。 / Do not treat unknown functions as confirmed successful operations.
     return '一项尚未归类的操作'
 
 def action_summaries(steps: list[dict], max_items: int=12) -> tuple[list[str], int]:

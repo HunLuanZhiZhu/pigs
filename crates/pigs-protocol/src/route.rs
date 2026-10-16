@@ -1,28 +1,28 @@
-//! 裸路径 → 协议判定，与 `-pigs` / `-pig` / `-pigs3` / `-pig3` 后缀规则（全仓库唯一定义处）。
+//! 裸路径协议识别与 PIGS 模型后缀规则的唯一定义处。 / Single source of truth for bare-path protocol detection and PIGS model suffixes.
 
 
-/// PIGS 输出模式。
+/// PIGS 输出模式。 / PIGS output mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PigsMode {
-    /// 模式 A：各阶段普通文本按执行顺序对客户端可见。
+    /// 模式 A：各阶段普通文本按顺序可见。 / Mode A: phase text remains visible in execution order.
     A,
-    /// 模式 B：内部阶段普通文本隐藏，只提交最终被接受的业务答案。
+    /// 模式 B：隐藏内部阶段文本，只提交被接受的业务答案。 / Mode B: hide internal phase text and return only the accepted business answer.
     B,
 }
 
-/// 支持的三种协议。
+/// 支持的三种协议。 / Three supported protocols.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Protocol {
-    /// OpenAI Chat Completions。
+    /// OpenAI 聊天补全协议。 / OpenAI Chat Completions protocol.
     OpenAI,
-    /// Anthropic Messages。
+    /// Anthropic 消息协议。 / Anthropic Messages protocol.
     Anthropic,
-    /// OpenAI Responses。
+    /// OpenAI 响应协议。 / OpenAI Responses protocol.
     Responses,
 }
 
 impl Protocol {
-    /// 透传到上游时的路径后缀（base_url + 后缀 = 完整上游 URL）。
+    /// 上游路径后缀；基础地址加此后缀构成完整 URL。 / Upstream path suffix appended to the base URL.
     pub fn append_suffix(self) -> &'static str {
         match self {
             Protocol::OpenAI => "/chat/completions",
@@ -32,7 +32,7 @@ impl Protocol {
     }
 }
 
-/// 按裸路径判定协议；未识别路径返回 None。
+/// 根据裸路径识别协议；未知路径返回 None。 / Detect the protocol from a bare path; return None if unknown.
 pub fn protocol_from_path(path: &str) -> Option<Protocol> {
     let p = path.trim_start_matches('/');
     if p == "chat/completions" || p.ends_with("/chat/completions") {
@@ -46,12 +46,12 @@ pub fn protocol_from_path(path: &str) -> Option<Protocol> {
     }
 }
 
-/// 解析 PIGS model 后缀，返回真正上游 model 名与输出模式。
+/// 解析 PIGS 模型后缀，返回上游模型名和输出模式。 / Parse the PIGS suffix into the upstream model name and output mode.
 ///
-/// - `<model>-pigs`  → 模式 A（拼接阶段输出）
-/// - `<model>-pig`   → 模式 B（单一最终业务输出）
-/// - `<model>-pig3`  → 模式 B，强制完整 Pre/Exec/Post 路径
-/// - `<model>-pigs3` → 模式 A，强制完整 Pre/Exec/Post 路径
+/// - `<model>-pigs`  → 模式 A，拼接阶段输出 / Mode A, combined phase output
+/// - `<model>-pig`   → 模式 B，最终业务输出 / Mode B, final business output
+/// - `<model>-pig3`  → 模式 B，强制三阶段 / Mode B, forced three-phase path
+/// - `<model>-pigs3` → 模式 A，强制三阶段 / Mode A, forced three-phase path
 pub fn parse_pigs_model(model: &str) -> Option<(String, PigsMode)> {
     if let Some(real) = model.strip_suffix("-pigs3") {
         Some((real.to_string(), PigsMode::A))
@@ -66,13 +66,13 @@ pub fn parse_pigs_model(model: &str) -> Option<(String, PigsMode)> {
     }
 }
 
-/// model 名是否携带任一种 PIGS 后缀。
+/// 模型名是否有受支持的 PIGS 后缀。 / Whether the model name has a supported PIGS suffix.
 pub fn has_pigs(model: &str) -> bool {
     parse_pigs_model(model).is_some()
 }
 
-/// 剥掉任一种 PIGS 后缀，只返回真正的上游 model 名。
-/// 需要区分 A/B 时使用 [`parse_pigs_model`]。
+/// 去掉 PIGS 后缀，返回上游模型名。 / Remove the PIGS suffix and return the upstream model name.
+/// 需要区分 A/B 时使用 [`parse_pigs_model`]。 / Use [`parse_pigs_model`] when the output mode is needed.
 pub fn strip_pigs_suffix(model: &str) -> Option<String> {
     parse_pigs_model(model).map(|(real, _)| real)
 }

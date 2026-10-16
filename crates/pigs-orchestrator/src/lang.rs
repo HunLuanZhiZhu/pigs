@@ -1,15 +1,15 @@
-//! 语言自动选择：按用户问题中的 CJK 字符占比判定提示词语言。
+//! 语言自动选择：按用户问题中的 CJK 字符选择提示词语言。 / Automatic prompt language selection based on CJK characters in the user request.
 
-/// 提示词语言。
+/// 提示词语言。 / Prompt language.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lang {
-    /// 中文模板。
+    /// 中文模板。 / Chinese template.
     Zh,
-    /// 英文模板。
+    /// 英文模板。 / English template.
     En,
 }
 
-/// 扫描文本前 2000 个字符：出现 CJK 字符即判为中文（用户群以中文为主，宁可选 zh）。
+/// 扫描前 2000 个字符；只要有 CJK 字符即选中文模板。 / Scan up to 2,000 characters and choose Chinese if any CJK character is found.
 pub fn detect_lang(text: &str) -> Lang {
     let sample: Vec<char> = text.chars().take(2000).collect();
     let has_cjk = sample.iter().any(|&c| {

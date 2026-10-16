@@ -1,24 +1,24 @@
-//! 透传客户端：把请求原样搬向上游，把响应原样搬回客户端。
+//! HTTP 透传客户端：转发请求和响应。 / HTTP passthrough client forwarding requests and responses.
 //!
-//! 关键修复（legacy 踩过的坑）：`content-encoding` 必须随 body 转发——
-//! 请求头转发 accept-encoding 后上游会回压缩体，撕掉标签客户端就会把
-//! gzip 字节当明文解析（"Failed to parse JSON"）。
+//! 压缩响应的内容编码头必须与响应体一起转发。 / Preserve content-encoding with the compressed response body.
+//! 上游可能依据 accept-encoding 返回压缩体。 / Upstream may compress responses according to accept-encoding.
+//! 缺少编码头会导致客户端误解析压缩字节。 / Dropping the encoding header makes clients misparse compressed bytes.
 
 use axum::http::{HeaderMap, StatusCode};
 use bytes::Bytes;
 use reqwest::Client;
 
-/// 逐跳头 / 连接管理头：由本段连接自己决定，不转发。
+/// 逐跳连接头不得转发。 / Do not forward hop-by-hop connection headers.
 const HOP_SKIP: &[&str] = &["host", "content-length", "connection", "transfer-encoding"];
 
 #[derive(Debug, Clone)]
 pub struct Upstream {
     client: Client,
-    /// 三个协议各一个 base（anthropic 的版本段属于协议路径，base 不带）。
+    /// 三协议分别配置基础地址。 / Separate base URLs for the three protocols.
     openai: String,
     responses: String,
     anthropic: String,
-    /// 非空时覆盖客户端的鉴权头。
+    /// 非空配置覆盖客户端鉴权。 / Nonempty key overrides client authentication.
     key: String,
 }
 
@@ -26,9 +26,9 @@ impl Upstream {
     pub fn new(upstream: &crate::config::Upstreams, key: &str) -> Self {
         Self {
             client: Client::builder()
-                // 不设总超时：长流式对话不受"10 分钟毒墙"限制
+                // 不设总超时，允许长时间流式连接。 / No total timeout, allowing long-lived streams.
                 .connect_timeout(std::time::Duration::from_secs(30))
-                // 透传必须逐字节：关掉自动解压，content-encoding 与 body 一起搬给客户端
+                // 禁用自动解压以保持压缩体和编码头一致。 / Disable decompression to preserve body/encoding consistency.
                 .gzip(false)
                 .brotli(false)
                 .deflate(false)
@@ -41,10 +41,10 @@ impl Upstream {
         }
     }
 
-    /// 按路径选 base：三协议各一个；非协议路径（如 /v1/models）落 OpenAI 约定。
+    /// 根据协议选基础地址；其它路径默认 OpenAI。 / Select protocol base URL; default unknown paths to OpenAI.
     ///
-    /// 客户端路径逐字上浮、零改写：anthropic 的 `/v1` 属于协议路径（base 不带
-    /// 版本段），chat/responses 的版本段属于 base（路径不带 /v1）。
+    /// 原路径不改写；Anthropic 的版本属于路径。 / Preserve the client path; Anthropic puts its version in the path.
+    /// Chat/Responses 的版本段属于基础地址。 / Chat/Responses place versioning in the base URL.
     fn base_for(&self, path: &str) -> &str {
         match pigs_protocol::protocol_from_path(path) {
             Some(pigs_protocol::Protocol::OpenAI) => &self.openai,
@@ -54,8 +54,8 @@ impl Upstream {
         }
     }
 
-    /// 转发头集合：跳过逐跳头；`key` 覆盖模式时替换鉴权头，其余端到端头
-    /// （content-type、anthropic-version、x-opencode-session 等）原样保留。
+    /// 跳过逐跳头，必要时覆盖鉴权，其它端到端头保留。 / Skip hop-by-hop headers, override auth if configured, and keep end-to-end headers.
+    /// 保留 content-type、协议版本及会话头。 / Preserve content-type, protocol version, and session headers.
     pub fn forward_headers(&self, headers: &HeaderMap) -> Vec<(String, String)> {
         let override_auth = !self.key.is_empty();
         let mut out = Vec::new();
@@ -79,7 +79,7 @@ impl Upstream {
         out
     }
 
-    /// 拼上游 URL：按协议选 base + 原路径（+ 原查询串）。
+    /// 上游 URL = 协议基础地址 + 原路径和查询串。 / Upstream URL = protocol base + original path and query.
     pub(crate) fn url(&self, path: &str, query: Option<&str>) -> String {
         let mut url = format!("{}{}", self.base_for(path), path_char(path));
         if let Some(q) = query.filter(|q| !q.is_empty()) {
@@ -89,7 +89,7 @@ impl Upstream {
         url
     }
 
-    /// 发送透传请求，返回状态码、响应头与响应（body 由调用方决定全读还是流式）。
+    /// 发送透传请求，返回状态码、头和响应体。 / Forward a request and return status, headers, and response body.
     pub async fn send(
         &self,
         method: reqwest::Method,

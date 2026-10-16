@@ -1,6 +1,6 @@
-//! HTTP 诊断抓包：每个请求/响应单独落一个明文文件。
+//! HTTP 诊断抓包：每个请求/响应各写一个文件。 / HTTP diagnostics: write individual plaintext files per request and response.
 //!
-//! `basic` 只记录元数据与头，`max` 额外记录完整 body；敏感头始终打码。
+//! basic 记录元数据和头，max 追加正文；敏感头总是脱敏。 / basic logs metadata/headers; max includes bodies; sensitive headers are redacted.
 
 use crate::config::{LogDetail, LoggingConfig};
 use axum::http::HeaderMap;
@@ -104,7 +104,7 @@ impl ExchangeLog {
         self.write_request("upstream-request", method, path, query, headers, body);
     }
 
-    /// 写一份只包含诊断字段的明文事件文件，与原始 request/response 使用同一 exchange id。
+    /// 用同一交换标识写入诊断事件文件。 / Write a diagnostic event using the request/response exchange ID.
     pub fn write_event(&self, stage: &str, fields: &[String]) {
         if self.diagnostics.detail == LogDetail::Off {
             return;

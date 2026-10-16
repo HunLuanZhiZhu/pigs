@@ -1,20 +1,20 @@
-//! 控制面标记：PIGEND / PIGNEXT / PIGFAIL。相位结束条件是"模型答完"；标记仅用于路由。
+//! 控制面标记只决定相位路由，相位结束仍由模型完成决定。 / Control markers determine routing; a phase still ends when model generation finishes.
 
-/// 成功结束标记（整轮完成）。
+/// 成功完成标记。 / Successful completion marker.
 pub const PIGEND: &str = "PIGEND";
-/// 可修补标记（Post 验收后回到 Exec 继续执行）。
+/// 修补标记：从 Post 返回 Exec。 / Repair marker: return from Post to Exec.
 pub const PIGNEXT: &str = "PIGNEXT";
-/// 失败路径标记（回到 Pre 重规划）。
+/// 失败标记：返回 Pre 重规划。 / Failure marker: return to Pre for replanning.
 pub const PIGFAIL: &str = "PIGFAIL";
 
-/// 标记类型。
+/// 控制标记类型。 / Control marker type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Marker {
-    /// PIGEND —— 整轮正常结束。
+    /// PIGEND：整轮完成。 / PIGEND: turn completed.
     End,
-    /// PIGNEXT —— 当前结果可继续修补，回 Exec。
+    /// PIGNEXT：回 Exec 修补。 / PIGNEXT: return to Exec for repair.
     Next,
-    /// PIGFAIL —— 路径失败，需要重规划。
+    /// PIGFAIL：路径失败并重规划。 / PIGFAIL: failed path requiring replanning.
     Failed,
 }
 
@@ -27,10 +27,10 @@ fn control_marker(line: &str) -> Option<Marker> {
     }
 }
 
-/// 从 Pre 的输出中找到第一条独占一行的路由标记，并将它前后的正文分开。
-/// 简单任务的 PIGEND 是分析/执行的分界线，因此允许后面继续输出正文；
-/// 复杂任务的 PIGNEXT 仍应为最后一行，由编排器检查。
-/// 标记之前必须有实质分析，不能只用裸标记绕过五问。
+/// 查找 Pre 的首个独占行标记，拆分前后正文。 / Find the first standalone Pre marker and split text around it.
+/// 简单任务的 PIGEND 是分析与执行分界，后面允许业务正文。 / On simple tasks, PIGEND separates analysis from execution; business text may follow.
+/// 复杂任务要求 PIGNEXT 是末行，由编排器检查。 / The orchestrator enforces a final-line PIGNEXT for complex tasks.
+/// 标记之前必须有实质分析。 / Substantive analysis must precede the marker.
 pub fn split_pre_decision(text: &str) -> Option<(Marker, String, String)> {
     let mut analysis = Vec::new();
     let mut lines = text.lines();
@@ -48,8 +48,8 @@ pub fn split_pre_decision(text: &str) -> Option<(Marker, String, String)> {
     None
 }
 
-/// Pre 使用的严格检测：仅当**最后一个非空行**是控制标记时才算检测到，且要求前面
-/// 存在非标记的实质行，防止简单路径只输出一个光秃秃的标记。
+/// Pre 严格检测：最后非空行必须是标记，前面必须有实质正文。 / Strict Pre detection requires a final nonempty marker line and earlier substantive text.
+/// 拒绝只含标记的输出。 / Reject marker-only output.
 pub fn detect_marker(text: &str) -> Option<Marker> {
     let lines: Vec<&str> = text
         .lines()
@@ -65,8 +65,8 @@ pub fn detect_marker(text: &str) -> Option<Marker> {
     control_marker(last)
 }
 
-/// Post 使用的终止检测：只要求最后一个非空行是控制标记。
-/// Post 的任务结果已经存在于 Exec 上下文中，因此 `PIGEND` / `PIGNEXT` / `PIGFAIL` 单独一行也是合法路由信号。
+/// Post 终止检测：只检查最后非空行是否为标记。 / Post terminal detection checks only the last nonempty line.
+/// Post 已继承 Exec 结果，因此单独一行的控制标记也合法。 / Post inherits the Exec result, so a standalone marker is valid.
 pub fn detect_terminal_marker(text: &str) -> Option<Marker> {
     text.lines()
         .rev()
@@ -74,7 +74,7 @@ pub fn detect_terminal_marker(text: &str) -> Option<Marker> {
         .and_then(control_marker)
 }
 
-/// 从文本中剔除所有控制标记行。
+/// 删除所有控制标记行。 / Remove all control-marker lines.
 pub fn strip_markers(text: &str) -> String {
     text.lines()
         .filter(|line| control_marker(line).is_none())
@@ -84,18 +84,18 @@ pub fn strip_markers(text: &str) -> String {
         .to_string()
 }
 
-/// 该行（去掉首尾空白后）是否就是一个控制标记。
+/// 判断去除空白后是否为控制标记行。 / Test whether a trimmed line is a control marker.
 pub fn is_control_marker_line(line: &str) -> bool {
     control_marker(line).is_some()
 }
 
-/// 这段文本是否"还有可能长成控制标记"（即它是某个标记的开头）。
+/// 判断文本是否为控制标记前缀。 / Test whether the text is a prefix of any control marker.
 fn is_possible_marker_prefix(text: &str) -> bool {
     !text.is_empty()
         && (PIGEND.starts_with(text) || PIGNEXT.starts_with(text) || PIGFAIL.starts_with(text))
 }
 
-/// 删除整行控制标记，但保留其它行与换行布局（用于流式增量转发）。
+/// 删除标记行但保留其它文本的换行布局。 / Remove marker lines while preserving other line breaks.
 pub fn strip_control_lines_preserving_layout(text: &str) -> String {
     text.split('\n')
         .filter(|line| !is_control_marker_line(line.trim_end_matches('\r')))
@@ -103,18 +103,18 @@ pub fn strip_control_lines_preserving_layout(text: &str) -> String {
         .join("\n")
 }
 
-/// 流式增量过滤器：把上游增量按块喂进来，吐出可以立刻转发给客户端的可见文本。
+/// 流式过滤器：接收增量并返回可立即转发的文本。 / Streaming filter: consume deltas and return immediately forwardable text.
 ///
-/// 控制标记可能跨增量到达（"PIG" + "END"），所以**只压住两种尾巴**：
-/// 1. 可能正在长成标记的最后一行（`PIG` → `PIGEND` / `PIGNEXT`），连它前面那个换行一起留着——
-///    标记被丢弃时，这个换行也跟着丢掉，不会在答复里留下多余空行；
-/// 2. 悬在末尾、还没有下一行内容的换行（等下一行有实质内容了再放行）。
+/// 标记可能跨增量，因此暂缓转发以下两种尾部。 / Markers may span deltas, so hold back the following two suffix types.
+/// 1. 可能构成标记的末行及前面的换行。 / 1. A potential marker tail and its preceding newline.
+///    丢弃标记时同时丢弃分隔换行。 /    Discard the separator newline along with the marker.
+/// 2. 尚无下行内容的末尾换行。 / 2. A trailing newline without subsequent content.
 ///
-/// 其余文本**一拿到就放行**（逐字流式，而不是攒够一整行才动）。
-/// 安全性：凡是还能拼成控制标记的部分都被压住了，已经发出去的字符不可能事后变成标记。
+/// 其余文本立即流式放行，无需攒满一行。 / Forward other text immediately without waiting for a full line.
+/// 安全性：所有可能成为标记的后缀都会暂缓发送。 / Safety: hold any suffix that could still form a marker.
 #[derive(Debug, Default)]
 pub struct MarkerFilter {
-    /// 尚未决定是否转发的待处理文本。
+    /// 尚待决定是否转发的缓冲文本。 / Buffered text awaiting a forwarding decision.
     pending: String,
 }
 
@@ -123,7 +123,7 @@ impl MarkerFilter {
         Self::default()
     }
 
-    /// 喂入一段（含标记的）原始增量，返回可以转发给客户端的可见文本（可能为空串）。
+    /// 处理原始增量并返回可见文本（可能为空）。 / Process a raw delta and return visible text (possibly empty).
     pub fn push(&mut self, delta: &str) -> String {
         self.pending.push_str(delta);
         let cut = safe_forward_end(&self.pending);
@@ -134,9 +134,9 @@ impl MarkerFilter {
         strip_control_lines_preserving_layout(&prefix)
     }
 
-    /// 流结束：处理缓冲里剩下的一点尾巴。
+    /// 流结束时清理剩余缓冲。 / Flush the remaining buffer when the stream ends.
     ///
-    /// 此时剩余内容只可能是"被截断的标记"或"为标记预留的分隔换行"——都不该发给客户端。
+    /// 剩余的部分标记或分隔换行不得泄漏给客户端。 / Do not leak partial markers or reserved newlines.
     pub fn finish(&mut self) -> String {
         let rest = std::mem::take(&mut self.pending);
         let visible = strip_control_lines_preserving_layout(&rest);
@@ -148,16 +148,16 @@ impl MarkerFilter {
     }
 }
 
-/// 返回"可以安全转发"的字节边界（此边界之前的部分可以立刻发出去）。
+/// 返回可以安全转发的字节末端位置。 / Return the byte boundary up to which text is safe to forward.
 fn safe_forward_end(pending: &str) -> usize {
     let line_start = pending.rfind('\n').map(|i| i + 1).unwrap_or(0);
     let tail = pending[line_start..].trim();
     if is_possible_marker_prefix(tail) {
-        // 保留最后一行（含它前面的那个换行）：cut 落在上一个换行之前
+        // 暂存末行和前置换行。 / Hold the last line and its preceding newline.
         return pending[..line_start].rfind('\n').unwrap_or(0);
     }
     if pending.ends_with('\n') {
-        // 末尾悬着的换行先留着，等下一行有内容再一起放行
+        // 暂存末尾换行直到下一行出现。 / Hold a trailing newline until the next line starts.
         return pending.len() - 1;
     }
     pending.len()
@@ -187,7 +187,7 @@ mod tests {
         assert_eq!(detect_marker("分析……\nPIGEND\n"), Some(Marker::End));
         assert_eq!(detect_marker("x\nPIGNEXT"), Some(Marker::Next));
         assert_eq!(detect_marker("x\nPIGFAIL"), Some(Marker::Failed));
-        assert_eq!(detect_marker("PIGEND"), None); // 无实质行
+        assert_eq!(detect_marker("PIGEND"), None); // 无实质正文 / No substantive text
         assert_eq!(detect_marker("PIGFAIL\n理由\nPIGEND"), Some(Marker::End));
         assert_eq!(detect_marker("普通回答，无标记"), None);
     }
@@ -212,7 +212,7 @@ mod tests {
         assert_eq!(strip_markers("干净文本"), "干净文本");
     }
 
-    /// 把一整段原始文本按任意粒度切片喂进过滤器，拼接结果必须等于"去标记后的文本"。
+    /// 任意分块过滤后的拼接结果应等于去除标记的原文。 / Arbitrarily chunked filtering must match the marker-stripped original.
     fn filtered(raw: &str, step: usize) -> String {
         let mut filter = MarkerFilter::new();
         let mut out = String::new();
@@ -232,10 +232,10 @@ mod tests {
             ("第一行\n第二行\nPIGFAIL", "第一行\n第二行"),
             ("分析\n\n结论\nPIGEND\n", "分析\n\n结论"),
             ("没有标记的普通回答", "没有标记的普通回答"),
-            // 标记词出现在句中/行首但非独占一行都不算标记
+            // 标记必须独占整行。 / Markers must occupy an entire line.
             ("说明 PIGEND 的用法\n正文", "说明 PIGEND 的用法\n正文"),
             ("PIGEND 不是最后一行\n结尾", "PIGEND 不是最后一行\n结尾"),
-            // 普通正文里以 PIG 开头但不成标记的词
+            // 保留以 PIG 开头但不是标记的正文。 / Preserve ordinary words beginning with PIG.
             ("答案\nPIGX 是别的词", "答案\nPIGX 是别的词"),
         ];
         for (raw, want) in cases {
@@ -249,13 +249,13 @@ mod tests {
     fn filter_detects_marker_split_across_chunks() {
         let mut filter = MarkerFilter::new();
         assert_eq!(filter.push("答案完成"), "答案完成");
-        assert_eq!(filter.push("\nPIG"), ""); // 可能是标记开头 → 压住
+        assert_eq!(filter.push("\nPIG"), ""); // 暂存可能的标记前缀 / Hold a possible marker prefix
         assert_eq!(filter.push("E"), "");
-        assert_eq!(filter.push("ND\n"), ""); // 整行是标记 → 丢掉
+        assert_eq!(filter.push("ND\n"), ""); // 丢弃整行标记 / Discard the full marker line
         assert_eq!(filter.finish(), "");
     }
 
-    /// 逐字放行：普通文本一拿到就出去，不必等一整行写完。
+    /// 普通文本立即逐字放行。 / Forward ordinary text immediately, character by character.
     #[test]
     fn filter_forwards_plain_text_immediately() {
         let mut filter = MarkerFilter::new();
@@ -263,14 +263,14 @@ mod tests {
         assert_eq!(filter.push("案是 4"), "案是 4");
         assert_eq!(filter.finish(), "");
 
-        // 末尾换行也很快放行（下一行有内容时）
+        // 下一行出现后放行暂存换行。 / Release the held newline once the next line starts.
         let mut filter = MarkerFilter::new();
         assert_eq!(filter.push("第一行\n"), "第一行");
         assert_eq!(filter.push("第二"), "\n第二");
         assert_eq!(filter.finish(), "");
     }
 
-    /// 被压住的尾巴若不是标记（"PIGX"），换行不会被吞掉。
+    /// 被暂存的非标记尾部不会丢失换行。 / Preserve newlines when a held suffix is not a marker.
     #[test]
     fn filter_restores_newline_when_supposed_marker_was_not_one() {
         let mut filter = MarkerFilter::new();

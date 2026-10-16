@@ -521,7 +521,7 @@ def swe_stats(job_dir: Path) -> tuple[list[dict[str, Any]], set[str], set[str], 
     for path in trajectories:
         data = load_json(path)
         if isinstance(data, list):
-            # Some historical/test fixtures use a list wrapper; formal v2 files are dicts.
+            # 部分旧测试数据用列表包装，正式 v2 使用字典。 / Some old fixtures use lists; formal v2 files use dicts.
             data = data[0] if data and isinstance(data[0], dict) else {}
         if not isinstance(data, dict):
             continue
@@ -553,7 +553,7 @@ def exact_mcnemar_p(fixes: int, breaks: int) -> float | None:
     if n == 0:
         return 1.0
     k = min(fixes, breaks)
-    # Exact two-sided binomial test under p=0.5.
+    # 假设 p=0.5 的精确双侧二项检验。 / Exact two-sided binomial test under p=0.5.
     tail = sum(math.comb(n, i) for i in range(0, k + 1)) / (2 ** n)
     return min(1.0, 2.0 * tail)
 
@@ -697,7 +697,7 @@ def summarize_run(run_root: Path, pigs_log_dir: Path | None = None, write_files:
             }
             row["predictions"] = pred
             material["review_maps"] = review_maps
-            # Fixed benchmark denominator is meaningful for prompt-level task metrics.
+            # 固定基准分母用于提示词级任务统计。 / Fixed benchmark denominator matters for prompt-level metrics.
             fixed: dict[str, float] = {}
             for name, mapping in review_maps.items():
                 if dataset == "gsm8k" or name.startswith("prompt_level_"):

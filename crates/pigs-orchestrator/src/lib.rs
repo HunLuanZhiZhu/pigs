@@ -1,14 +1,14 @@
-//! pigs-orchestrator —— 编排引擎。
+//! pigs-orchestrator：分阶段编排引擎。 / Phased orchestration engine.
 //!
-//! 三只 pig 组成一头 pigs：Pre（规划/分流）→ Exec（执行）→ Post（验收），
-//! 由 PIGEND / PIGNEXT / PIGFAIL 控制标记与预算驱动的状态机串起来。
+//! Pre 负责规划与路由，Exec 执行，Post 核验。 / Pre plans/routes, Exec performs work, and Post verifies.
+//! 控制标记和执行预算驱动状态机转换。 / Control markers and execution budgets drive phase transitions.
 //!
-//! **一只 pig 是一段对话区间**：模型要工具 → 客户端执行 → 结果回填 → 模型继续，
-//! 直到模型这一轮不再要工具，相位才算产出（跨等待的现场见 [`state::Continuation`]）。
-//! 模型要工具时，这一轮就**暂停**，把调用原样交给客户端；客户端带结果回来时接着同一只 pig 继续。
+//! 每个相位可跨多轮工具调用、执行和回填。 / Each phase may span multiple tool-call and tool-result exchanges.
+//! 只有模型停止请求工具时，相位才有完整产出。 / A phase yields its output only when the model stops requesting tools.
+//! 工具调用暂停当前相位；客户端回填后续接。 / Tool calls pause the phase, resumed when the client returns results.
 //!
-//! 红线（见仓库根 `AGENTS.md`）：相对上游只允许改**模型名**与**提示词尾部追加**；
-//! 不认识 axum（网络走 [`Transport`] 注入）、不做重试、不知道上游是谁。
+//! 约束：相对上游只改变模型名和末尾阶段提示。 / Constraint: only rewrite the model name and append phase instructions.
+//! 网络通过 [`Transport`] 注入，本层不负责 HTTP/重试。 / Networking is injected via [`Transport`]; this layer owns neither HTTP nor retries.
 
 pub mod lang;
 pub mod markers;
@@ -24,23 +24,23 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use transport::{LiveSink, SubRequest, SubResponse, Transport, TransportError};
 
-/// 会话头名：编排产生的稳定会话标识，所有子请求共用（mini-proxy 见已带就不覆盖）。
+/// 所有子请求共用的会话头名称。 / Session header name shared across all subrequests.
 pub const SESSION_HEADER: &str = "x-opencode-session";
 
-/// 回环内部令牌头（proxy 验证后跳过 -pigs 分流，防递归）。
+/// 防止回环递归的内部令牌头。 / Internal token header to prevent loopback recursion.
 pub const LOOPBACK_TOKEN_HEADER: &str = "x-pigs-loopback";
 
-/// 默认编排次数；部署配置可以覆盖。
-/// 工具暂停/恢复不重复计入 Exec 执行次数。
+/// 默认 Exec 次数上限，可由配置覆盖。 / Default Exec run limit, overridable by configuration.
+/// 工具暂停/恢复不增加 Exec 次数。 / Tool pauses/resumes do not increment Exec runs.
 pub const DEFAULT_MAX_EXEC_RUNS: u32 = 3;
 pub const DEFAULT_MAX_POST_PROTOCOL_RETRIES: u32 = 1;
 
-/// 最终向下游汇报 usage 的语义。
+/// 下游 usage 汇报模式。 / Downstream usage reporting mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UsageMode {
-    /// 返回 total_tokens 最大的那次真实上游调用的完整 usage 对象，用于 coding agent 判断上下文占用。
+    /// max：返回 token 最多的单次上游 usage。 / Max: return usage from the highest-token upstream call.
     Max,
-    /// 将本次客户端请求触发的所有真实上游调用 usage 按 JSON 数值字段逐项相加，用于评测统计真实消耗。
+    /// sum：累加本次客户端请求全部上游 usage 数值。 / Sum: aggregate numeric usage across this client's upstream calls.
     Sum,
 }
 
@@ -50,14 +50,14 @@ impl Default for UsageMode {
     }
 }
 
-/// 单只 pig（一个相位）。
+/// 单个 pig 相位。 / Individual pig phase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pig {
-    /// 规划 / 分流 / GOAL 声明。
+    /// 规划和任务路由。 / Planning and task routing.
     Pre,
-    /// 信息收集 + 起草答复（工具调用多发生在这个相位）。
+    /// 获取信息并执行任务（常包含工具调用）。 / Information gathering and task execution, often using tools.
     Exec,
-    /// 纯核验 + 路由：接受、回 Exec 继续修补、或回 Pre 重规划。
+    /// 结果核验并选择接受、修补或重规划。 / Verify and choose acceptance, repair, or replanning.
     Post,
 }
 
@@ -71,112 +71,112 @@ impl Pig {
     }
 }
 
-/// 一只 pig 的生命周期事件（proxy 用它边编排边推 SSE 帧）。
+/// 单相位生命周期事件，供代理流式响应使用。 / Phase lifecycle event for proxy streaming.
 #[derive(Debug, Clone)]
 pub enum PigEvent {
-    /// 该 pig 的子请求已发出。
+    /// 子请求已发送。 / Subrequest sent.
     Start(Pig),
-    /// 一段可安全转发的可见文本（控制标记已过滤）。
+    /// 已过滤标记的可见文本增量。 / Visible text delta with markers removed.
     Delta(String),
-    /// 一段思考文本（原样转发，不过滤）。
+    /// 原样转发的思考增量。 / Reasoning delta forwarded unchanged.
     Thought(String),
-    /// Responses 的思考摘要增量（带 item_id）。
+    /// 带条目标识的 Responses 思考摘要。 / Responses reasoning summary with item ID.
     ThoughtSummary { item_id: String, text: String },
-    /// 思考块的签名（Anthropic：思考块末尾的签名，必须跟着一起给客户端）。
+    /// Anthropic 思考块签名。 / Anthropic thinking-block signature.
     ThoughtSignature(String),
-    /// 该 pig 的文本流结束。
+    /// 当前相位文本流结束。 / End of the phase text stream.
     End(Pig),
 }
 
-/// 进度回调：整个编排过程中按顺序收到 [`PigEvent`]。
+/// 按顺序报告编排生命周期事件。 / Callback emitting ordered orchestration events.
 pub type ProgressSink = Arc<dyn Fn(PigEvent) + Send + Sync>;
 
-/// 编排输入：proxy 已解析好的现场（每次客户端请求一份）。
+/// 代理解析后的编排输入。 / Parsed orchestration input from the proxy.
 #[derive(Debug, Clone)]
 pub struct TurnInput {
-    /// 协议（由请求路径判定）。
+    /// 请求路径对应的协议。 / Protocol determined from the request path.
     pub protocol: proto::Protocol,
-    /// 输出模式：A 逐阶段暴露正文；B 只提交最终被接受的业务正文。
+    /// 输出模式 A 展示阶段正文，B 只提交最终业务正文。 / Mode A exposes phases; B commits only the final business text.
     pub mode: proto::PigsMode,
-    /// 实验开关：使用纯规划 Pre 并强制进入 Exec。
+    /// 强制完整路径开关：Pre 仅规划，之后进入 Exec。 / Forced-full switch: planning-only Pre followed by Exec.
     pub force_full: bool,
-    /// 原始请求 body（JSON）。客户端请求什么就是什么，只允许在尾部追加。
+    /// 原始客户端 JSON 请求体。 / Original client JSON request body.
     pub body: serde_json::Value,
-    /// 协议路径（子请求原样使用）。
+    /// 子请求使用的协议路径。 / Protocol path preserved for subrequests.
     pub path: String,
-    /// 原查询串（有就原样带上）。
+    /// 原始查询串。 / Original query string.
     pub query: Option<String>,
-    /// 需要随行的客户端端到端头（鉴权、会话头等，原样透传）。
+    /// 原样携带的端到端请求头。 / End-to-end headers preserved in subrequests.
     pub base_headers: Vec<(String, String)>,
-    /// 客户端自带的会话头值（没有则为 None，编排生成）。
+    /// 客户端会话标识；缺失时由编排生成。 / Client session ID, generated if absent.
     pub client_session: Option<String>,
 }
 
-/// 跑一轮编排需要的外部依赖。
+/// 一轮编排的外部依赖。 / External dependencies for one orchestration turn.
 pub struct Runtime {
-    /// 子请求传输（生产实现 = proxy 的 loopback）。
+    /// 子请求传输接口（生产为回环）。 / Subrequest transport, using loopback in production.
     pub transport: Arc<dyn Transport>,
-    /// 工具调用暂停的现场存储。
+    /// 工具暂停状态存储。 / Storage for tool-paused state.
     pub store: Arc<Mutex<ContinuationStore>>,
-    /// 有回调 = 客户端要流式：子请求按流式读、增量边到边转发。
+    /// 提供回调时按流式传输。 / A callback enables streaming subrequests and deltas.
     pub progress: Option<ProgressSink>,
 }
 
-/// 一轮编排的结果：跑完，或者被工具调用打断。
+/// 单轮编排结果：完成或工具暂停。 / Turn outcome: completed or paused for tools.
 #[derive(Debug, Clone)]
 pub enum Outcome {
-    /// 本轮完成（正常验收，或最后一次 Exec 直接完成）。
+    /// 已完成的编排。 / Completed orchestration.
     Completed(TurnResult),
-    /// 模型要工具：调用已交给客户端，等它执行完带结果回来。
+    /// 等待客户端工具结果的暂停状态。 / Paused state awaiting client tool results.
     Paused(PausedTurn),
 }
 
-/// 完成后的结果。
+/// 完成结果。 / Completed result.
 #[derive(Debug, Clone)]
 pub struct TurnResult {
-    /// 最终答复。模式 A = 各只 pig 可见文本拼接；模式 B = 最终 committed business text。
+    /// 最终答复：模式 A 拼阶段文本，B 提交业务正文。 / Final answer: Mode A joins phases, B returns committed business text.
     pub text: String,
-    /// 客户端业务正文片段：模式 A 按执行顺序；模式 B 只有最终提交的一段。
+    /// 按模式选择的可见业务正文段。 / Visible business text segments selected by mode.
     pub visible: Vec<String>,
-    /// 最终内容序列（文本 + 思考 + 其它原生块，按顺序）；已消费的工具调用不会再次出现。
+    /// 按序输出最终原生内容，不重发已消费工具调用。 / Final ordered native parts without consumed tool calls.
     pub parts: Vec<Part>,
-    /// 结束方式（诊断/日志用）。
+    /// 结束原因，供日志诊断。 / Completion reason for diagnostics.
     pub ended_with: EndedWith,
-    /// 实际使用的会话头值。
+    /// 使用的会话标识。 / Effective session ID.
     pub session: String,
-    /// 完整走过的 pig 序列（含工具往返后的重复相位，诊断用）。
+    /// 实际进入的相位历史。 / History of visited phases.
     pub path: Vec<Pig>,
-    /// 当前策略选中的上游 usage 原对象（上游没给就是 None）。
+    /// 根据策略选出的 usage 原对象。 / Usage object selected by the reporting policy.
     pub usage: Option<serde_json::Value>,
-    /// 最后一个相位给的停止原因（原样回传）。
+    /// 最后一相位的停止原因。 / Stop reason from the final phase.
     pub stop_reason: Option<String>,
 }
 
-/// 被工具调用打断时的产出。
+/// 工具调用导致的暂停产出。 / Output produced when paused for a tool.
 #[derive(Debug, Clone)]
 pub struct PausedTurn {
-    /// 交给客户端执行的工具调用（协议原生，原样）。
+    /// 交付客户端的原生工具调用。 / Native tool calls delivered to the client.
     pub tool_calls: Vec<ToolCall>,
-    /// 到目前为止的客户端业务正文。模式 B 在工具暂停时通常为空，因为候选尚未验收。
+    /// 暂停时已可见的正文；模式 B 未验收候选不在其中。 / Visible text on pause; Mode B excludes unaccepted candidates.
     pub text: String,
-    /// 暂停响应的内容序列：持久内容 + 本轮一次性的工具调用，顺序权威。
+    /// 暂停响应按序组合持久内容与本轮工具调用。 / Paused output combines persistent parts and current tool calls in order.
     pub parts: Vec<Part>,
-    /// 按当前 usage 模式聚合后的本次客户端请求 usage。
+    /// 暂停前聚合的请求 usage。 / Request usage aggregated through this pause.
     pub usage: Option<serde_json::Value>,
-    /// 这一轮的停止原因（上游原话，通常是 tool_calls / tool_use）。
+    /// 暂停轮次的原生停止原因。 / Native stop reason for the paused turn.
     pub stop_reason: Option<String>,
-    /// 恢复句柄（proxy 存自己手里，客户端不感知）。
+    /// 代理内部保存的续接句柄。 / Continuation handle kept internally by the proxy.
     pub continuation_id: String,
 }
 
-/// 结束方式。
+/// 结束类型。 / Completion type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EndedWith {
-    /// Pre 判定为简单问题，直接作答。
+    /// Pre 简单路径直接完成。 / Simple path completed within Pre.
     SimplePath,
-    /// Post 验收通过。
+    /// Post 验收通过。 / Accepted by Post.
     PigEnd,
-    /// 已达到 Exec 执行次数上限；最后一次 Exec 完成后直接结束，未再进入 Post。
+    /// Exec 达到执行上限后直接结束。 / Finish when the Exec run limit is reached.
     ExecLimit,
 }
 
@@ -190,7 +190,7 @@ impl EndedWith {
     }
 }
 
-/// 编排错误。
+/// 编排错误。 / Orchestration error.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("协议层错误: {0}")]
@@ -209,7 +209,7 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// 编排器。只持有本轮控制次数配置，可全局共享。
+/// 可复用的编排器，持有执行预算配置。 / Reusable orchestrator holding execution budget settings.
 #[derive(Debug, Clone)]
 pub struct Orchestrator {
     max_exec_runs: u32,
@@ -252,7 +252,7 @@ impl Orchestrator {
         }
     }
 
-    /// 开一轮新编排（客户端的第一发请求）。
+    /// 启动新编排轮次。 / Start a new orchestration turn.
     pub async fn run(&self, input: TurnInput, rt: Runtime) -> Result<Outcome> {
         let session = input
             .client_session
@@ -264,7 +264,7 @@ impl Orchestrator {
         self.drive(input, rt, state).await
     }
 
-    /// 接着被工具调用打断的那只 pig 继续（客户端带工具结果回来了）。
+    /// 从客户端工具结果恢复暂停相位。 / Resume a tool-paused phase with client results.
     pub async fn resume(
         &self,
         input: TurnInput,
@@ -283,18 +283,18 @@ impl Orchestrator {
                 "continuation 的 PIGS 模式与恢复请求不一致".into(),
             ));
         }
-        // continuation 只负责判断“这次请求是不是上一轮工具调用的继续”。
-        // 一旦确认恢复，就保留客户端从匹配工具结果开始追加的后续消息原样，不擅自过滤 reminder/user。
+        // 续接只用于判断请求是否匹配工具恢复。 / Continuation determines whether the request resumes tool calls.
+        // 恢复后保留工具结果及之后的原生消息。 / Preserve tool results and all subsequent native messages on resume.
         let resume_items =
             proto::continuation_resume_items(input.protocol, &input.body, &continuation.pending);
         continuation.state.phase_transcript.extend(resume_items);
-        // usage 属于单次客户端 API 响应。上一发工具暂停时已经向客户端汇报，
-        // 恢复请求必须从零重新统计，避免 sum 模式重复计费、max 模式沿用旧上下文快照。
+        // usage 以本次客户端请求为边界。 / Usage is scoped to each client API request.
+        // 恢复时重置 usage，防止重复计费或沿用旧快照。 / Reset usage on resume to avoid duplicate charges or stale context usage.
         continuation.state.usage = None;
         self.drive(input, rt, continuation.state).await
     }
 
-    /// 为新进入的 pig 构造一次基础请求。阶段提示在这里注入，之后整个 pig 都复用它。
+    /// 进入相位时创建基础请求并只注入一次提示。 / Create the phase base request and inject its prompt once.
     fn build_phase_base_body(
         input: &TurnInput,
         state: &TurnState,
@@ -327,7 +327,7 @@ impl Orchestrator {
         Ok(body)
     }
 
-    /// 物化“Exec 已执行完、尚未进入 Post”的完整上下文截面。
+    /// 保存 Exec 完成但尚未进入 Post 的快照。 / Snapshot the completed Exec context before Post.
     fn build_exec_checkpoint(
         input: &TurnInput,
         state: &TurnState,
@@ -340,7 +340,7 @@ impl Orchestrator {
         Ok(body)
     }
 
-    /// 从 Exec checkpoint 构造 Post：只在 checkpoint 后追加一条 Post 核验 user 消息。
+    /// 从 Exec 快照构造 Post，只追加新核验指令。 / Build Post from the Exec checkpoint with one new verification message.
     fn build_post_base_from_checkpoint(
         input: &TurnInput,
         state: &TurnState,
@@ -355,8 +355,8 @@ impl Orchestrator {
         Ok(body)
     }
 
-    /// Post 返回 PIGNEXT 时，砍回最近一次 Exec 完成的 checkpoint。
-    /// 然后复用原 Exec 指令模板，只把“执行前分析”替换为 Post 的核验反馈。
+    /// Post 要求修补时恢复最近的 Exec 快照。 / Restore the last Exec checkpoint when Post requests repair.
+    /// 复用 Exec 模板并注入 Post 反馈。 / Reuse the Exec template with Post feedback.
     fn build_exec_base_from_checkpoint(
         input: &TurnInput,
         state: &TurnState,
@@ -374,7 +374,7 @@ impl Orchestrator {
         Ok(body)
     }
 
-    /// 状态机主循环：每轮发一次子请求，按"有没有工具调用"决定暂停还是推进相位。
+    /// 状态机按工具调用与控制结果推进。 / State machine advances according to tool calls and routing results.
     async fn drive(&self, input: TurnInput, rt: Runtime, mut state: TurnState) -> Result<Outcome> {
         let ctx = Ctx {
             input,
@@ -384,7 +384,7 @@ impl Orchestrator {
         };
         loop {
             let phase = state.phase;
-            // 相位序列只记"进入过哪些 pig"：同一个相位因工具往返而重复的多轮不算新的
+            // 相位历史记录新进入的相位，不重复记录工具续接。 / Phase history records entries, not repeated tool rounds.
             let first_entry = state.path.last() != Some(&phase);
             if first_entry {
                 state.path.push(phase);
@@ -399,8 +399,8 @@ impl Orchestrator {
                 "pig round"
             );
 
-            // 每个 pig 的阶段提示只在第一次进入时注入一次。之后的工具往返只追加
-            // phase_transcript，绝不在工具结果尾部重新放一条阶段 user 提示。
+            // 每个相位提示只注入一次。 / Inject each phase prompt exactly once.
+            // 工具续接只追加对话历史。 / Tool resumes append transcript history without reinjecting prompts.
             if state.phase_base_body.is_none() {
                 state.phase_base_body =
                     Some(Self::build_phase_base_body(&ctx.input, &state, phase)?);
@@ -418,9 +418,9 @@ impl Orchestrator {
                     state.pre_simple_decided,
                 )
                 .await?;
-            // 新 Pre 协议必须先显式回答五问并给出路由标记。
-            // 首次 PIGEND 是简单任务分析/执行分界线；此后工具恢复仍在 Pre。
-            // 在确认该边界之前，绝不向客户端放行 Pre 的工具调用。
+            // 自适应 Pre 必须回答五问并输出路由标记。 / Adaptive Pre must answer five questions and emit a routing marker.
+            // 首次 PIGEND 之后简单任务仍在 Pre 完成。 / After the first PIGEND, simple execution remains in Pre.
+            // 确认 PIGEND 边界前不发送工具调用。 / Never expose Pre tool calls before the PIGEND boundary.
             if phase == Pig::Pre && !state.force_full && !state.pre_simple_decided {
                 let (marker, _, after) = split_pre_decision(&output.text).ok_or_else(|| {
                     Error::PreProtocol("必须先输出五问分析，再单独一行输出 PIGEND 或 PIGNEXT".into())
@@ -440,8 +440,8 @@ impl Orchestrator {
             }
             let round_transcript =
                 proto::model_output_transcript_items(ctx.input.protocol, &output);
-            // ToolCall 只属于这一发 Paused 响应。先按原顺序组好客户端内容，
-            // 再把本轮的持久部分写进 state；continuation / Completed 都不能携带已消费的 ToolCall。
+            // 工具调用只存在于本次暂停响应。 / Tool calls belong only to the current paused response.
+            // 只持久化其它内容，完成响应不得重发工具调用。 / Persist other parts, never consumed tool calls in completed output.
             let paused_parts = if output.tool_calls.is_empty() {
                 None
             } else {
@@ -452,7 +452,7 @@ impl Orchestrator {
             state.record_round(&output.text, &output, self.usage_mode);
             state.phase_transcript.extend(round_transcript);
 
-            // 模型要工具 → 暂停，把调用原样交给客户端（相位不结束）
+            // 工具请求暂停相位并交付原生调用。 / Tool requests pause, delivering native calls without ending the phase.
             if !output.tool_calls.is_empty() {
                 let pending: Vec<String> = output
                     .tool_calls
@@ -487,14 +487,14 @@ impl Orchestrator {
                 }));
             }
 
-            // 没有工具调用 → 这一轮就是该相位的产出，按控制标记路由
+            // 无工具调用则根据控制标记推进。 / Without tool calls, route according to control markers.
             let raw = state.phase_raw_text();
             match phase {
-                // ---------------- Pre：规划 / 分流 ----------------
+                // ---------------- Pre：规划与分流 / Planning and routing ----------------
                 Pig::Pre => {
-                    // -pig3 仍使用独立纯规划 Pre，不解析控制标记。
-                    // 正常简单路径：PIGEND 后继续完成任务，所有工具轮次结束才提交正文。
-                    // -pig 只提交 PIGEND 之后的正文；-pigs 仅剔除标记、保留全部文本。
+                    // 强制完整模式使用共享分析 Pre，不解析 Pre 控制标记。 / Forced-full modes use shared analysis-only Pre and ignore Pre markers.
+                    // 简单路径在 PIGEND 后执行，完成工具轮次才提交。 / Simple paths execute after PIGEND, committing when tool rounds finish.
+                    // -pig 隐藏分析，-pigs 保留阶段正文。 / -pig hides analysis while -pigs preserves phase text.
                     if !state.force_full && state.pre_simple_decided {
                         let (_, _, business_text) = split_pre_decision(&raw).ok_or_else(|| {
                             Error::PreProtocol("简单路径的 PIGEND 分界线丢失".into())
@@ -508,8 +508,8 @@ impl Orchestrator {
                         state.commit_text(business_text);
                         return Ok(Outcome::Completed(state.complete(EndedWith::SimplePath)));
                     }
-                    // 复杂任务必须以 PIGNEXT 结束 Pre，并进入 Exec。
-                    // 首轮判定已验证无工具调用、无 PIGNEXT 后多余正文。
+                    // 复杂任务以 PIGNEXT 结束 Pre 并进入 Exec。 / Complex tasks end Pre with PIGNEXT and enter Exec.
+                    // 已验证首轮无工具调用和非法后续文本。 / The initial decision disallows tool calls and extra text after PIGNEXT.
                     state.pre_output = strip_markers(&raw);
                     state.post_protocol_retries = 0;
                     state.exec_checkpoint_body = None;
@@ -518,15 +518,15 @@ impl Orchestrator {
                     state.phase = Pig::Exec;
                     state.reset_phase_conversation();
                 },
-                // ---------------- Exec：执行 ----------------
+                // ---------------- Exec：执行 / Execution ----------------
                 Pig::Exec => {
-                    // 不解析标记。模式 B 先把本次 Exec 的普通文本保存为候选。
+                    // Exec 不解析标记；模式 B 暂存正文候选。 / Exec does not parse markers; Mode B stores a candidate.
                     state.set_candidate(strip_markers(&raw));
 
-                    // 所有执行预算统一按 Exec 高层执行次数计算。最后一次允许的 Exec
-                    // 完成后直接结束；此时再做 Post 已没有任何后续执行机会，因此没有意义。
-                    // -pig3 承诺成功执行时至少经过 Pre → Exec → Post。
-                    // 即使 max_exec_runs=1，也必须先给首次 Exec 一个 Post 验收机会。
+                    // 执行预算按高层 Exec 次数计算。 / Budget counts high-level Exec runs.
+                    // 预算耗尽后直接提交，避免无修补机会的 Post。 / On budget exhaustion, finish without a Post that cannot trigger repair.
+                    // 强制完整模式正常成功路径必须经过三阶段。 / Forced-full successful paths pass through all three phases.
+                    // 即使上限为一次也要让 Post 验收首次 Exec。 / Even with one allowed Exec, run Post once to verify it.
                     if state.exec_runs >= self.max_exec_runs
                         && !(state.force_full && state.exec_runs == 1)
                     {
@@ -536,7 +536,7 @@ impl Orchestrator {
                         ));
                     }
 
-                    // 尚有下一次执行机会时才保存 checkpoint 并进入 Post 核验。
+                    // 有剩余执行机会时保存快照并进入 Post。 / Save a checkpoint and enter Post while budget remains.
                     let checkpoint = Self::build_exec_checkpoint(&ctx.input, &state)?;
                     let post_base =
                         Self::build_post_base_from_checkpoint(&ctx.input, &state, &checkpoint)?;
@@ -547,15 +547,15 @@ impl Orchestrator {
                     state.phase_base_body = Some(post_base);
                     state.phase_transcript.clear();
                 }
-                // ---------------- Post：验收 / 路由 ----------------
+                // ---------------- Post：核验与路由 / Verification and routing ----------------
                 Pig::Post => match detect_terminal_marker(&raw) {
-                    // 验收通过 → 整轮结束
+                    // Post 验收通过则完成。 / Post acceptance completes the turn.
                     Some(Marker::End) => {
                         state.commit_candidate();
                         return Ok(Outcome::Completed(state.complete(EndedWith::PigEnd)))
                     }
-                    // 可修补 → Post 只给反馈，不自行执行；把完整现场交回下一次 Exec。
-                    // 是否还能继续不在这里单独计数；统一由下一次 Exec 的 exec_runs 判断。
+                    // 可修补时 Post 只反馈并交给下一轮 Exec。 / On repair, Post supplies feedback and hands control to Exec.
+                    // 后续执行额度由 Exec 次数统一决定。 / Further execution eligibility is determined by Exec run count.
                     Some(Marker::Next) => {
                         let feedback = strip_markers(&raw);
                         let exec_base = Self::build_exec_base_from_checkpoint(
@@ -570,8 +570,8 @@ impl Orchestrator {
                         state.phase_base_body = Some(exec_base);
                         state.phase_transcript.clear();
                     }
-                    // 执行路径根本错误 → 记录反馈并回 Pre 形成下一次 Exec 的计划。
-                    // 同样不维护独立的“重规划次数”；唯一执行预算是 exec_runs。
+                    // 路径失败则保存反馈并回 Pre 重规划。 / On failed strategy, save feedback and return to Pre.
+                    // 重规划不单独计次，统一使用 Exec 预算。 / Replanning has no separate budget; Exec runs are the limit.
                     Some(Marker::Failed) => {
                         let text = strip_markers(&raw);
                         state.failure_paths.push(text);
@@ -584,7 +584,7 @@ impl Orchestrator {
                         state.phase = Pig::Pre;
                         state.reset_phase_conversation();
                     }
-                    // 无控制标记 → 视为核验器协议未完成，留在 Post 重试；不让 Post 自行执行任务
+                    // Post 缺少标记时仅重试控制协议，不执行任务。 / Missing Post markers trigger protocol retry, not task execution.
                     None => {
                         if state.post_protocol_retries >= self.max_post_protocol_retries {
                             return Err(Error::Budget(format!(
@@ -592,8 +592,8 @@ impl Orchestrator {
                                 self.max_post_protocol_retries
                             )));
                         }
-                        // 保留已有 Post 回复及工具对话，在其后追加一条单独的 user
-                        // 纠错指令。只补控制协议，不重新执行 Post 之前的任务。
+                        // 保留 Post 历史并追加独立用户纠错消息。 / Preserve Post history and append a separate user correction.
+                        // 只纠正控制协议，不重跑业务任务。 / Correct the control protocol without rerunning prior work.
                         let mut retry_body = state.phase_base_body.clone().ok_or_else(|| {
                             Error::Budget("Post 缺少 phase_base_body，无法协议重试".into())
                         })?;
@@ -618,7 +618,7 @@ impl Orchestrator {
     }
 }
 
-/// 一轮编排的内部上下文（本次请求 + 传输 + 进度 + 存储）。
+/// 单轮编排上下文：请求、传输、事件与存储。 / Turn context: request, transport, events, and storage.
 struct Ctx {
     input: TurnInput,
     transport: Arc<dyn Transport>,
@@ -627,10 +627,10 @@ struct Ctx {
 }
 
 impl Ctx {
-    /// 组装并发送一只 pig 的子请求，返回这一轮的模型输出。
+    /// 发送相位子请求并解析本轮模型输出。 / Send a phase subrequest and parse the model turn.
     ///
-    /// `base_body` 已经在进入 pig 时注入过一次阶段提示；这里每轮只把当前 pig
-    /// 已累积的原生 assistant/tool 对话接在后面。
+    /// 基础请求已包含阶段提示。 / The base request already contains the phase prompt.
+    /// 后续只追加累计的原生对话。 / Later calls append only accumulated native assistant/tool history.
     async fn call_pig(
         &self,
         pig: Pig,
@@ -642,7 +642,7 @@ impl Ctx {
         let mut body = base_body.clone();
         proto::append_transcript_items(&mut body, self.input.protocol, phase_transcript)?;
 
-        // 头也照原样走；只在缺失时补 content-type / 会话头（会话头按现行决定保留）
+        // 保留头，缺失时补内容类型和会话标识。 / Preserve headers; fill in missing content type or session ID.
         let mut headers: Vec<(String, String)> = self.input.base_headers.clone();
         let has = |headers: &[(String, String)], key: &str| {
             headers.iter().any(|(k, _)| k.eq_ignore_ascii_case(key))
@@ -673,7 +673,7 @@ impl Ctx {
         };
 
         let resp = match &self.progress {
-            // 流式：增量交给 MarkerFilter，确认安全的文本立刻回调出去
+            // 流式过滤标记并即时转发安全文本。 / Stream safe text immediately after marker filtering.
             Some(progress) => {
                 progress(PigEvent::Start(pig));
                 let filter = Arc::new(Mutex::new(MarkerFilter::new()));
@@ -689,7 +689,7 @@ impl Ctx {
                     let progress = Arc::clone(progress);
                     Arc::new(move |event: proto::LiveEvent| {
                         match event {
-                            // 文本要过控制标记过滤；模式 B 的 Pre 分析不向客户端透出。
+                            // 过滤标记并隐藏模式 B 的 Pre 分析。 / Filter markers and suppress Mode B Pre analysis.
                             proto::LiveEvent::Text(delta) => {
                                 if filter_pre_thoughts {
                                     if let Ok(mut raw) = pre_text.lock() {
@@ -745,7 +745,7 @@ impl Ctx {
     }
 }
 
-/// 把子请求响应解析成这一轮的模型输出（JSON 走结构解析，SSE 走全文汇总）。
+/// 将 JSON/SSE 子响应转换成模型轮次。 / Parse JSON or aggregate SSE into a model turn.
 fn parse_output(protocol: proto::Protocol, pig: Pig, resp: &SubResponse) -> Result<ModelOutput> {
     if !(200..300).contains(&resp.status) {
         return Err(Error::Transport(TransportError::Upstream {
@@ -762,7 +762,7 @@ fn parse_output(protocol: proto::Protocol, pig: Pig, resp: &SubResponse) -> Resu
         match serde_json::from_slice::<serde_json::Value>(&resp.body) {
             Ok(value) => proto::parse_json_output(protocol, &value),
             Err(e) => {
-                // 上游回了 2xx 但 body 不是 JSON：把现场带进错误，便于诊断
+                // 2xx 响应若不是合法 JSON，保留上下文用于诊断。 / Capture context when a successful HTTP status carries invalid JSON.
                 let snippet: String = String::from_utf8_lossy(&resp.body)
                     .chars()
                     .take(300)
@@ -788,7 +788,7 @@ fn parse_output(protocol: proto::Protocol, pig: Pig, resp: &SubResponse) -> Resu
     Ok(output)
 }
 
-/// 从客户端请求头里找会话头（大小写不敏感）。
+/// 不区分大小写查找客户端会话头。 / Find the client session header case-insensitively.
 pub fn find_client_session(headers: &[(String, String)]) -> Option<String> {
     headers
         .iter()

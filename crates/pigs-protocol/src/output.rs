@@ -1,21 +1,21 @@
-//! 把上游响应（JSON / SSE 全文）归一化成"这一轮模型输出"。
+//! 将上游 JSON/SSE 响应归一化为单轮模型输出。 / Normalize upstream JSON/SSE responses into a single model turn.
 //!
-//! 归一化只服务于编排判定，**不转写任何内容**：文本原样拼、工具调用保留原生 JSON
-//! （回给客户端时逐字节还原）、stop_reason 与 usage 原样带出。
+//! 归一化用于编排，不改写业务内容或原生工具结构。 / Normalization serves orchestration without rewriting payload semantics.
+//! 停止原因及 usage 保留原值。 / Preserve stop reasons and usage values.
 
 use crate::route::Protocol;
 use serde_json::{json, Value};
 
-/// 一次工具调用（保留原生表示）。
+/// 保留原生表示的工具调用。 / Tool call retaining its native representation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToolCall {
-    /// 关联后续工具结果的标识符。
+    /// 关联工具结果的标识。 / ID linking a tool call to its result.
     pub id: String,
-    /// 工具名。
+    /// 工具名。 / Tool name.
     pub name: String,
-    /// 原生参数值（字符串参数保持字符串）。
+    /// 原生参数值，不强制解析字符串。 / Native arguments; string arguments stay strings.
     pub arguments: Value,
-    /// 完整的原生 tool-call 对象 / 内容块（回给客户端时原样使用）。
+    /// 完整原生工具调用块，供客户端响应复用。 / Full native tool-call block reused in client output.
     pub native: Value,
 }
 
@@ -28,34 +28,34 @@ impl ToolCall {
     }
 }
 
-/// 上游返回的一段内容（**按顺序**留给客户端，互不覆盖）。
+/// 有序的上游内容片段。 / Ordered upstream content part.
 ///
-/// 编排只关心 `Text` 与 `ToolCall`；其余一律原样透传，不做解释、不做删改
-/// （思考块、推理条目、搜索调用……都属于这一类）。
+/// 编排仅解释文本和工具调用；其它片段保持原生形式。 / Orchestration interprets text/tool calls while preserving other native parts.
+/// 包括思考、推理和搜索调用等。 / Includes reasoning and search-related items.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Part {
-    /// 用户可见文本。
+    /// 用户可见文本。 / User-visible text.
     Text(String),
-    /// 思考文本（协议原生思考字段，如 `reasoning_content`）。
+    /// 协议原生思考字段。 / Protocol-native reasoning text.
     Reasoning(String),
-    /// 工具调用（原生形状）。
+    /// 原生工具调用。 / Native tool call.
     ToolCall(ToolCall),
-    /// 其它原生内容块 / output item：原样透传。
+    /// 其它原生输出内容，不解释。 / Other native output items, passed through unchanged.
     Native(Value),
 }
 
-/// 一轮模型输出（编排所需的最小归一化）。
+/// 供编排使用的单轮模型输出。 / One model turn normalized for orchestration.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ModelOutput {
-    /// 用户可见文本（已按协议拼好，含有可能出现的控制标记）。
+    /// 拼接后的可见文本，可能包含控制标记。 / Joined visible text, possibly including control markers.
     pub text: String,
-    /// 本轮要求调用的工具（空 = 这一轮没有工具调用）。
+    /// 本轮工具调用列表；空表示无调用。 / Tool calls requested in this turn; empty means none.
     pub tool_calls: Vec<ToolCall>,
-    /// 给客户端的内容序列（顺序权威；`Text`/`ToolCall` 之外一律原样）。
+    /// 客户端内容的权威有序序列。 / Authoritative ordered parts for client output.
     pub parts: Vec<Part>,
-    /// 协议原生的停止原因（Chat 的 `finish_reason` / Anthropic 的 `stop_reason`）。
+    /// 原生停止原因。 / Native stop reason.
     pub stop_reason: Option<String>,
-    /// 协议原生的 usage 对象（原样，不做任何改写）。
+    /// 未改写的原生 usage 对象。 / Unmodified native usage object.
     pub usage: Option<Value>,
 }
 
@@ -64,7 +64,7 @@ impl ModelOutput {
         self.text.is_empty() && self.tool_calls.is_empty()
     }
 
-    /// 上游明确表示本轮因为生成 token 上限而被截断。
+    /// 上游报告生成达到 token 上限。 / Upstream indicates truncation at the token limit.
     pub fn is_truncated(&self) -> bool {
         matches!(
             self.stop_reason.as_deref(),
@@ -73,7 +73,7 @@ impl ModelOutput {
     }
 }
 
-/// 解析非流式 JSON 响应。
+/// 解析非流式 JSON 响应。 / Parse a non-streaming JSON response.
 pub fn parse_json_output(protocol: Protocol, body: &Value) -> ModelOutput {
     match protocol {
         Protocol::OpenAI => parse_chat_json(body),
@@ -82,7 +82,7 @@ pub fn parse_json_output(protocol: Protocol, body: &Value) -> ModelOutput {
     }
 }
 
-/// 解析 SSE 全文（多个 `data:` 行）——增量已经流过客户端，这里只做"这一轮到底出了什么"的汇总。
+/// 汇总 SSE 全文，不重复转发增量。 / Summarize an SSE transcript after deltas have already been streamed.
 pub fn parse_sse_output(protocol: Protocol, sse: &str) -> ModelOutput {
     let mut acc = SseOutputAccumulator::new(protocol);
     for line in sse.lines() {
@@ -101,7 +101,7 @@ pub fn parse_sse_output(protocol: Protocol, sse: &str) -> ModelOutput {
     acc.finish()
 }
 
-// ---------------------------------------------------------------- 非流式
+// ---------------------------------------------------------------- 非流式 / Non-streaming
 
 fn parse_chat_json(body: &Value) -> ModelOutput {
     let choice = body.get("choices").and_then(|c| c.get(0));
@@ -167,7 +167,7 @@ fn parse_anthropic_json(body: &Value) -> ModelOutput {
                     tool_calls.push(call.clone());
                     parts.push(Part::ToolCall(call));
                 }
-                // thinking / redacted_thinking / server_tool_use……：原样透传，不解释
+                // 思考及服务端工具块不做解释。 / Preserve reasoning and server-tool blocks unchanged.
                 _ => parts.push(Part::Native(block.clone())),
             }
         }
@@ -203,7 +203,7 @@ fn parse_responses_json(body: &Value) -> ModelOutput {
                     tool_calls.push(call.clone());
                     parts.push(Part::ToolCall(call));
                 }
-                // reasoning / web_search_call / code_interpreter_call……：原样透传
+                // 推理与外部调用项保留原样。 / Preserve reasoning and external-call items unchanged.
                 _ => parts.push(Part::Native(item.clone())),
             }
         }
@@ -212,7 +212,7 @@ fn parse_responses_json(body: &Value) -> ModelOutput {
         text,
         tool_calls,
         parts,
-        // Responses 没有 finish_reason；截断原因在 incomplete_details
+        // Responses 截断原因位于 incomplete_details。 / Responses reports truncation through incomplete_details.
         stop_reason: body
             .pointer("/incomplete_details/reason")
             .and_then(|r| r.as_str())
@@ -221,7 +221,7 @@ fn parse_responses_json(body: &Value) -> ModelOutput {
     }
 }
 
-/// 文本 content：字符串直接用；内容块数组拼 `text`/`output_text` 字段。
+/// 从字符串或文本块数组提取文本。 / Extract text from a string or text-block array.
 fn join_text_content(content: &Value) -> String {
     match content {
         Value::String(s) => s.clone(),
@@ -234,7 +234,7 @@ fn join_text_content(content: &Value) -> String {
     }
 }
 
-/// Chat 的思考文本字段（各家的叫法：`reasoning_content` / `reasoning`）。
+/// 提取 Chat 思考字段（多种字段名）。 / Extract Chat reasoning across provider-specific field names.
 fn chat_reasoning_text(message: &Value) -> Option<String> {
     ["reasoning_content", "reasoning"]
         .iter()
@@ -247,7 +247,7 @@ fn chat_reasoning_text(message: &Value) -> Option<String> {
         })
 }
 
-/// Responses 的 message item 文本：拼所有 `output_text` 片段的 `text`。
+/// 拼接 Responses 消息中的 output_text。 / Join output_text segments in Responses messages.
 fn responses_item_text(item: &Value) -> String {
     item.get("content")
         .and_then(|c| c.as_array())
@@ -302,30 +302,30 @@ fn responses_tool_call(item: &Value) -> ToolCall {
     }
 }
 
-// ---------------------------------------------------------------- SSE 汇总
+// ---------------------------------------------------------------- SSE 汇总 / SSE aggregation
 
-/// SSE 增量汇总器：把一串事件合成一轮输出（文本、工具调用、停止原因、usage）。
+/// 将 SSE 事件聚合为完整模型轮次。 / Aggregate SSE events into a complete model turn.
 struct SseOutputAccumulator {
     protocol: Protocol,
     output: ModelOutput,
-    /// Chat：按 `index` 拼工具调用参数。
+    /// Chat 按索引拼接工具参数。 / Chat: assemble tool arguments by index.
     chat_calls: Vec<ToolCall>,
-    /// Chat：累积的思考文本。
+    /// Chat 累积的思考文本。 / Chat: accumulated reasoning text.
     chat_reasoning: String,
-    /// Anthropic：按 content_block 的 index 记账（文本或工具调用）。
+    /// Anthropic 按内容块索引追踪状态。 / Anthropic: track blocks by content index.
     anthropic_blocks: Vec<AnthropicBlock>,
-    /// Responses：按 item_id 拼 function_call 参数。
+    /// Responses 按条目标识拼接函数参数。 / Responses: accumulate function-call arguments by item ID.
     responses_calls: Vec<ToolCall>,
 }
 
 enum AnthropicBlock {
-    /// 文本块（累积 text_delta）。
+    /// 累积增量的文本块。 / Text block accumulating deltas.
     Text { buf: String },
-    /// 思考块（累积 thinking_delta 与 signature_delta）。
+    /// 累积思考增量及签名。 / Reasoning block collecting deltas and signatures.
     Thinking { buf: String, signature: String },
-    /// 工具调用块。
+    /// 工具调用块。 / Tool-call block.
     ToolUse,
-    /// 其它块（redacted_thinking / server_tool_use……）：start 帧原样留着。
+    /// 其它块保留原始起始帧。 / Preserve the original start frame for other block types.
     Other { native: Value },
 }
 
@@ -423,8 +423,8 @@ impl SseOutputAccumulator {
                 }
                 if kind == "tool_use" {
                     self.anthropic_blocks[index] = AnthropicBlock::ToolUse;
-                    // start 帧通常给 `input: {}`（参数随后由 input_json_delta 拼）；
-                    // 若上游直接给全了参数，就原样留着，别清空
+                    // 起始帧通常只有空参数，后续增量再拼接。 / Start frames often have empty input; later deltas supply arguments.
+                    // 若起始帧已提供参数则原样保留。 / Preserve complete arguments already present in the start frame.
                     let input = block.get("input").cloned().unwrap_or_else(|| json!({}));
                     let arguments = match &input {
                         Value::Object(map) if !map.is_empty() => input.clone(),
@@ -447,7 +447,7 @@ impl SseOutputAccumulator {
                 } else if kind == "text" {
                     self.anthropic_blocks[index] = AnthropicBlock::Text { buf: String::new() };
                 } else {
-                    // 未知块（redacted_thinking / server_tool_use……）原样留着
+                    // 未知块保留原样。 / Preserve unknown blocks unchanged.
                     self.anthropic_blocks[index] = AnthropicBlock::Other { native: block };
                 }
             }
@@ -488,7 +488,7 @@ impl SseOutputAccumulator {
                             }
                         }
                     }
-                    // thinking_delta / signature_delta：不进可见文本
+                    // 思考与签名增量不进入可见文本。 / Reasoning/signature deltas do not enter visible text.
                     _ => {}
                 }
             }
@@ -504,14 +504,14 @@ impl SseOutputAccumulator {
         }
     }
 
-    /// 把文本追加到 index 的文本块。
+    /// 向指定索引的文本块追加内容。 / Append to the text block at an index.
     fn anthropic_block_mut_text(&mut self, index: usize, text: &str) {
         if let Some(AnthropicBlock::Text { buf }) = self.anthropic_blocks.get_mut(index) {
             buf.push_str(text);
         }
     }
 
-    /// 对 index 的思考块做一次修改。
+    /// 修改指定索引的思考块。 / Update the reasoning block at an index.
     fn anthropic_block_mut_thinking<F: FnOnce(&mut AnthropicBlock)>(
         &mut self,
         index: usize,
@@ -522,7 +522,7 @@ impl SseOutputAccumulator {
         }
     }
 
-    /// 找 index 对应的工具调用（Anthropic 的块序与 tool_calls 序一致）。
+    /// 按内容块索引查找工具调用。 / Find a tool call by content-block index.
     fn tool_call_at_block(&mut self, index: usize) -> Option<&mut ToolCall> {
         let mut seen = 0usize;
         for (block_index, block) in self.anthropic_blocks.iter().enumerate() {
@@ -546,7 +546,7 @@ impl SseOutputAccumulator {
             Some("response.output_item.added") => {
                 let item = event.get("item").cloned().unwrap_or(Value::Null);
                 if item.get("type").and_then(|t| t.as_str()) == Some("function_call") {
-                    // 参数可能是本帧就给全，也可能是后续 .delta 逐片给；原样起步，逐片追加
+                    // 参数可能一次给全，也可能逐帧给出。 / Arguments may arrive all at once or in deltas.
                     self.responses_calls.push(responses_tool_call(&item));
                     if let Some(call) = self.responses_calls.last_mut() {
                         if call.arguments.is_null() {
@@ -573,7 +573,7 @@ impl SseOutputAccumulator {
                     {
                         self.output.stop_reason = Some(reason.to_string());
                     }
-                    // 最终 output[] 是权威内容序列（含 reasoning 等原生条目）
+                    // 最终 output[] 为权威内容序列。 / Final output[] is the authoritative ordered content.
                     if let Some(items) = response.get("output").and_then(|o| o.as_array()) {
                         if !items.is_empty() {
                             let mut rebuilt = parse_responses_json(&json!({"output": items}));
@@ -618,7 +618,7 @@ impl SseOutputAccumulator {
                     .responses_calls
                     .into_iter()
                     .map(|mut call| {
-                        // 参数拼好后写回原生对象，回给客户端时原样可用
+                        // 将拼接参数写回原生对象。 / Write assembled arguments back to the native object.
                         let arguments = call.arguments_json();
                         if let Some(obj) = call.native.as_object_mut() {
                             obj.insert("arguments".into(), Value::String(arguments));
@@ -628,7 +628,7 @@ impl SseOutputAccumulator {
                     .collect();
             }
             Protocol::Anthropic => {
-                // 工具调用的增量参数收尾（写回原生块）
+                // 完成工具参数拼接并写回。 / Finalize tool arguments in the native block.
                 for call in &mut self.output.tool_calls {
                     let raw = call.arguments_json();
                     let parsed: Value = serde_json::from_str(&raw).unwrap_or_else(|_| json!({}));
@@ -637,7 +637,7 @@ impl SseOutputAccumulator {
                     }
                     call.arguments = parsed;
                 }
-                // 按 content_block 的顺序生成给客户端的内容序列
+                // 按内容块顺序构造客户端响应。 / Build client parts in content-block order.
                 let mut calls = self.output.tool_calls.iter().cloned();
                 let mut parts = Vec::new();
                 for block in &self.anthropic_blocks {
@@ -672,7 +672,7 @@ impl SseOutputAccumulator {
     }
 }
 
-/// Chat 的 SSE 工具调用拼好后写回原生对象（`arguments` 是字符串）。
+/// 将 Chat 流式工具参数合并到原生对象。 / Merge streamed Chat tool arguments into the native object.
 fn finish_chat_call(mut call: ToolCall) -> ToolCall {
     let arguments = call.arguments_json();
     call.native = json!({
@@ -684,7 +684,7 @@ fn finish_chat_call(mut call: ToolCall) -> ToolCall {
     call
 }
 
-/// 浅合并两个 usage 对象（后者覆盖同名字段；数字相加由调用方语义决定，这里保原样优先）。
+/// 浅合并 usage；后者覆盖同名字段，不在此求和。 / Shallow-merge usage, preferring newer fields without summation.
 fn merge_usage(previous: Option<Value>, next: &Value) -> Value {
     match previous {
         Some(Value::Object(mut base)) => {
@@ -699,12 +699,12 @@ fn merge_usage(previous: Option<Value>, next: &Value) -> Value {
     }
 }
 
-// ---------------------------------------------------------------- 恢复判定
+// ---------------------------------------------------------------- 恢复判定 / Resume detection
 
-/// 客户端这一发请求是不是"工具结果回填"：返回**尾部**工具结果的 id 列表。
+/// 识别末尾工具结果并返回其 ID 列表。 / Detect trailing tool results and return their IDs.
 ///
-/// 规则（与 legacy 一致）：从消息末尾往前扫，遇到第一个不是工具结果的条目就停。
-/// 空 = 不是恢复请求。
+/// 从尾部倒查连续工具结果，遇到其它消息即停止。 / Scan backward through consecutive tool results only.
+/// 空列表表示非工具恢复请求。 / Empty means not a tool-resume request.
 pub fn all_tool_result_ids(protocol: Protocol, body: &Value) -> Vec<String> {
     match protocol {
         Protocol::OpenAI => all_ids(body.get("messages"), |message| {
@@ -746,7 +746,7 @@ pub fn trailing_tool_result_ids(protocol: Protocol, body: &Value) -> Vec<String>
                 .flatten()
                 .map(|id| vec![id.to_string()])
         }),
-        // Anthropic：role=user 且 content 全是 tool_result 块
+        // Anthropic 用户消息须全是工具结果块。 / Anthropic user content must consist entirely of tool_result blocks.
         Protocol::Anthropic => trailing_ids(body.get("messages"), |message| {
             if message.get("role").and_then(|r| r.as_str()) != Some("user") {
                 return None;
@@ -775,10 +775,10 @@ pub fn trailing_tool_result_ids(protocol: Protocol, body: &Value) -> Vec<String>
     }
 }
 
-/// 找到当前 continuation 的工具结果后，返回从该结果开始到客户端请求末尾的原生条目。
+/// 返回从匹配工具结果开始的客户端原生尾部。 / Return native client items from matched tool results through the request end.
 ///
-/// 这个 helper 只负责定位“本次恢复新增了哪一段客户端历史”，不会删除、过滤或改写
-/// 工具结果之后的 reminder / 普通 user 消息。
+/// 仅定位本次恢复新增的历史，不删改任何条目。 / Locate newly added resume history without altering items.
+/// 保留工具结果之后的提醒及用户消息。 / Preserve reminders and user messages after tool results.
 pub fn continuation_resume_items(
     protocol: Protocol,
     body: &Value,
@@ -844,9 +844,9 @@ pub fn continuation_resume_items(
     }
 }
 
-/// 返回客户端这次真正新回填的尾部工具结果条目（保留协议原生 JSON）。
+/// 提取本次新增的尾部工具结果，保留原生 JSON。 / Extract newly submitted trailing tool results as native JSON.
 ///
-/// 兼容旧调用；新的 continuation 恢复主链路使用 [`tool_result_items_for_ids`]。
+/// 旧接口兼容；正式恢复使用 [`tool_result_items_for_ids`]。 / Legacy API; production resume uses [`tool_result_items_for_ids`] .
 pub fn trailing_tool_result_items(protocol: Protocol, body: &Value) -> Vec<Value> {
     match protocol {
         Protocol::OpenAI => trailing_items(body.get("messages"), |message| {
@@ -870,10 +870,10 @@ pub fn trailing_tool_result_items(protocol: Protocol, body: &Value) -> Vec<Value
     }
 }
 
-/// 把一轮模型输出转换成下一轮请求要接回去的协议原生 assistant 记录。
+/// 将模型轮次转成下一请求的原生助手记录。 / Convert a model turn into native assistant history for the next request.
 ///
-/// 这是服务端 phase transcript 的一部分：模型说过什么、调用过什么工具，由 pigs
-/// 自己保存；客户端只负责把工具结果送回来。
+/// 服务端负责保留相位对话记录。 / The server preserves phase transcript history.
+/// 客户端只需回填工具结果。 / The client only supplies tool results.
 pub fn model_output_transcript_items(protocol: Protocol, output: &ModelOutput) -> Vec<Value> {
     match protocol {
         Protocol::OpenAI => {
@@ -977,7 +977,7 @@ where
     items.iter().filter_map(ids_of).flatten().collect()
 }
 
-/// 从尾部连续的工具结果条目收集 id。
+/// 收集尾部连续工具结果的 ID。 / Collect IDs from trailing consecutive tool results.
 fn trailing_ids<F>(container: Option<&Value>, ids_of: F) -> Vec<String>
 where
     F: Fn(&Value) -> Option<Vec<String>>,
@@ -1040,7 +1040,7 @@ mod tests {
         assert_eq!(out.tool_calls[0].id, "call_1");
         assert_eq!(out.tool_calls[0].name, "Bash");
         assert_eq!(out.tool_calls[0].arguments, Value::String("{\"command\":\"ls\"}".into()));
-        // 原生对象原样保留
+        // 保留原生对象。 / Preserve native objects.
         assert_eq!(out.tool_calls[0].native["function"]["name"], "Bash");
         assert_eq!(out.usage.unwrap()["total_tokens"], 12);
     }
@@ -1078,7 +1078,7 @@ mod tests {
         assert_eq!(out.tool_calls[0].arguments, Value::String("{\"a\":1}".into()));
     }
 
-    /// 流式：文本与工具调用参数都是增量到达，必须拼得完整（含参数被切成多片）。
+    /// 流式文本与工具参数需完整重组。 / Reassemble streamed text and tool arguments, including split fragments.
     #[test]
     fn chat_sse_accumulates_text_and_tool_arguments() {
         let sse = concat!(
@@ -1120,7 +1120,7 @@ mod tests {
         assert_eq!(out.tool_calls[0].name, "Bash");
         assert_eq!(out.tool_calls[0].arguments, json!({"command": "ls -la"}));
         assert_eq!(out.tool_calls[0].native["input"], json!({"command": "ls -la"}));
-        // usage 合并了 message_start 与 message_delta
+        // usage 合并起始帧与增量帧。 / Merge usage from message_start and message_delta.
         let usage = out.usage.unwrap();
         assert_eq!(usage["input_tokens"], 5);
         assert_eq!(usage["output_tokens"], 9);
@@ -1153,7 +1153,7 @@ mod tests {
         assert_eq!(out.stop_reason.as_deref(), Some("stop"));
     }
 
-    /// 思考块必须原样留给客户端（Anthropic 非流式）。
+    /// Anthropic 非流式思考块必须保留。 / Preserve non-streaming Anthropic thinking blocks.
     #[test]
     fn anthropic_thinking_blocks_survive_json() {
         let body = json!({
@@ -1179,7 +1179,7 @@ mod tests {
         assert!(matches!(&out.parts[2], Part::ToolCall(call) if call.id == "t1"));
     }
 
-    /// 流式思考：thinking_delta 与 signature_delta 要拼回一个原生思考块。
+    /// 合并流式思考与签名增量。 / Merge streaming reasoning/signature deltas into one native block.
     #[test]
     fn anthropic_thinking_sse_is_reassembled() {
         let sse = concat!(
@@ -1204,7 +1204,7 @@ mod tests {
         assert_eq!(out.parts[1], Part::Text("结论".into()));
     }
 
-    /// Chat 的思考字段（reasoning_content / reasoning）不能丢。
+    /// 保留 Chat 思考字段。 / Preserve Chat reasoning fields.
     #[test]
     fn chat_reasoning_is_kept() {
         let body = json!({"choices": [{
@@ -1227,7 +1227,7 @@ mod tests {
         assert_eq!(out.parts[1], Part::Text("答案".into()));
     }
 
-    /// Responses 的 reasoning 条目（含加密内容）原样透传。
+    /// Responses 推理条目（含密文）原样保留。 / Preserve Responses reasoning items, including encrypted content.
     #[test]
     fn responses_reasoning_item_passes_through() {
         let reasoning = json!({
@@ -1243,7 +1243,7 @@ mod tests {
         assert_eq!(out.text, "答案");
         assert_eq!(out.parts[0], Part::Native(reasoning));
 
-        // 流式：以 response.completed 的 output[] 为准
+        // 流式以最终完成帧的 output[] 为准。 / For streams, the completed frame's output[] is authoritative.
         let sse = format!(
             "data: {}\n\n",
             json!({"type": "response.completed", "response": {
@@ -1263,7 +1263,7 @@ mod tests {
 
     #[test]
     fn trailing_tool_results_detection() {
-        // Chat：末条 role=tool
+        // Chat 尾部是工具消息。 / Chat ends with a tool message.
         let body = json!({"messages": [
             {"role": "user", "content": "跑一下"},
             {"role": "assistant", "content": null, "tool_calls": [{"id": "call_1"}]},
@@ -1274,7 +1274,7 @@ mod tests {
             trailing_tool_result_items(Protocol::OpenAI, &body),
             vec![json!({"role": "tool", "tool_call_id": "call_1", "content": "输出"})]
         );
-        // 末条是普通 user → 不是恢复请求
+        // 普通用户消息结尾不构成工具恢复。 / A trailing ordinary user message is not a tool resume.
         let body = json!({"messages": [
             {"role": "tool", "tool_call_id": "call_1", "content": "输出"},
             {"role": "user", "content": "继续"}
@@ -1289,7 +1289,7 @@ mod tests {
             ]
         );
 
-        // Anthropic：role=user 且 content 全 tool_result
+        // Anthropic 用户内容必须全部为工具结果。 / Anthropic user content must contain only tool_result blocks.
         let body = json!({"messages": [
             {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": "x"}]}
         ]});
@@ -1298,7 +1298,7 @@ mod tests {
             trailing_tool_result_items(Protocol::Anthropic, &body),
             vec![json!({"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": "x"}]})]
         );
-        // 混杂文本块 → 不算
+        // 混合文本内容不算工具恢复。 / Mixed text content is not a tool resume.
         let body = json!({"messages": [
             {"role": "user", "content": [
                 {"type": "tool_result", "tool_use_id": "toolu_1", "content": "x"},
@@ -1315,7 +1315,7 @@ mod tests {
             ]})]
         );
 
-        // Responses：尾部 function_call_output
+        // Responses 尾部函数调用结果。 / Responses trailing function-call output.
         let body = json!({"input": [
             {"type": "function_call", "call_id": "fc_1", "name": "Bash", "arguments": "{}"},
             {"type": "function_call_output", "call_id": "fc_1", "output": "ok"}

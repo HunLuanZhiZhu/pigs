@@ -1,4 +1,4 @@
-//! 日志初始化：控制台（彩色）+ 文件（按天滚动，无 ANSI），级别由 RUST_LOG 控制。
+//! 日志初始化：彩色控制台及按天滚动的纯文本文件。 / Initialize colored console logging and daily plain-text file rotation.
 
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
@@ -6,7 +6,7 @@ use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, Env
 pub const LOG_DIR: &str = "logs";
 pub const LOG_PREFIX: &str = "pigs.log";
 
-/// 初始化双输出日志；返回的 guard 必须活到进程结束（否则文件日志会被截断）。
+/// 初始化双路日志；守卫必须持续到进程退出。 / Initialize dual logging; retain the guard until process exit to avoid truncation.
 pub fn init() -> anyhow::Result<WorkerGuard> {
     std::fs::create_dir_all(LOG_DIR)?;
     let file_appender = tracing_appender::rolling::daily(LOG_DIR, LOG_PREFIX);
