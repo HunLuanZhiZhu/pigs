@@ -114,11 +114,11 @@ mod tests {
     #[test]
     fn pre_instruction_embeds_failure_paths() {
         let p = pre_instruction(Lang::Zh, &[]);
-        assert!(p.contains("先思考以下问题的答案"));
+        assert!(p.contains("先回答以下问题"));
         assert!(!p.contains("曾失败过"));
         assert!(p.contains("PIGEND"));
-        assert!(p.contains("一般情况下，禁止开始执行任务"));
-        assert!(p.contains("仅当任务被判定为简单任务时"));
+        assert!(p.contains("若为复杂任务，禁止直接开始执行任务"));
+        assert!(p.contains("若为简单任务，回答完上述问题后"));
         assert!(p.contains("PIGNEXT"));
         assert!(p.contains("在输出前会被删除"));
         assert!(!p.contains("{failure_paths}"));
@@ -202,9 +202,9 @@ mod tests {
     #[test]
     fn english_templates_exist() {
         let pre = pre_instruction(Lang::En, &[]);
-        assert!(pre.contains("First think through the answers to the following questions"));
-        assert!(pre.contains("Only if the task is judged simple"));
-        assert!(pre.contains("Only operations without side effects are permitted"));
+        assert!(pre.contains("First answer the following questions"));
+        assert!(pre.contains("classify the task as simple only if each aspect is simple"));
+        assert!(pre.contains("only side-effect-free operations are allowed"));
         assert!(pre.contains("PIGNEXT"));
         assert!(exec_instruction(Lang::En, "PRE").contains("PRE"));
         assert!(post_instruction(Lang::En).contains("PIGNEXT"));

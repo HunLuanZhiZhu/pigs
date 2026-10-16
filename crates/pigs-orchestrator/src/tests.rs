@@ -98,6 +98,15 @@ impl FakeTransport {
         )
     }
 
+    // 新 Pre 简单路径：先完成分析并输出 PIGEND，再调用工具。
+    fn pre_tool_calls(status: u16, calls: &[(&str, &str)]) -> SubResponse {
+        let mut resp = Self::tool_calls(status, calls);
+        let mut body: serde_json::Value = serde_json::from_slice(&resp.body).unwrap();
+        body["choices"][0]["message"]["content"] = json!("五问分析\nPIGEND");
+        resp.body = Bytes::from(body.to_string());
+        resp
+    }
+
     fn text_of(resp: &SubResponse) -> String {
         let value: serde_json::Value = serde_json::from_slice(&resp.body).unwrap();
         proto::parse_json_output(proto::Protocol::OpenAI, &value).text
@@ -287,7 +296,7 @@ fn resume_body(ids: &[&str]) -> TurnInput {
 /// 只允许 model 剥后缀、尾部追加相位指令、（现行）补会话头。
 #[tokio::test]
 async fn subrequests_pass_everything_through_untouched() {
-    let transport = fake(vec![FakeTransport::text(200, "分析\nPIGEND")]);
+    let transport = fake(vec![FakeTransport::text(200, "分析\nPIGEND\n答案")]);
     let (rt, _store) = runtime(transport.clone());
     let result = completed(
         Orchestrator::new()
@@ -314,7 +323,7 @@ async fn subrequests_pass_everything_through_untouched() {
     // 尾部追加相位指令（末条 user 消息被追加）
     let content = last_message_content(&body);
     assert!(content.starts_with("帮我完成任务Z"));
-    assert!(content.contains("先思考以下问题的答案"));
+    assert!(content.contains("先回答以下问题"));
     // query 原样带上
     assert_eq!(req.query.as_deref(), Some("beta=1"));
     // 头原样（含 accept-encoding：解压是本地的事，不改请求）
@@ -412,7 +421,7 @@ async fn happy_path_three_pigs_with_pigend() {
         if i == 0 {
             assert!(
                 content.contains("帮我完成任务Z")
-                    && content.contains("先思考以下问题的答案")
+                    && content.contains("先回答以下问题")
             );
         } else if i == 1 {
             assert!(
@@ -443,7 +452,7 @@ async fn pre_route_uses_the_actual_upstream_model_across_protocols() {
             ("muse-spark-1.3-contributor", "不得将未要求做的当做任务目标"),
             ("unlisted-provider-model", "不得将未要求做的当做任务目标"),
         ] {
-            let transport = fake(vec![FakeTransport::protocol_text(protocol, 200, "已完成\nPIGEND")]);
+            let transport = fake(vec![FakeTransport::protocol_text(protocol, 200, "五问分析\nPIGEND\n已完成")]);
             let (rt, _) = runtime(transport.clone());
             let mut turn = input_mode_for_protocol(protocol, proto::PigsMode::B);
             proto::set_model(&mut turn.body, model);
@@ -466,7 +475,7 @@ async fn pre_route_uses_the_actual_upstream_model_across_protocols() {
 
 #[tokio::test]
 async fn simple_path_short_circuits_in_pre() {
-    let transport = fake(vec![FakeTransport::text(200, "答案是 4\nPIGEND")]);
+    let transport = fake(vec![FakeTransport::text(200, "五问分析\nPIGEND\n答案是 4")]);
     let (rt, _store) = runtime(transport.clone());
     let result = completed(
         Orchestrator::new()
@@ -475,7 +484,7 @@ async fn simple_path_short_circuits_in_pre() {
             .unwrap(),
     );
     assert_eq!(result.ended_with, EndedWith::SimplePath);
-    assert_eq!(result.text, "答案是 4");
+    assert_eq!(result.text, "五问分析\n答案是 4");
     assert_eq!(result.path, vec![Pig::Pre]);
 }
 
@@ -486,7 +495,7 @@ async fn pre_pigend_stops_even_when_client_tools_are_available() {
         proto::Protocol::Anthropic,
         proto::Protocol::Responses,
     ] {
-        let transport = fake(vec![FakeTransport::protocol_text(protocol, 200, "未执行额外操作\nPIGEND")]);
+        let transport = fake(vec![FakeTransport::protocol_text(protocol, 200, "五问分析\nPIGEND\n未执行额外操作")]);
         let (rt, _) = runtime(transport.clone());
         let outcome = Orchestrator::new()
             .run(input_mode_for_protocol(protocol, proto::PigsMode::B), rt)
@@ -516,7 +525,7 @@ async fn pre_requires_explicit_next_marker_before_exec() {
 
 #[tokio::test]
 async fn mode_b_simple_commits_only_pre_answer() {
-    let transport = fake(vec![FakeTransport::text(200, "答案是 4\nPIGEND")]);
+    let transport = fake(vec![FakeTransport::text(200, "五问分析\nPIGEND\n答案是 4")]);
     let (rt, _store) = runtime(transport);
     let result = completed(
         Orchestrator::new()
@@ -536,6 +545,206 @@ async fn mode_b_simple_commits_only_pre_answer() {
         })
         .collect();
     assert_eq!(texts, vec!["答案是 4"]);
+}
+
+
+#[tokio::test]
+async fn new_pre_protocol_keeps_or_hides_analysis_across_all_apis() {
+    for protocol in [
+        proto::Protocol::OpenAI,
+        proto::Protocol::Anthropic,
+        proto::Protocol::Responses,
+    ] {
+        for mode in [proto::PigsMode::A, proto::PigsMode::B] {
+            let transport = fake(vec![FakeTransport::protocol_text(
+                protocol, 200, "问题1至5的分析\nPIGEND\n实际业务回答",
+            )]);
+            let (rt, _) = runtime(transport);
+            let result = completed(
+                Orchestrator::new()
+                    .run(input_mode_for_protocol(protocol, mode), rt)
+                    .await
+                    .unwrap(),
+            );
+            let expected = if mode == proto::PigsMode::A {
+                "问题1至5的分析\n实际业务回答"
+            } else {
+                "实际业务回答"
+            };
+            assert_eq!(result.text, expected, "protocol={protocol:?}, mode={mode:?}");
+            let visible_parts: String = result.parts.iter().filter_map(|p| match p {
+                Part::Text(s) => Some(s.as_str()),
+                _ => None,
+            }).collect();
+            assert_eq!(visible_parts, expected);
+            assert!(!result.text.contains("PIGEND"));
+            assert_eq!(result.path, vec![Pig::Pre]);
+        }
+    }
+}
+
+#[tokio::test]
+async fn pre_rejects_tool_calls_without_prior_route_and_rejects_complex_execution() {
+    let transport = fake(vec![FakeTransport::tool_calls(200, &[("unsafe", "Bash")])]);
+    let (rt, store) = runtime(transport);
+    let error = Orchestrator::new().run(input(proto::Protocol::OpenAI), rt).await.unwrap_err();
+    assert!(matches!(error, Error::PreProtocol(_)));
+    assert_eq!(store.lock().unwrap().len(), 0, "无标记时不允许放行工具");
+
+    for pre_text in ["五问分析\nPIGNEXT\n擅自开始执行", "五问分析\nPIGEND"] {
+        let transport = fake(vec![FakeTransport::text(200, pre_text)]);
+        let (rt, _) = runtime(transport);
+        let error = Orchestrator::new().run(input(proto::Protocol::OpenAI), rt).await.unwrap_err();
+        assert!(matches!(error, Error::PreProtocol(_)), "pre_text={pre_text:?}");
+    }
+}
+
+#[tokio::test]
+async fn simple_pre_tool_roundtrip_hides_analysis_in_pig_mode() {
+    let transport = fake(vec![
+        FakeTransport::pre_tool_calls(200, &[("simple_call", "Bash")]),
+        FakeTransport::text(200, "工具结果确认，任务完成"),
+    ]);
+    let orchestrator = Orchestrator::new();
+    let (rt, store) = runtime(transport.clone());
+    let paused = paused(
+        orchestrator
+            .run(input_mode(proto::Protocol::OpenAI, proto::PigsMode::B), rt)
+            .await
+            .unwrap(),
+    );
+    assert_eq!(paused.tool_calls[0].id, "simple_call");
+    assert!(paused.text.is_empty());
+    assert!(!paused.parts.iter().any(|p| matches!(p, Part::Text(_) | Part::Reasoning(_))));
+    let continuation = store.lock().unwrap().take_match(&["simple_call".into()]).unwrap();
+    let (rt, _) = runtime(transport);
+    let mut resume = resume_body(&["simple_call"]);
+    resume.mode = proto::PigsMode::B;
+    let result = completed(orchestrator.resume(resume, rt, continuation).await.unwrap());
+    assert_eq!(result.text, "工具结果确认，任务完成");
+    assert_eq!(result.path, vec![Pig::Pre]);
+    assert!(!result.parts.iter().any(|p| matches!(p, Part::ToolCall(_))));
+}
+
+#[tokio::test]
+async fn simple_pre_streaming_filters_marker_without_losing_following_text() {
+    for mode in [proto::PigsMode::A, proto::PigsMode::B] {
+        let transport = fake_with_thinking(
+            vec![FakeTransport::text(200, "问题1至5\nPIGEND\n任务答案")],
+            "隐藏推理",
+        );
+        let events: Arc<Mutex<Vec<PigEvent>>> = Arc::new(Mutex::new(vec![]));
+        let sink: ProgressSink = {
+            let events = Arc::clone(&events);
+            Arc::new(move |event| events.lock().unwrap().push(event))
+        };
+        let rt = Runtime {
+            transport,
+            store: Arc::new(Mutex::new(ContinuationStore::default())),
+            progress: Some(sink),
+        };
+        let result = completed(Orchestrator::new()
+            .run(input_mode(proto::Protocol::OpenAI, mode), rt).await.unwrap());
+        let events = events.lock().unwrap();
+        let streamed_text: String = events.iter().filter_map(|e| match e {
+            PigEvent::Delta(s) => Some(s.as_str()),
+            _ => None,
+        }).collect();
+        if mode == proto::PigsMode::A {
+            assert_eq!(result.text, "问题1至5\n任务答案");
+            assert_eq!(streamed_text, result.text);
+            assert!(events.iter().any(|e| matches!(e, PigEvent::Thought(_))));
+        } else {
+            assert_eq!(result.text, "任务答案");
+            assert!(streamed_text.is_empty());
+            assert!(!events.iter().any(|e| matches!(e, PigEvent::Thought(_) | PigEvent::ThoughtSignature(_))));
+        }
+    }
+}
+
+
+
+#[tokio::test]
+async fn control_marker_split_across_native_text_parts_does_not_leak() {
+    for mode in [proto::PigsMode::A, proto::PigsMode::B] {
+        let transport = fake(vec![FakeTransport::json(200, json!({
+            "content": [
+                {"type": "text", "text": "五问分析\nPIG"},
+                {"type": "text", "text": "END\n任务"},
+                {"type": "text", "text": "完成"}
+            ],
+            "stop_reason": "end_turn"
+        }))]);
+        let (rt, _) = runtime(transport);
+        let result = completed(Orchestrator::new().run(
+            input_mode(proto::Protocol::Anthropic, mode), rt
+        ).await.unwrap());
+        let expected = if mode == proto::PigsMode::A {
+            "五问分析\n任务完成"
+        } else {
+            "任务完成"
+        };
+        assert_eq!(result.text, expected);
+        let part_text: String = result.parts.iter().filter_map(|p| match p {
+            Part::Text(text) => Some(text.as_str()),
+            _ => None,
+        }).collect();
+        assert_eq!(part_text, expected, "marker must never leak in native blocks");
+    }
+}
+
+#[tokio::test]
+async fn pig_mode_filters_native_analysis_but_keeps_native_after_marker() {
+    let transport = fake(vec![FakeTransport::json(200, json!({
+        "content": [
+            {"type": "thinking", "thinking": "标记前的内部分析", "signature": "sig-before"},
+            {"type": "text", "text": "五问分析\nPIGEND\n"},
+            {"type": "thinking", "thinking": "标记后的合法内容", "signature": "sig-after"},
+            {"type": "text", "text": "实际回答"}
+        ],
+        "stop_reason": "end_turn"
+    }))]);
+    let (rt, _) = runtime(transport);
+    let result = completed(Orchestrator::new().run(
+        input_mode(proto::Protocol::Anthropic, proto::PigsMode::B), rt
+    ).await.unwrap());
+    assert_eq!(result.text, "实际回答");
+    assert!(result.parts.iter().any(|p| {
+        matches!(p, Part::Native(v) if v["signature"] == "sig-after")
+    }));
+    assert!(!result.parts.iter().any(|p| {
+        matches!(p, Part::Native(v) if v["signature"] == "sig-before")
+    }));
+}
+
+#[tokio::test]
+async fn pig_mode_streams_thoughts_only_after_simple_pre_marker() {
+    let transport = fake_with_thinking(
+        vec![
+            FakeTransport::pre_tool_calls(200, &[("call_after", "Bash")]),
+            FakeTransport::text(200, "任务完成"),
+        ],
+        "一次思考",
+    );
+    let orchestrator = Orchestrator::new();
+    let events: Arc<Mutex<Vec<PigEvent>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink: ProgressSink = {
+        let events = Arc::clone(&events);
+        Arc::new(move |e| events.lock().unwrap().push(e))
+    };
+    let store = Arc::new(Mutex::new(ContinuationStore::default()));
+    let rt = Runtime {transport: transport.clone(), store: Arc::clone(&store), progress: Some(sink.clone())};
+    let _ = paused(orchestrator.run(
+        input_mode(proto::Protocol::OpenAI, proto::PigsMode::B), rt
+    ).await.unwrap());
+    assert!(!events.lock().unwrap().iter().any(|e| matches!(e, PigEvent::Thought(_))));
+    let continuation = store.lock().unwrap().take_match(&["call_after".into()]).unwrap();
+    let rt = Runtime {transport, store: Arc::new(Mutex::new(ContinuationStore::default())), progress: Some(sink)};
+    let mut resume = resume_body(&["call_after"]);
+    resume.mode = proto::PigsMode::B;
+    let result = completed(orchestrator.resume(resume, rt, continuation).await.unwrap());
+    assert_eq!(result.text, "任务完成");
+    assert!(events.lock().unwrap().iter().any(|e| matches!(e, PigEvent::Thought(_))));
 }
 
 #[tokio::test]
@@ -591,7 +800,7 @@ async fn mode_b_tool_pause_hides_ordinary_text_but_keeps_tool_call() {
             "choices": [{
                 "message": {
                     "role": "assistant",
-                    "content": "内部工具说明",
+                    "content": "五问分析\nPIGEND",
                     "tool_calls": [{
                         "id": "call_b",
                         "type": "function",
@@ -622,7 +831,7 @@ async fn mode_b_tool_pause_hides_ordinary_text_but_keeps_tool_call() {
 /// 工具调用：相位**不结束**，调用原样交给客户端，现场存进 continuation。
 #[tokio::test]
 async fn tool_calls_pause_the_phase_and_give_native_calls_to_client() {
-    let transport = fake(vec![FakeTransport::tool_calls(200, &[("call_1", "Bash")])]);
+    let transport = fake(vec![FakeTransport::pre_tool_calls(200, &[("call_1", "Bash")])]);
     let (rt, store) = runtime(transport.clone());
     let paused = paused(
         Orchestrator::new()
@@ -638,7 +847,7 @@ async fn tool_calls_pause_the_phase_and_give_native_calls_to_client() {
         paused.tool_calls[0].arguments_json(),
         "{\"command\":\"ls\"}"
     );
-    assert_eq!(paused.text, "");
+    assert_eq!(paused.text, "五问分析");
     assert!(
         paused
             .parts
@@ -665,8 +874,8 @@ async fn tool_calls_pause_the_phase_and_give_native_calls_to_client() {
 #[tokio::test]
 async fn resume_continues_same_phase_with_tool_result() {
     let transport = fake(vec![
-        FakeTransport::tool_calls(200, &[("call_1", "Bash")]), // Pre 第一轮：要工具
-        FakeTransport::text(200, "答案是 4\nPIGEND"),          // 恢复后：Pre 给出答案
+        FakeTransport::pre_tool_calls(200, &[("call_1", "Bash")]), // Pre 判定简单并开始执行
+        FakeTransport::text(200, "答案是 4"),                   // 工具结果回填后完成
     ]);
     let (rt, store) = runtime(transport.clone());
     let orchestrator = Orchestrator::new();
@@ -692,7 +901,7 @@ async fn resume_continues_same_phase_with_tool_result() {
             .unwrap(),
     );
     assert_eq!(result.ended_with, EndedWith::SimplePath);
-    assert_eq!(result.text, "答案是 4");
+    assert_eq!(result.text, "五问分析\n\n答案是 4");
     assert!(
         result
             .parts
@@ -709,9 +918,9 @@ async fn resume_continues_same_phase_with_tool_result() {
     assert_eq!(roles(&body), vec!["system", "user", "assistant", "tool"]);
     assert_eq!(body["messages"][3]["content"], "输出", "工具结果原样保留");
     let phase_user = body["messages"][1]["content"].as_str().unwrap();
-    assert!(phase_user.contains("先思考以下问题的答案"));
+    assert!(phase_user.contains("先回答以下问题"));
     assert_eq!(
-        phase_user.matches("先思考以下问题的答案").count(),
+        phase_user.matches("先回答以下问题").count(),
         1
     );
     assert_eq!(
@@ -724,9 +933,9 @@ async fn resume_continues_same_phase_with_tool_result() {
 #[tokio::test]
 async fn multiple_tool_rounds_inside_one_phase() {
     let transport = fake(vec![
-        FakeTransport::tool_calls(200, &[("call_1", "Bash")]),
+        FakeTransport::pre_tool_calls(200, &[("call_1", "Bash")]),
         FakeTransport::tool_calls(200, &[("call_2", "Bash")]),
-        FakeTransport::text(200, "做完了\nPIGEND"),
+        FakeTransport::text(200, "做完了"),
     ]);
     let (rt, store) = runtime(transport.clone());
     let orchestrator = Orchestrator::new();
@@ -779,7 +988,7 @@ async fn multiple_tool_rounds_inside_one_phase() {
             .await
             .unwrap(),
     );
-    assert_eq!(result.text, "做完了");
+    assert_eq!(result.text, "五问分析\n\n做完了");
     assert_eq!(result.path, vec![Pig::Pre], "相位只在第一次推进时记一次");
     assert!(
         result
@@ -800,7 +1009,7 @@ async fn multiple_tool_rounds_inside_one_phase() {
     for body in [&resume1, &resume2] {
         let phase_user = body["messages"][1]["content"].as_str().unwrap();
         assert_eq!(
-            phase_user.matches("先思考以下问题的答案").count(),
+            phase_user.matches("先回答以下问题").count(),
             1,
             "同一 Pre pig 内阶段提示只能出现一次"
         );
@@ -1382,7 +1591,7 @@ async fn upstream_error_stops_immediately() {
 
 #[tokio::test]
 async fn client_session_header_is_inherited() {
-    let transport = fake(vec![FakeTransport::text(200, "答案\nPIGEND")]);
+    let transport = fake(vec![FakeTransport::text(200, "五问分析\nPIGEND\n答案")]);
     let (rt, _store) = runtime(transport.clone());
     let mut turn = input(proto::Protocol::OpenAI);
     turn.client_session = Some("client-fixed-session".into());
@@ -1400,7 +1609,7 @@ async fn client_session_header_is_inherited() {
 
 #[tokio::test]
 async fn anthropic_protocol_body_surgery() {
-    let transport = fake(vec![FakeTransport::text(200, "答案\nPIGEND")]);
+    let transport = fake(vec![FakeTransport::text(200, "五问分析\nPIGEND\n答案")]);
     let (rt, _store) = runtime(transport.clone());
     let result = completed(
         Orchestrator::new()
@@ -1414,7 +1623,7 @@ async fn anthropic_protocol_body_surgery() {
     assert_eq!(strip_model(&body), "claude-x");
     let content = last_message_content(&body);
     assert!(
-        content.contains("帮我完成任务Z") && content.contains("先思考以下问题的答案")
+        content.contains("帮我完成任务Z") && content.contains("先回答以下问题")
     );
     // system / tools / tool_choice 一律原样
     assert_eq!(body["system"], "sys");
@@ -1543,7 +1752,7 @@ async fn streaming_turn_pushes_filtered_deltas_as_they_arrive() {
 #[tokio::test]
 async fn live_thinking_is_streamed_before_text() {
     let transport = fake_with_thinking(
-        vec![FakeTransport::text(200, "答案是 4\nPIGEND")],
+        vec![FakeTransport::text(200, "五问分析\nPIGEND\n答案是 4")],
         "先想一想",
     );
     let frames: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
@@ -1624,16 +1833,16 @@ async fn live_thinking_is_streamed_before_text() {
     assert!(sse.contains("thinking_delta") && sse.contains("signature_delta"));
     assert_eq!(
         proto::extract_sse_text(proto::Protocol::Anthropic, &sse).unwrap(),
-        "答案是 4",
+        "五问分析\n答案是 4",
         "思考不许混进答案文本"
     );
-    assert_eq!(result.text, "答案是 4");
+    assert_eq!(result.text, "五问分析\n答案是 4");
 }
 
 /// 流式 + 工具调用：文本先流给客户端，暂停时把原生调用作为终止帧发出。
 #[tokio::test]
 async fn streaming_tool_pause_emits_text_then_native_calls() {
-    let transport = fake(vec![FakeTransport::tool_calls(200, &[("call_1", "Bash")])]);
+    let transport = fake(vec![FakeTransport::pre_tool_calls(200, &[("call_1", "Bash")])]);
     let frames: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
     let encoder = Arc::new(Mutex::new(proto::StreamEncoder::new(
         proto::Protocol::OpenAI,

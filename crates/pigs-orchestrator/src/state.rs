@@ -32,6 +32,8 @@ pub struct TurnState {
     pub path: Vec<Pig>,
     /// Pre 的分析（Exec 指令要用）。
     pub pre_output: String,
+    /// Pre 已输出 PIGEND：后续工具往返继续在 Pre 执行，不再重新要求路由标记。
+    pub pre_simple_decided: bool,
     /// 历次失败路径（Pre 重规划用）。
     pub failure_paths: Vec<String>,
     /// 模式 A 的各段可见文本；模式 B 只在最终提交时写入一段。
@@ -74,6 +76,7 @@ impl TurnState {
             exec_checkpoint_body: None,
             path: Vec::new(),
             pre_output: String::new(),
+            pre_simple_decided: false,
             failure_paths: Vec::new(),
             visible: Vec::new(),
             candidate_text: String::new(),
@@ -99,28 +102,58 @@ impl TurnState {
     ///
     /// 这里会保留 ToolCall；调用方只在 Paused 响应里使用它们。
     pub(crate) fn client_parts_for_round(&self, output: &crate::proto::ModelOutput) -> Vec<Part> {
+        // 首次 Pre 输出的控制标记之前，非文本原生块也属于内部分析。
+        // 标记之后的原生内容与工具恢复轮次则应保留。
+        let first_pre_round = self.mode == PigsMode::B
+            && self.phase == Pig::Pre
+            && !self.force_full
+            && self.phase_raw.is_empty();
+        let mut seen_marker = !first_pre_round;
+        let mut pre_text = String::new();
         let has_text = self
             .parts
             .iter()
             .any(|part| matches!(part, Part::Text(text) if !text.is_empty()));
         let mut parts = Vec::new();
+        let mut marker_filter = crate::markers::MarkerFilter::new();
+        let mut text_added = false;
         for part in &output.parts {
             match part {
                 Part::Text(text) => {
+                    if first_pre_round && !seen_marker {
+                        pre_text.push_str(text);
+                        seen_marker = crate::markers::split_pre_decision(&pre_text).is_some();
+                    }
                     if self.mode == PigsMode::A {
-                        let cleaned = crate::markers::strip_markers(text);
+                        // 原生协议可能把 PIGEND 分成多个 Text 块，必须跨块过滤。
+                        let cleaned = marker_filter.push(text);
                         if !cleaned.is_empty() {
-                            // 相位之间用一个空行分隔（与最终答复的拼接一致）
-                            let piece = if has_text {
+                            let piece = if has_text && !text_added {
                                 format!("\n\n{cleaned}")
                             } else {
                                 cleaned
                             };
                             parts.push(Part::Text(piece));
+                            text_added = true;
                         }
                     }
                 }
-                other => parts.push(other.clone()),
+                // -pig 的首次 Pre 五问及其思考属于内部分析；
+                // 分界线之后的原生块与工具调用仍正常转发。
+                Part::ToolCall(call) => parts.push(Part::ToolCall(call.clone())),
+                other if seen_marker => parts.push(other.clone()),
+                _ => {},
+            }
+        }
+        if self.mode == PigsMode::A {
+            let tail = marker_filter.finish();
+            if !tail.is_empty() {
+                let piece = if has_text && !text_added {
+                    format!("\n\n{tail}")
+                } else {
+                    tail
+                };
+                parts.push(Part::Text(piece));
             }
         }
         parts
@@ -133,6 +166,8 @@ impl TurnState {
         output: &crate::proto::ModelOutput,
         usage_mode: UsageMode,
     ) {
+        // 必须先处理首轮内容块，再登记本轮原文，才能判断标记前后。
+        let client_parts = self.client_parts_for_round(output);
         self.phase_raw.push(raw_text.to_string());
         let visible = crate::markers::strip_markers(raw_text);
         if self.mode == PigsMode::A && !visible.is_empty() {
@@ -140,9 +175,7 @@ impl TurnState {
         }
         // ToolCall 是一次性的暂停信号：客户端执行后就消费掉，不能在最终响应里再次出现。
         self.parts.extend(
-            self.client_parts_for_round(output)
-                .into_iter()
-                .filter(|part| !matches!(part, Part::ToolCall(_))),
+            client_parts.into_iter().filter(|part| !matches!(part, Part::ToolCall(_))),
         );
         if let Some(usage) = &output.usage {
             match usage_mode {

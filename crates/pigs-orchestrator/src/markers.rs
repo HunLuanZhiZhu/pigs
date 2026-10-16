@@ -27,6 +27,27 @@ fn control_marker(line: &str) -> Option<Marker> {
     }
 }
 
+/// 从 Pre 的输出中找到第一条独占一行的路由标记，并将它前后的正文分开。
+/// 简单任务的 PIGEND 是分析/执行的分界线，因此允许后面继续输出正文；
+/// 复杂任务的 PIGNEXT 仍应为最后一行，由编排器检查。
+/// 标记之前必须有实质分析，不能只用裸标记绕过五问。
+pub fn split_pre_decision(text: &str) -> Option<(Marker, String, String)> {
+    let mut analysis = Vec::new();
+    let mut lines = text.lines();
+    while let Some(line) = lines.next() {
+        if let Some(marker) = control_marker(line) {
+            if analysis.iter().all(|s: &&str| s.trim().is_empty()) {
+                return None;
+            }
+            let before = analysis.join("\n").trim().to_string();
+            let after = lines.collect::<Vec<_>>().join("\n").trim().to_string();
+            return Some((marker, before, after));
+        }
+        analysis.push(line);
+    }
+    None
+}
+
 /// Pre 使用的严格检测：仅当**最后一个非空行**是控制标记时才算检测到，且要求前面
 /// 存在非标记的实质行，防止简单路径只输出一个光秃秃的标记。
 pub fn detect_marker(text: &str) -> Option<Marker> {
@@ -146,6 +167,20 @@ fn safe_forward_end(pending: &str) -> usize {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
+
+    #[test]
+    fn splits_pre_analysis_from_simple_execution() {
+        assert_eq!(
+            split_pre_decision("五问分析\r\nPIGEND\r\n实际回答\n第二行"),
+            Some((Marker::End, "五问分析".into(), "实际回答\n第二行".into()))
+        );
+        assert_eq!(
+            split_pre_decision("五问分析\nPIGNEXT"),
+            Some((Marker::Next, "五问分析".into(), String::new()))
+        );
+        assert_eq!(split_pre_decision("PIGEND\n实际回答"), None);
+        assert_eq!(split_pre_decision("没有标记"), None);
+    }
 
     #[test]
     fn detects_only_on_last_non_empty_line() {

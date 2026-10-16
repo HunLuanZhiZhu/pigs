@@ -16,7 +16,7 @@ pub mod prompts;
 pub mod state;
 pub mod transport;
 
-use markers::{detect_marker, detect_terminal_marker, strip_markers, Marker, MarkerFilter};
+use markers::{detect_terminal_marker, split_pre_decision, strip_markers, Marker, MarkerFilter};
 use pigs_protocol as proto;
 use proto::{ModelOutput, Part, ToolCall};
 use state::{Continuation, ContinuationStore, TurnState};
@@ -410,8 +410,34 @@ impl Orchestrator {
                 .as_ref()
                 .expect("phase base body must exist");
             let output = ctx
-                .call_pig(phase, base_body, &state.phase_transcript, &state.session)
+                .call_pig(
+                    phase,
+                    base_body,
+                    &state.phase_transcript,
+                    &state.session,
+                    state.pre_simple_decided,
+                )
                 .await?;
+            // 新 Pre 协议必须先显式回答五问并给出路由标记。
+            // 首次 PIGEND 是简单任务分析/执行分界线；此后工具恢复仍在 Pre。
+            // 在确认该边界之前，绝不向客户端放行 Pre 的工具调用。
+            if phase == Pig::Pre && !state.force_full && !state.pre_simple_decided {
+                let (marker, _, after) = split_pre_decision(&output.text).ok_or_else(|| {
+                    Error::PreProtocol("必须先输出五问分析，再单独一行输出 PIGEND 或 PIGNEXT".into())
+                })?;
+                match marker {
+                    Marker::End => state.pre_simple_decided = true,
+                    Marker::Next if !after.is_empty() || !output.tool_calls.is_empty() => {
+                        return Err(Error::PreProtocol(
+                            "PIGNEXT 必须是最后一行，且不能同时请求工具调用".into(),
+                        ));
+                    }
+                    Marker::Next => {}
+                    Marker::Failed => {
+                        return Err(Error::PreProtocol("Pre 不允许使用 PIGFAIL".into()));
+                    }
+                }
+            }
             let round_transcript =
                 proto::model_output_transcript_items(ctx.input.protocol, &output);
             // ToolCall 只属于这一发 Paused 响应。先按原顺序组好客户端内容，
@@ -466,20 +492,24 @@ impl Orchestrator {
             match phase {
                 // ---------------- Pre：规划 / 分流 ----------------
                 Pig::Pre => {
-                    // -pig3 使用专门的纯规划 Pre，不要求控制标记，仍强制进入 Exec。
-                    // 正常模式下 PIGEND 无条件终止，即使请求附带了可用工具；停止优先。
-                    let marker = detect_marker(&raw);
-                    if !state.force_full && marker == Some(Marker::End) {
-                        state.commit_text(strip_markers(&raw));
+                    // -pig3 仍使用独立纯规划 Pre，不解析控制标记。
+                    // 正常简单路径：PIGEND 后继续完成任务，所有工具轮次结束才提交正文。
+                    // -pig 只提交 PIGEND 之后的正文；-pigs 仅剔除标记、保留全部文本。
+                    if !state.force_full && state.pre_simple_decided {
+                        let (_, _, business_text) = split_pre_decision(&raw).ok_or_else(|| {
+                            Error::PreProtocol("简单路径的 PIGEND 分界线丢失".into())
+                        })?;
+                        let business_text = strip_markers(&business_text);
+                        if business_text.is_empty() {
+                            return Err(Error::PreProtocol(
+                                "简单路径 PIGEND 后没有实际任务回答".into(),
+                            ));
+                        }
+                        state.commit_text(business_text);
                         return Ok(Outcome::Completed(state.complete(EndedWith::SimplePath)));
                     }
-                    // 新 Pre 协议只有显式 PIGNEXT 可以继续执行；没有标记、
-                    // 意外的 PIGFAIL 或无实质内容的 PIGEND 都不得自动进入 Exec。
-                    if !state.force_full && marker != Some(Marker::Next) {
-                        return Err(Error::PreProtocol(format!(
-                            "需要以 PIGEND 或 PIGNEXT 作为最后一行，实际检测为 {marker:?}"
-                        )));
-                    }
+                    // 复杂任务必须以 PIGNEXT 结束 Pre，并进入 Exec。
+                    // 首轮判定已验证无工具调用、无 PIGNEXT 后多余正文。
                     state.pre_output = strip_markers(&raw);
                     state.post_protocol_retries = 0;
                     state.exec_checkpoint_body = None;
@@ -546,6 +576,7 @@ impl Orchestrator {
                         let text = strip_markers(&raw);
                         state.failure_paths.push(text);
                         state.pre_output.clear();
+                        state.pre_simple_decided = false;
                         state.post_protocol_retries = 0;
                         state.exec_checkpoint_body = None;
                         state.discard_candidate();
@@ -606,6 +637,7 @@ impl Ctx {
         base_body: &serde_json::Value,
         phase_transcript: &[serde_json::Value],
         session: &str,
+        pre_simple_decided: bool,
     ) -> Result<ModelOutput> {
         let mut body = base_body.clone();
         proto::append_transcript_items(&mut body, self.input.protocol, phase_transcript)?;
@@ -646,13 +678,29 @@ impl Ctx {
                 progress(PigEvent::Start(pig));
                 let filter = Arc::new(Mutex::new(MarkerFilter::new()));
                 let stream_text = self.input.mode == proto::PigsMode::A;
+                let filter_pre_thoughts =
+                    self.input.mode == proto::PigsMode::B && pig == Pig::Pre && !self.input.force_full;
+                let pre_text = Arc::new(Mutex::new(String::new()));
+                let allow_thoughts = Arc::new(Mutex::new(!filter_pre_thoughts || pre_simple_decided));
                 let sink: LiveSink = {
                     let filter = Arc::clone(&filter);
+                    let pre_text = Arc::clone(&pre_text);
+                    let allow_thoughts = Arc::clone(&allow_thoughts);
                     let progress = Arc::clone(progress);
                     Arc::new(move |event: proto::LiveEvent| {
                         match event {
-                            // 文本要过控制标记过滤；思考原样转发
+                            // 文本要过控制标记过滤；模式 B 的 Pre 分析不向客户端透出。
                             proto::LiveEvent::Text(delta) => {
+                                if filter_pre_thoughts {
+                                    if let Ok(mut raw) = pre_text.lock() {
+                                        raw.push_str(&delta);
+                                        if matches!(split_pre_decision(&raw), Some((Marker::End, _, _))) {
+                                            if let Ok(mut allow) = allow_thoughts.lock() {
+                                                *allow = true;
+                                            }
+                                        }
+                                    }
+                                }
                                 let visible = filter
                                     .lock()
                                     .map(|mut f| f.push(&delta))
@@ -662,13 +710,19 @@ impl Ctx {
                                 }
                             }
                             proto::LiveEvent::Thinking(text) => {
-                                progress(PigEvent::Thought(text));
+                                if allow_thoughts.lock().map(|a| *a).unwrap_or(false) {
+                                    progress(PigEvent::Thought(text));
+                                }
                             }
                             proto::LiveEvent::ThinkingSummary { item_id, text } => {
-                                progress(PigEvent::ThoughtSummary { item_id, text });
+                                if allow_thoughts.lock().map(|a| *a).unwrap_or(false) {
+                                    progress(PigEvent::ThoughtSummary { item_id, text });
+                                }
                             }
                             proto::LiveEvent::ThinkingSignature(signature) => {
-                                progress(PigEvent::ThoughtSignature(signature));
+                                if allow_thoughts.lock().map(|a| *a).unwrap_or(false) {
+                                    progress(PigEvent::ThoughtSignature(signature));
+                                }
                             }
                         }
                     })
