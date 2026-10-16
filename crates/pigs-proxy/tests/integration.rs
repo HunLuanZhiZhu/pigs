@@ -29,9 +29,13 @@ struct FakeUpstreamState {
     gz_responses: Arc<Mutex<Vec<Bytes>>>,
 }
 
-/// 一段真实 gzip 字节：内容等价于 `{"choices":[{"message":{"content":"答案是 4 换行 PIGEND"},...}]}`。
-#[rustfmt::skip]
-const GZIP_PIGEND_BODY: &[u8] = &[31, 139, 8, 0, 31, 107, 187, 106, 2, 255, 171, 86, 74, 206, 200, 207, 76, 78, 45, 86, 178, 138, 174, 86, 202, 77, 45, 46, 78, 76, 79, 85, 178, 170, 86, 74, 206, 207, 43, 73, 205, 43, 81, 178, 82, 122, 190, 118, 202, 179, 133, 29, 207, 102, 172, 87, 48, 137, 201, 11, 240, 116, 119, 245, 115, 81, 170, 213, 81, 74, 203, 204, 203, 44, 206, 136, 47, 74, 77, 44, 206, 207, 3, 42, 43, 46, 201, 47, 80, 170, 141, 213, 81, 42, 133, 25, 145, 153, 87, 80, 90, 18, 95, 146, 159, 157, 154, 7, 52, 222, 80, 71, 41, 191, 180, 4, 89, 196, 168, 182, 22, 0, 178, 209, 122, 86, 127, 0, 0, 0];
+fn gzip_pre_simple_response() -> Bytes {
+    use std::io::Write;
+    let response = openai_text_response("五问分析\nPIGEND\n答案是 4").1;
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(&response).unwrap();
+    Bytes::from(encoder.finish().unwrap())
+}
 
 /// 把一段文本包成合法的 OpenAI chat SSE 帧。
 fn sse_frame(text: &str) -> String {
@@ -290,6 +294,13 @@ fn openai_sse_response(text: &str) -> (&'static str, Bytes) {
 
 
 /// 假上游的"模型要工具"响应（OpenAI Chat 形状）。
+fn openai_pre_tool_call_response(id: &str) -> (&'static str, Bytes) {
+    let (content_type, body) = openai_tool_call_response(id);
+    let mut response: Value = serde_json::from_slice(&body).unwrap();
+    response["choices"][0]["message"]["content"] = json!("五问分析\nPIGEND");
+    (content_type, Bytes::from(response.to_string()))
+}
+
 fn openai_tool_call_response(id: &str) -> (&'static str, Bytes) {
     (
         "application/json",
@@ -322,8 +333,7 @@ fn anthropic_sse_with_thinking() -> (&'static str, Bytes) {
         json!({"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig-1"}}),
         json!({"type":"content_block_stop","index":0}),
         json!({"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}),
-        json!({"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"答案是 4
-PIGEND"}}),
+        json!({"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"五问分析\nPIGEND\n答案是 4"}}),
         json!({"type":"content_block_stop","index":1}),
         json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":7}}),
         json!({"type":"message_stop"}),
@@ -348,8 +358,7 @@ fn responses_sse_with_reasoning() -> (&'static str, Bytes) {
     });
     let message = json!({
         "id": "msg_1", "type": "message", "role": "assistant", "status": "completed",
-        "content": [{"type": "output_text", "text": "答案是 4
-PIGEND", "annotations": []}]
+        "content": [{"type": "output_text", "text": "五问分析\nPIGEND\n答案是 4", "annotations": []}]
     });
     let frames = vec![
         json!({"type":"response.created","response":{"id":"resp_1","status":"in_progress","output":[]}}),
@@ -363,8 +372,7 @@ PIGEND", "annotations": []}]
         json!({"type":"response.output_item.added","output_index":1,
                "item":{"id":"msg_1","type":"message","role":"assistant","status":"in_progress","content":[]}}),
         json!({"type":"response.output_text.delta","item_id":"msg_1",
-               "output_index":1,"content_index":0,"delta":"答案是 4
-PIGEND"}),
+               "output_index":1,"content_index":0,"delta":"五问分析\nPIGEND\n答案是 4"}),
         json!({"type":"response.output_item.done","output_index":1,"item":message.clone()}),
         json!({"type":"response.completed","response":{
                "id":"resp_1","status":"completed","usage":{"input_tokens":9,"output_tokens":4},
@@ -438,6 +446,25 @@ async fn sum_usage_mode_adds_all_phase_usage_before_returning() {
 }
 
 #[tokio::test]
+async fn legacy_pigsb_suffix_is_plain_passthrough() {
+    let (_up, upstream_url, fu) = spawn_fake_upstream().await;
+    *fu.echo_mode.lock().unwrap() = true;
+    let (_pigs, pigs_url) = spawn_pigs(&upstream_url).await;
+
+    let body = openai_body("gpt-x-pigsb", false);
+    let resp = reqwest::Client::new()
+        .post(format!("{pigs_url}/chat/completions"))
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    let echo: Value = resp.json().await.unwrap();
+    assert_eq!(echo["body"], body.to_string(), "旧 -pigsb 后缀不得再触发编排或剥离模型名");
+}
+
+#[tokio::test]
 async fn content_encoding_header_survives_passthrough() {
     // 回归 legacy 事故：上游回压缩体 + content-encoding 头，标签必须随 body 到客户端
     let (_up, upstream_url, fu) = spawn_fake_upstream().await;
@@ -506,7 +533,7 @@ async fn pig_flow_full_orchestration_via_loopback() {
             .as_str()
             .unwrap();
         if i == 0 {
-            assert!(content.contains("帮我完成任务Z") && content.contains("先思考以下问题的答案"));
+            assert!(content.contains("帮我完成任务Z") && content.contains("先回答以下问题"));
         } else if i == 1 {
             assert!(content.contains("分析：需要X"));
         } else {
@@ -529,7 +556,7 @@ async fn pig_flow_full_orchestration_via_loopback() {
     drop(reqs);
     fu.responses.lock().unwrap().push((
         "application/json",
-        Bytes::from(json!({"content":[{"type":"text","text":"直接回答\nPIGEND"}]}).to_string()),
+        Bytes::from(json!({"content":[{"type":"text","text":"五问分析\nPIGEND\n直接回答"}]}).to_string()),
     ));
     let resp = client
         .post(format!("{pigs_url}/v1/messages"))
@@ -543,7 +570,7 @@ async fn pig_flow_full_orchestration_via_loopback() {
         .unwrap();
     assert_eq!(resp.status(), 200);
     let final_json: Value = resp.json().await.unwrap();
-    assert_eq!(final_json["content"][0]["text"], "直接回答");
+    assert_eq!(final_json["content"][0]["text"], "五问分析\n直接回答");
     // 回环子请求把客户端的会话头原样带给上游
     let binding = fu.requests.lock().unwrap();
     let (_p, _b, hdrs) = &binding.last().unwrap();
@@ -551,32 +578,65 @@ async fn pig_flow_full_orchestration_via_loopback() {
 }
 
 #[tokio::test]
-async fn pig_and_legacy_pigsb_non_stream_return_only_accepted_text() {
-    for model in ["gpt-x-pig", "gpt-x-pigsb"] {
-        let (_up, upstream_url, fu) = spawn_fake_upstream().await;
-        fu.responses.lock().unwrap().push(openai_text_response("内部分析\nPIGNEXT"));
-        fu.responses.lock().unwrap().push(openai_text_response("最终业务答案"));
-        fu.responses.lock().unwrap().push(openai_text_response("核验通过\nPIGEND"));
-        let (_pigs, pigs_url) = spawn_pigs(&upstream_url).await;
+async fn pig_non_stream_returns_only_accepted_text() {
+    let (_up, upstream_url, fu) = spawn_fake_upstream().await;
+    fu.responses.lock().unwrap().push(openai_text_response("内部分析\nPIGNEXT"));
+    fu.responses.lock().unwrap().push(openai_text_response("最终业务答案"));
+    fu.responses.lock().unwrap().push(openai_text_response("核验通过\nPIGEND"));
+    let (_pigs, pigs_url) = spawn_pigs(&upstream_url).await;
 
-        let client = reqwest::Client::new();
-        let resp = client
-            .post(format!("{pigs_url}/chat/completions"))
-            .json(&openai_body(model, false))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), 200);
-        let body: Value = resp.json().await.unwrap();
-        assert_eq!(body["model"], model);
-        assert_eq!(body["choices"][0]["message"]["content"], "最终业务答案");
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("{pigs_url}/chat/completions"))
+        .json(&openai_body("gpt-x-pig", false))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["model"], "gpt-x-pig");
+    assert_eq!(body["choices"][0]["message"]["content"], "最终业务答案");
 
-        let reqs = fu.requests.lock().unwrap();
-        assert_eq!(reqs.len(), 3);
-        for (_, upstream_body, _) in reqs.iter() {
-            assert_eq!(upstream_body["model"], "gpt-x", "上游必须使用剥离后的真实 model");
-        }
+    let reqs = fu.requests.lock().unwrap();
+    assert_eq!(reqs.len(), 3);
+    for (_, upstream_body, _) in reqs.iter() {
+        assert_eq!(upstream_body["model"], "gpt-x", "上游必须使用剥离后的真实 model");
     }
+}
+
+#[tokio::test]
+async fn pigs3_forces_full_path_and_returns_all_phase_text() {
+    let (_up, upstream_url, fu) = spawn_fake_upstream().await;
+    fu.responses.lock().unwrap().push(openai_text_response("执行前计划"));
+    fu.responses.lock().unwrap().push(openai_text_response("最终业务答案"));
+    fu.responses.lock().unwrap().push(openai_text_response("核验通过\nPIGEND"));
+    let (_pigs, pigs_url) = spawn_pigs(&upstream_url).await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("{pigs_url}/chat/completions"))
+        .json(&openai_body("gpt-x-pigs3", false))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["model"], "gpt-x-pigs3");
+    assert_eq!(
+        body["choices"][0]["message"]["content"],
+        "执行前计划\n\n最终业务答案\n\n核验通过"
+    );
+
+    let reqs = fu.requests.lock().unwrap();
+    assert_eq!(reqs.len(), 3, "pigs3 成功路径必须至少经过 Pre/Exec/Post");
+    for (_, upstream_body, _) in reqs.iter() {
+        assert_eq!(upstream_body["model"], "gpt-x", "上游必须剥离 -pigs3 后缀");
+    }
+    let pre = reqs[0].1["messages"].as_array().unwrap().last().unwrap()["content"]
+        .as_str()
+        .unwrap();
+    assert!(pre.contains("不要在本阶段执行任务"));
+    assert!(!pre.contains("PIGEND"));
 }
 
 #[tokio::test]
@@ -607,7 +667,7 @@ async fn pig_stream_buffers_business_text_until_post_accepts() {
 #[tokio::test]
 async fn pig_simple_path_answers_from_pre() {
     let (_up, upstream_url, fu) = spawn_fake_upstream().await;
-    fu.responses.lock().unwrap().push(openai_text_response("答案是 4\nPIGEND"));
+    fu.responses.lock().unwrap().push(openai_text_response("五问分析\nPIGEND\n答案是 4"));
     let (_pigs, pigs_url) = spawn_pigs(&upstream_url).await;
 
     let client = reqwest::Client::new();
@@ -619,7 +679,7 @@ async fn pig_simple_path_answers_from_pre() {
         .unwrap();
     assert_eq!(resp.status(), 200);
     let final_json: Value = resp.json().await.unwrap();
-    assert_eq!(final_json["choices"][0]["message"]["content"], "答案是 4");
+    assert_eq!(final_json["choices"][0]["message"]["content"], "五问分析\n答案是 4");
     // 只发生了 1 次上游请求（Exec/Post 未执行）
     assert_eq!(fu.requests.lock().unwrap().len(), 1);
 }
@@ -627,7 +687,7 @@ async fn pig_simple_path_answers_from_pre() {
 #[tokio::test]
 async fn pig_streaming_client_gets_sse() {
     let (_up, upstream_url, fu) = spawn_fake_upstream().await;
-    fu.responses.lock().unwrap().push(openai_text_response("答案是 4\nPIGEND"));
+    fu.responses.lock().unwrap().push(openai_text_response("五问分析\nPIGEND\n答案是 4"));
     let (_pigs, pigs_url) = spawn_pigs(&upstream_url).await;
 
     let client = reqwest::Client::new();
@@ -828,8 +888,8 @@ async fn diagnostics_explain_pending_turn_started_new_round() {
     let (_up, upstream_url, fu) = spawn_fake_upstream().await;
     {
         let mut q = fu.responses.lock().unwrap();
-        q.push(openai_tool_call_response("call_wait"));
-        q.push(openai_text_response("新轮直接结束\nPIGEND"));
+        q.push(openai_pre_tool_call_response("call_wait"));
+        q.push(openai_text_response("五问分析\nPIGEND\n新轮直接结束"));
     }
     let dir = std::env::temp_dir().join(format!("pigs-http-decision-{}", uuid::Uuid::new_v4()));
     let config = Config {
@@ -889,8 +949,8 @@ async fn tool_result_followed_by_user_reminder_still_resumes() {
     let (_up, upstream_url, fu) = spawn_fake_upstream().await;
     {
         let mut q = fu.responses.lock().unwrap();
-        q.push(openai_tool_call_response("call_wait"));
-        q.push(openai_text_response("答案是 4\nPIGEND"));
+        q.push(openai_pre_tool_call_response("call_wait"));
+        q.push(openai_text_response("答案是 4"));
     }
     let (_pigs, pigs_url) = spawn_pigs(&upstream_url).await;
     let client = reqwest::Client::new();
@@ -923,7 +983,7 @@ async fn tool_result_followed_by_user_reminder_still_resumes() {
         .unwrap();
     assert_eq!(second.status(), 200);
     let second_json: Value = second.json().await.unwrap();
-    assert_eq!(second_json["choices"][0]["message"]["content"], "答案是 4");
+    assert_eq!(second_json["choices"][0]["message"]["content"], "五问分析\n\n答案是 4");
 
     let reqs = fu.requests.lock().unwrap();
     assert_eq!(reqs.len(), 2, "第二发应恢复同一只 Pre，而不是新开一轮");
@@ -950,7 +1010,7 @@ async fn compressed_upstream_response_is_decompressed_locally() {
     fu.gz_responses
         .lock()
         .unwrap()
-        .push(Bytes::from_static(GZIP_PIGEND_BODY));
+        .push(gzip_pre_simple_response());
     let (_pigs, pigs_url) = spawn_pigs(&upstream_url).await;
 
     let resp = reqwest::Client::new()
@@ -962,7 +1022,7 @@ async fn compressed_upstream_response_is_decompressed_locally() {
         .unwrap();
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["choices"][0]["message"]["content"], "答案是 4");
+    assert_eq!(body["choices"][0]["message"]["content"], "五问分析\n答案是 4");
     // 上游看到的请求头原样（含 accept-encoding）
     let reqs = fu.requests.lock().unwrap();
     assert!(reqs.is_empty(), "压缩响应测试不再记录请求");
@@ -973,12 +1033,11 @@ async fn compressed_upstream_response_is_decompressed_locally() {
 #[tokio::test]
 async fn tool_pause_and_resume_round_trip() {
     let (_up, upstream_url, fu) = spawn_fake_upstream().await;
-    fu.responses.lock().unwrap().push(openai_tool_call_response("call_1"));
+    fu.responses.lock().unwrap().push(openai_pre_tool_call_response("call_1"));
     fu.responses
         .lock()
         .unwrap()
-        .push(openai_text_response_with_usage("答案是 4
-PIGEND", 8, 4));
+        .push(openai_text_response_with_usage("答案是 4", 8, 4));
     let (_pigs, pigs_url) = spawn_pigs(&upstream_url).await;
     let client = reqwest::Client::new();
 
@@ -1019,7 +1078,7 @@ PIGEND", 8, 4));
         .unwrap();
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["choices"][0]["message"]["content"], "答案是 4");
+    assert_eq!(body["choices"][0]["message"]["content"], "五问分析\n\n答案是 4");
     assert_eq!(body["choices"][0]["finish_reason"], "stop");
     assert!(
         body["choices"][0]["message"].get("tool_calls").is_none(),
@@ -1037,8 +1096,8 @@ PIGEND", 8, 4));
     assert_eq!(roles, vec!["system", "user", "assistant", "tool"]);
     assert_eq!(msgs[3]["content"], "文件列表", "工具结果原样带上");
     let phase_user = msgs[1]["content"].as_str().unwrap();
-    assert!(phase_user.contains("先思考以下问题的答案"));
-    assert_eq!(phase_user.matches("先思考以下问题的答案").count(), 1);
+    assert!(phase_user.contains("先回答以下问题"));
+    assert_eq!(phase_user.matches("先回答以下问题").count(), 1);
     assert!(sent.get("tools").is_some(), "tools 全程都在");
 }
 
@@ -1164,9 +1223,9 @@ async fn streaming_tool_rounds_do_not_replay_consumed_calls() {
     let (_up, upstream_url, fu) = spawn_fake_upstream().await;
     {
         let mut q = fu.responses.lock().unwrap();
-        q.push(openai_tool_call_response("call_1"));
+        q.push(openai_pre_tool_call_response("call_1"));
         q.push(openai_tool_call_response("call_2"));
-        q.push(openai_text_response("最终答案\nPIGEND"));
+        q.push(openai_text_response("最终答案"));
     }
     let (_pigs, pigs_url) = spawn_pigs(&upstream_url).await;
     let client = reqwest::Client::new();
@@ -1345,8 +1404,7 @@ async fn anthropic_thinking_and_blocks_reach_the_client() {
             json!({
                 "content": [
                     {"type": "thinking", "thinking": "先想想怎么答", "signature": "sig-1"},
-                    {"type": "text", "text": "答案是 4
-PIGEND"}
+                    {"type": "text", "text": "五问分析\nPIGEND\n答案是 4"}
                 ],
                 "stop_reason": "end_turn",
                 "usage": {"input_tokens": 9, "output_tokens": 4}
@@ -1374,7 +1432,7 @@ PIGEND"}
     assert_eq!(body["content"][0]["thinking"], "先想想怎么答");
     assert_eq!(body["content"][0]["signature"], "sig-1");
     assert_eq!(body["content"][1]["type"], "text");
-    assert_eq!(body["content"][1]["text"], "答案是 4", "控制标记不许漏");
+    assert_eq!(body["content"][1]["text"], "五问分析\n答案是 4", "控制标记不许漏");
     assert_eq!(body["model"], "claude-x-pigs");
     assert_eq!(body["usage"]["input_tokens"], 9);
     // 上游收到的请求：thinking 配置与 tools 一字不动
@@ -1418,7 +1476,7 @@ async fn anthropic_thinking_streams_live_without_duplication() {
     );
     // 文本仍然是"去标记后"的答复；思考不混进文本
     let text = pigs_protocol::extract_sse_text(pigs_protocol::Protocol::Anthropic, &sse).unwrap();
-    assert_eq!(text, "答案是 4");
+    assert_eq!(text, "五问分析\n答案是 4");
     // 收尾序列照常
     assert!(sse.contains("message_stop"));
 }
@@ -1462,7 +1520,7 @@ async fn responses_reasoning_streams_live_and_item_arrives_at_end() {
     assert!(order[0] < order[1], "思考要先于文本");
     // 文本里没有思考、也没有控制标记
     let text = pigs_protocol::extract_sse_text(pigs_protocol::Protocol::Responses, &sse).unwrap();
-    assert_eq!(text, "答案是 4");
+    assert_eq!(text, "五问分析\n答案是 4");
     // 上游收到的请求：reasoning 参数原样
     let reqs = fu.requests.lock().unwrap();
     assert_eq!(reqs[0].1["reasoning"]["summary"], "auto");
@@ -1506,7 +1564,7 @@ async fn per_protocol_bases_route_by_protocol_and_path_stays_verbatim() {
     // 假上游按 FIFO 回放：①anthropic 透传 ②models ③-pigs 的 Pre 子请求（PIGEND 一发结束）
     fu.responses.lock().unwrap().push(openai_text_response("上游原样回"));
     fu.responses.lock().unwrap().push(openai_text_response("上游原样回"));
-    fu.responses.lock().unwrap().push(openai_text_response("直接回答\nPIGEND"));
+    fu.responses.lock().unwrap().push(openai_text_response("五问分析\nPIGEND\n直接回答"));
     let (_pigs, pigs_url) = spawn_pigs_with_bases(&upstream_url).await;
 
     let client = reqwest::Client::new();
@@ -1540,7 +1598,7 @@ async fn per_protocol_bases_route_by_protocol_and_path_stays_verbatim() {
         .unwrap();
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["choices"][0]["message"]["content"], "直接回答");
+    assert_eq!(body["choices"][0]["message"]["content"], "五问分析\n直接回答");
 
     let reqs = fu.requests.lock().unwrap();
     let paths: Vec<&str> = reqs.iter().map(|(p, _b, _h)| p.as_str()).collect();

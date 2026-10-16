@@ -1,4 +1,4 @@
-//! 裸路径 → 协议判定，与 `-pigs` / `-pig`（兼容 `-pigsb`）后缀规则（全仓库唯一定义处）。
+//! 裸路径 → 协议判定，与 `-pigs` / `-pig` / `-pigs3` / `-pig3` 后缀规则（全仓库唯一定义处）。
 
 
 /// PIGS 输出模式。
@@ -50,12 +50,12 @@ pub fn protocol_from_path(path: &str) -> Option<Protocol> {
 ///
 /// - `<model>-pigs`  → 模式 A（拼接阶段输出）
 /// - `<model>-pig`   → 模式 B（单一最终业务输出）
-/// - `<model>-pigsb` → 模式 B（旧后缀兼容）
-/// - `<model>-pig3`  → 模式 B，至少经历 Pre/Exec/Post 三个相位（成功执行时）
+/// - `<model>-pig3`  → 模式 B，强制完整 Pre/Exec/Post 路径
+/// - `<model>-pigs3` → 模式 A，强制完整 Pre/Exec/Post 路径
 pub fn parse_pigs_model(model: &str) -> Option<(String, PigsMode)> {
-    if let Some(real) = model.strip_suffix("-pig3") {
-        Some((real.to_string(), PigsMode::B))
-    } else if let Some(real) = model.strip_suffix("-pigsb") {
+    if let Some(real) = model.strip_suffix("-pigs3") {
+        Some((real.to_string(), PigsMode::A))
+    } else if let Some(real) = model.strip_suffix("-pig3") {
         Some((real.to_string(), PigsMode::B))
     } else if let Some(real) = model.strip_suffix("-pigs") {
         Some((real.to_string(), PigsMode::A))
@@ -100,9 +100,10 @@ mod tests {
     #[test]
     fn pigs_suffix_rules() {
         assert!(has_pigs("claude-opus-5-pigs"));
-        assert!(has_pigs("claude-opus-5-pigsb"));
+        assert!(!has_pigs("claude-opus-5-pigsb"));
         assert!(has_pigs("claude-opus-5-pig"));
         assert!(has_pigs("claude-opus-5-pig3"));
+        assert!(has_pigs("claude-opus-5-pigs3"));
         assert!(!has_pigs("claude-opus-5-pigfull"));
         assert!(!has_pigs("claude-opus-5"));
 
@@ -114,18 +115,16 @@ mod tests {
             parse_pigs_model("claude-opus-5-pig"),
             Some(("claude-opus-5".into(), PigsMode::B))
         );
-        assert_eq!(
-            parse_pigs_model("claude-opus-5-pigsb"),
-            parse_pigs_model("claude-opus-5-pig")
-        );
+        assert_eq!(parse_pigs_model("claude-opus-5-pigsb"), None);
         assert_eq!(strip_pigs_suffix("deepseek-v4.1-flash-pig").as_deref(), Some("deepseek-v4.1-flash"));
         assert_eq!(strip_pigs_suffix("deepseek-v4.1-flash-pig3").as_deref(), Some("deepseek-v4.1-flash"));
+        assert_eq!(strip_pigs_suffix("deepseek-v4.1-flash-pigs3").as_deref(), Some("deepseek-v4.1-flash"));
         assert_eq!(parse_pigs_model("muse-spark-1.3-contributor-pig3"), Some(("muse-spark-1.3-contributor".into(), PigsMode::B)));
-        assert_eq!(strip_pigs_suffix("deepseek-v4.1-flash-pigsb").as_deref(), Some("deepseek-v4.1-flash"));
+        assert_eq!(parse_pigs_model("muse-spark-1.3-contributor-pigs3"), Some(("muse-spark-1.3-contributor".into(), PigsMode::A)));
+        assert_eq!(strip_pigs_suffix("deepseek-v4.1-flash-pigsb"), None);
         assert_eq!(strip_pigs_suffix("claude-opus-5"), None);
         assert_eq!(strip_pigs_suffix("-pigs").as_deref(), Some(""));
         assert_eq!(strip_pigs_suffix("-pig").as_deref(), Some(""));
-        assert_eq!(strip_pigs_suffix("-pigsb").as_deref(), Some(""));
     }
 
 }
