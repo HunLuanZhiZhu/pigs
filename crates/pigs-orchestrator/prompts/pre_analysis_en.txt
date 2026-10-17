@@ -1,5 +1,6 @@
-The above is the task request
+The above is the original task
 {failure_paths}
+The five questions below are not part of the original task.
 Answer the following questions concisely. Do not begin executing the task:
 1. What is the final objective? Do not add unrequested objectives
 2. What are the requirements and prohibitions? Which mistakes would cause failure?

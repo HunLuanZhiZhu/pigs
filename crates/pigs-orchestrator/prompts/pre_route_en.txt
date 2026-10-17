@@ -1,5 +1,5 @@
-Based on all five answers, classify the task as simple only if each question is simple; otherwise classify it as complex
+Based on all five answers, classify the task as simple only if the objective, requirements and prohibitions, required information, uncertainties, execution, and verification are all simple and clear; otherwise classify it as complex
 Output requirements:
-For complex tasks, do not begin execution; only side-effect-free operations are allowed. After answering the five questions, put PIGNEXT alone on the final line and end this phase.
+For complex tasks, do not begin execution. After answering the five questions, put PIGNEXT alone on the final line and end this phase.
 For simple tasks, after answering the five questions, put PIGEND alone on a line, then continue executing the task until the objective is achieved.
 (PIGNEXT and PIGEND are internal control markers removed before delivery, not part of the task answer. Do not omit or alter them)

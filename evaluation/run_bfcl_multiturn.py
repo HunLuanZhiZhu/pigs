@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 import argparse
+import json
+from collections import defaultdict
 from pathlib import Path
+
+try:
+    from bfcl_official_adapter import request_fingerprint
+except ModuleNotFoundError:
+    from evaluation.bfcl_official_adapter import request_fingerprint
 
 from eval_common import EVAL_ROOT, add_common_args, count_bfcl, finalize, git_commit
 from eval_common import maybe_background, prepare, run_job, run_pipelines, slug, tcp_preflight, validate
@@ -10,6 +17,91 @@ DATASET='bfcl_multiturn'; EXPECTED=800
 BFCL_ROOT=EVAL_ROOT/'src/gorilla/berkeley-function-call-leaderboard'
 BFCL_PYTHON=EVAL_ROOT/'venv/bin/python'
 ADAPTER=Path(__file__).with_name('bfcl_official_adapter.py')
+
+
+def _client_request_body(path:Path)->dict|None:
+    try:
+        text=path.read_text(encoding='utf-8',errors='replace')
+    except OSError:
+        return None
+    marker='\nbody:\n'
+    if marker not in text:
+        return None
+    try:
+        body=json.loads(text.split(marker,1)[1].strip())
+    except json.JSONDecodeError:
+        return None
+    return body if isinstance(body,dict) else None
+
+
+def attach_bfcl_metadata(request_map:Path,pigs_http:Path)->dict:
+    """Join local BFCL identities to archived PIGS exchanges without changing HTTP."""
+    records=[]
+    if request_map.exists():
+        for line in request_map.open(encoding='utf-8',errors='replace'):
+            if not line.strip(): continue
+            try: row=json.loads(line)
+            except json.JSONDecodeError: continue
+            if isinstance(row,dict) and row.get('fingerprint'): records.append(row)
+
+    captured=[]
+    for path in pigs_http.glob('*.client-request.txt') if pigs_http.exists() else []:
+        body=_client_request_body(path)
+        if body is None: continue
+        exchange=path.name.split('.',1)[0]
+        try: received_at_ms=int(exchange.split('-',1)[0])
+        except ValueError: continue
+        captured.append({
+            'exchange':exchange,
+            'received_at_ms':received_at_ms,
+            'fingerprint':request_fingerprint(body),
+        })
+
+    record_groups=defaultdict(list); capture_groups=defaultdict(list)
+    for row in records: record_groups[row['fingerprint']].append(row)
+    for row in captured: capture_groups[row['fingerprint']].append(row)
+
+    matched=[]; unmatched_records=0; unmatched_exchanges=0
+    for fingerprint in set(record_groups)|set(capture_groups):
+        rs=sorted(record_groups.get(fingerprint,[]),key=lambda x:int(x.get('sent_at_ns',0)))
+        cs=sorted(capture_groups.get(fingerprint,[]),key=lambda x:int(x['received_at_ms']))
+        pair_count=min(len(rs),len(cs))
+        for i in range(pair_count):
+            r,c=rs[i],cs[i]
+            matched.append({
+                'exchange':c['exchange'],
+                'sample_id':r['sample_id'],
+                'turn_id':int(r['turn_id']),
+                'request_index':int(r['request_index']),
+                'fingerprint':fingerprint,
+            })
+        unmatched_records+=len(rs)-pair_count
+        unmatched_exchanges+=len(cs)-pair_count
+
+    matched.sort(key=lambda x:x['exchange'])
+    if pigs_http.exists():
+        with (pigs_http/'bfcl-metadata.jsonl').open('w',encoding='utf-8') as f:
+            for row in matched:
+                f.write(json.dumps(row,ensure_ascii=False,separators=(',',':'))+'\n')
+        for row in matched:
+            (pigs_http/f"{row['exchange']}.bfcl-metadata.txt").write_text(
+                f"exchange: {row['exchange']}\n"
+                f"sample_id: {row['sample_id']}\n"
+                f"turn_id: {row['turn_id']}\n"
+                f"request_index: {row['request_index']}\n",
+                encoding='utf-8',
+            )
+        summary={
+            'adapter_requests':len(records),'captured_client_requests':len(captured),
+            'matched':len(matched),'unmatched_adapter_requests':unmatched_records,
+            'unmatched_captured_requests':unmatched_exchanges,
+        }
+        (pigs_http/'bfcl-metadata-summary.json').write_text(
+            json.dumps(summary,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
+        return summary
+    return {'adapter_requests':len(records),'captured_client_requests':0,'matched':0,
+            'unmatched_adapter_requests':len(records),'unmatched_captured_requests':0}
+
 
 def main()->int:
     p=argparse.ArgumentParser(description='Run official BFCL V4 Multi-Turn (800 tasks).')
@@ -38,13 +130,17 @@ def main()->int:
     def one(job):
         registry=slug(f'pigs-eval-{job.model_label}-{job.arm}')
         out=Path(job.output_dir)
+        request_map=out/'bfcl-request-map.raw.jsonl'
         cmd=[str(args.bfcl_python),str(ADAPTER),'--registry-name',registry,'--wire-model',job.model,
              '--base-url',args.base_url,'--api-key',args.api_key,'--session-id',job.session_id,
              '--result-dir',str(out/'results'),'--score-dir',str(out/'scores'),
+             '--request-map',str(request_map),
              '--threads',str(args.sample_workers),'--temperature',str(args.temperature),
              '--thinking-effort',args.thinking_effort,'--request-timeout',str(args.request_timeout),
              '--protocol',args.protocol]
-        return run_job(job,cmd,store,count_bfcl,args.progress_interval,cwd=args.bfcl_root,secrets=[args.api_key],pigs_log_source=args.pigs_log_dir)
+        code=run_job(job,cmd,store,count_bfcl,args.progress_interval,cwd=args.bfcl_root,secrets=[args.api_key],pigs_log_source=args.pigs_log_dir)
+        attach_bfcl_metadata(request_map,out/'pigs-http')
+        return code
 
     failed=run_pipelines(models,args.arms,jobs,args.model_workers,one); finalize(root,jobs)
     try:
