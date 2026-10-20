@@ -2,7 +2,7 @@
 
 > **性质：独立研究建议，非已执行计划/实验结果。**
 >
-> **建议日期：2026 年 10 月 20 日**  
+> **建议日期：2026 年 10 月 20 日；备选方案补充日期：2026 年 10 月 20 日**  
 > **适用项目：[PIGS](https://github.com/HunLuanZhiZhu/pigs)**  
 > 本文不替换现有 [正式评测方案](./EXPERIMENT_PLAN_CH.md) 和 [运行说明](./README_CH.md)。实施前需确认资源、实际模型版本和评测程序兼容性。
 
@@ -56,21 +56,53 @@
 - **分阶段门槛：** 先做接口/环境冒烟检查，再做小样本费用校准，最后在冻结配置后跑**完整公开划分**。失败样本与未完成样本分开记录，不得只统计成功返回的样本。
 - **外部成绩：** DeepSeek 的历史公布成绩只作背景参照；真正用于证明 PIGS 增益的是**同一条件下自己测得的 Base 和 PIGS 成对结果**。
 
-## 4. 不列为新一轮核心测试的基准
+## 4. 备选基准及替换建议（按可实施性排序）
+
+以下是**备选项**而非与三项主基准同时全部投入。所有备选仍优先满足“一次性下达任务、无需持续模拟用户对话”和“有可复用的官方执行/评分程序”；允许智能体内部多轮工具调用。DeepSeek 公布的数字只是背景参照，不能替代实际的 Base/PIGS 成对实验。
+
+| 候选顺序 | 基准 | 适合替换或补充的情况 | 参考 Agent / 主要依赖 | DeepSeek 1017 成绩及注意点 |
+|---|---|---|---|---|
+| **备选 A** | **ProgramBench**（200 题） | NL2Repo 的 OpenHands 适配困难，或希望测“无源码条件下重建复杂程序”，而非从自然语言开发 | 官方 **mini-swe-agent** 参考流程；Linux x86-64、Docker、可执行程序与隔离评测 | **29.1%** 是接近完成率（至少 95% 行为测试通过），**不是完全解决率**；任务可能耗时、费用高 |
+| **备选 B** | **Terminal-Bench 4.0**（66 题） | 需要补充跨领域系统操作/终端执行能力，或者三项主基准过度集中于软件开发 | **Harbor**，可选多个 Agent（如 Terminus / mini-swe-agent / Claude Code），**并非必须使用 Claude Code**；涉及多容器及部分 GPU/H100 任务 | **42.3%**；必须对齐版本、Agent 及运行资源；无法完成全部任务时不能声称全量成绩 |
+| **备选 C** | **BFCL V4 Multi-Turn**（800 题） | 预算或基础设施不足，急需利用仓库中已接入的执行器诊断工具调用、参数选择与状态维护 | **BFCL 官方多轮交互循环及评分器**；主要为模拟工具，**无需执行 Web Search 子集** | 未在本建议中确认 1017 的同条件分数；只报告 Multi-Turn 子集，不称完整 V4；不作为复杂任务端到端成功率的等价替代 |
+| **备选 D** | **Agents' Last Exam（ALE）**（公开任务约 150 题） | 需要覆盖真实职业交付物，而不是主要展示代码和模拟业务状态；且资源充足 | 官方 **ale_run** 与 Agent 接口；可能需要桌面虚拟机、商业软件许可或特殊算力 | **35.4%**；公开任务划分、Agent 和环境可能与披露配置不同；先确认选定任务不需要持续用户交互 |
+| **辅助对照** | **IFEval**（541 题） | 需要证明 PIGS 不会破坏指令遵循；作为论文非退化对照 | 已在本仓库接入 **EvalScope + 官方评分**，无 Agent | 不是 1017 智能体榜单核心项目；**不替代**上述任一端到端任务基准 |
+
+### 优先触发条件与替换路径
+
+1. **首选三项可正常运行：** 保持 **Automation-Bench → DeepSWE → NL2Repo** 不变；BFCL/IFEval只作辅助，避免评测范围不断膨胀。
+2. **NL2Repo 的 OpenHands 或镜像长期无法稳定运行：** 优先评估 **ProgramBench**。它同样能衡量长程软件工程执行，但题型从“自然语言生成仓库”变为“黑盒重建程序”；替换后需在论文中解释能力覆盖的改变。
+3. **需要验证 PIGS 在更广的终端/系统任务上能否泛化：** 增加 **Terminal-Bench 4.0**，作为跨领域高难度扩展，而非只用它替代已跑通的低成本主基准。先在纯 CPU 任务中冒烟测试，再评估全量 GPU/多容器预算。
+4. **受到预算、网络或容器限制：** 先完成已接入的 **BFCL V4 Multi-Turn**，作为工具可靠性诊断；待环境就绪再跑深层任务，**不能把 BFCL 分数当作 DeepSWE 或 NL2Repo 的替代指标**。
+5. **研究转向通用职业任务交付：** 考虑 **ALE**；优先确认任务材料、环境许可、模拟交互与评分可复现性，再决定是否投入。
+6. **纯知识/多模态题：** HLE、GPQA、BabyVision 等不纳入当前主线；如需传统控制组，优先使用现有 **IFEval**，避免把工具执行贡献与知识、视觉感知能力混在一起。
+
+### 备选项共同的停止门槛
+
+- 在冒烟测试阶段出现无法修复的 Agent 协议不兼容、工具恢复失败、评分器异常或基础设施缺口时，暂缓全量。
+- 进行小样本令牌、耗时与费用校准后再设定全量预算；不能把 DeepSWE 单题成本机械套用给 ProgramBench、Terminal-Bench 或 ALE。
+- 正式实验固定公开任务划分和验证器版本，保存失败样本 ID；仅跑部分任务时必须标为 **pilot / subset**，不得冒用官方完整排行榜成绩。
+- 若更换 Agent（例如从 DeepSeek Harness 切换到 OpenHands），应重新跑本地 Base 对照，不直接引用不同 Agent 下的公开分数作为提升幅度。
+
+## 5. 暂不纳入新一轮核心测试的其他基准
 
 - **τ³-bench：** 需要持续与模拟用户交互，不符合当前“尽量无多轮用户交互”的约束。
 - **HLE / GPQA 等知识型测试：** 与 PIGS 长程工具执行的主要研究假设不够一致；已接入的 **IFEval** 可以保留作指令遵循不退化的辅助对照。
 - **BFCL V4 Multi-Turn：** 已有官方循环适配和历史数据；建议作为**工具调用故障诊断/补充实验**而非新增主基准。其 Multi-Turn 子集不同于包含网页搜索、记忆等类别的完整 V4。
 - **Terminal-Bench 4.0 / ProgramBench / Agents' Last Exam：** 可作为后续扩展；暂缓原因分别为特殊沙箱/硬件与云资源、长程重建任务成本、复杂软件环境依赖。
 
-## 5. 相关来源与项目内现有文件
+## 6. 相关来源与项目内现有文件
 
 - [Zapier Automation-Bench（公开任务与自动化执行程序）](https://github.com/zapier/AutomationBench)
 - [DataCurve DeepSWE（Pier + mini-swe-agent）](https://github.com/datacurve-ai/deep-swe)
 - [NL2Repo-Bench（OpenHands 参考执行方案）](https://github.com/multimodal-art-projection/NL2RepoBench)
 - [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)
+- [ProgramBench 官方仓库](https://github.com/facebookresearch/ProgramBench)
+- [Terminal-Bench / Harbor](https://github.com/harbor-framework/terminal-bench)
+- [Agents' Last Exam 官方仓库](https://github.com/rdi-berkeley/agents-last-exam)
+- [BFCL 官方仓库](https://github.com/ShishirPatil/gorilla)
 - PIGS：[现有正式矩阵](./EXPERIMENT_PLAN_CH.md)、[运行说明](./README_CH.md)、[SWE-bench Lite 既有报告](./reports/DEEPSEEK_SWEBENCH_BASE_20261008.md)
 
 ---
 
-**结论（建议日期：2026-10-20）：** 先以 **Automation-Bench → DeepSWE v1.1 → NL2Repo-Bench** 为验证顺序。本文仅提出研究策略，不代表已实施、已取得官方送测资格或已复现 DeepSeek 排行榜。
+**结论（建议日期及更新日期：2026-10-20）：** 主方案仍为 **Automation-Bench → DeepSWE v1.1 → NL2Repo-Bench**。如需替换，优先考虑 **ProgramBench**；如需扩展终端执行能力，考虑 **Terminal-Bench 4.0**；如需低基础设施成本的辅助测试，使用既有 **BFCL V4 Multi-Turn**，以 **IFEval** 检查非退化。本文仅提出研究建议，不代表已实施、已取得官方送测资格或已复现 DeepSeek 排行榜。
