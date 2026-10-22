@@ -875,6 +875,16 @@ pub fn trailing_tool_result_items(protocol: Protocol, body: &Value) -> Vec<Value
 /// 服务端负责保留相位对话记录。 / The server preserves phase transcript history.
 /// 客户端只需回填工具结果。 / The client only supplies tool results.
 pub fn model_output_transcript_items(protocol: Protocol, output: &ModelOutput) -> Vec<Value> {
+    model_output_transcript_items_with_thinking(protocol, output, false)
+}
+
+/// 思考模式的 Chat 工具轮次即使没有新增思考，也保留空字段。 /
+/// Keep an empty reasoning_content field on thinking-mode Chat tool turns.
+pub fn model_output_transcript_items_with_thinking(
+    protocol: Protocol,
+    output: &ModelOutput,
+    thinking_mode: bool,
+) -> Vec<Value> {
     match protocol {
         Protocol::OpenAI => {
             let mut message = json!({"role": "assistant"});
@@ -899,7 +909,7 @@ pub fn model_output_transcript_items(protocol: Protocol, output: &ModelOutput) -
                     _ => None,
                 })
                 .collect::<String>();
-            if !reasoning.is_empty() {
+            if !reasoning.is_empty() || (thinking_mode && !output.tool_calls.is_empty()) {
                 message["reasoning_content"] = json!(reasoning);
             }
             if !output.tool_calls.is_empty() {
@@ -1364,5 +1374,50 @@ mod tests {
         assert_eq!(response_items.len(), 1);
         assert_eq!(response_items[0]["type"], "function_call");
         assert_eq!(response_items[0]["call_id"], "fc_1");
+    }
+
+    /// 思考模型的空思考工具调用必须保留字段，非思考模型不受影响。 /
+    /// Keep empty reasoning on thinking tool calls without affecting non-thinking calls.
+    #[test]
+    fn thinking_tool_call_keeps_empty_reasoning_content() {
+        let call = json!({
+            "id": "call_1", "type": "function",
+            "function": {"name": "Bash", "arguments": "{}"}
+        });
+        let no_reasoning = parse_json_output(
+            Protocol::OpenAI,
+            &json!({"choices": [{"message": {
+                "role": "assistant", "content": null, "tool_calls": [call.clone()]
+            }, "finish_reason": "tool_calls"}]}),
+        );
+        let thinking =
+            model_output_transcript_items_with_thinking(Protocol::OpenAI, &no_reasoning, true);
+        assert_eq!(thinking[0]["reasoning_content"], "");
+        assert_eq!(thinking[0]["content"], Value::Null);
+        assert_eq!(thinking[0]["tool_calls"][0], call);
+
+        let non_thinking =
+            model_output_transcript_items_with_thinking(Protocol::OpenAI, &no_reasoning, false);
+        assert!(non_thinking[0].get("reasoning_content").is_none());
+
+        let with_reasoning = parse_json_output(
+            Protocol::OpenAI,
+            &json!({"choices": [{"message": {
+                "role": "assistant", "reasoning_content": "original",
+                "content": null, "tool_calls": [call]
+            }, "finish_reason": "tool_calls"}]}),
+        );
+        let preserved = model_output_transcript_items_with_thinking(
+            Protocol::OpenAI, &with_reasoning, true
+        );
+        assert_eq!(preserved[0]["reasoning_content"], "original");
+
+        let no_tools = parse_json_output(
+            Protocol::OpenAI,
+            &json!({"choices": [{"message": {"role": "assistant", "content": "done"}}]}),
+        );
+        let plain =
+            model_output_transcript_items_with_thinking(Protocol::OpenAI, &no_tools, true);
+        assert!(plain[0].get("reasoning_content").is_none());
     }
 }

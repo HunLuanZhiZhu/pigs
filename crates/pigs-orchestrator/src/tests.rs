@@ -98,6 +98,19 @@ impl FakeTransport {
         )
     }
 
+    /// 给工具调用响应附加独立思考内容。 / Attach turn-local reasoning to a tool response.
+    fn tool_calls_with_reasoning(
+        status: u16,
+        calls: &[(&str, &str)],
+        reasoning: &str,
+    ) -> SubResponse {
+        let mut resp = Self::tool_calls(status, calls);
+        let mut body: serde_json::Value = serde_json::from_slice(&resp.body).unwrap();
+        body["choices"][0]["message"]["reasoning_content"] = json!(reasoning);
+        resp.body = Bytes::from(body.to_string());
+        resp
+    }
+
     // 新 Pre 简单路径：先完成分析并输出 PIGEND，再调用工具。
     fn pre_tool_calls(status: u16, calls: &[(&str, &str)]) -> SubResponse {
         let mut resp = Self::tool_calls(status, calls);
@@ -1079,6 +1092,10 @@ async fn exec_tool_resumes_keep_one_phase_prompt() {
         roles(&exec_resume1),
         vec!["system", "user", "assistant", "tool"]
     );
+    assert!(
+        exec_resume1["messages"][2].get("reasoning_content").is_none(),
+        "非思考模式不应新增空思考字段 / Non-thinking tool turns must remain unchanged"
+    );
     assert_eq!(
         roles(&exec_resume2),
         vec!["system", "user", "assistant", "tool", "assistant", "tool"]
@@ -1104,6 +1121,117 @@ async fn exec_tool_resumes_keep_one_phase_prompt() {
     assert_eq!(post_messages[exec_messages.len()]["role"], "assistant");
     assert_eq!(post_messages[exec_messages.len()]["content"], "草稿完成");
     assert_eq!(post_messages[exec_messages.len() + 1]["role"], "user");
+}
+
+/// 工具暂停只向客户端发送本轮思考，但上游续接仍保留完整思考历史。
+/// Each tool pause emits only this turn's reasoning while internal history retains prior turns.
+#[tokio::test]
+async fn exec_tool_pauses_do_not_replay_reasoning() {
+    let transport = fake(vec![
+        FakeTransport::text(200, "计划\nPIGNEXT"),
+        FakeTransport::tool_calls_with_reasoning(200, &[("call_1", "Read")], "thinking-A"),
+        FakeTransport::tool_calls_with_reasoning(200, &[("call_2", "Read")], "thinking-B"),
+        FakeTransport::text(200, "已完成修改"),
+        FakeTransport::text(200, "验收通过\nPIGEND"),
+    ]);
+    let orch = Orchestrator::new();
+    let (rt1, store1) = runtime(transport.clone());
+    let p1 = paused(orch.run(input(proto::Protocol::OpenAI), rt1).await.unwrap());
+    assert_eq!(
+        p1.parts.iter().filter_map(|p| match p {
+            Part::Reasoning(s) => Some(s.as_str()),
+            _ => None,
+        }).collect::<Vec<_>>(),
+        vec!["thinking-A"]
+    );
+    let continuation = store1.lock().unwrap().take_match(&["call_1".into()]).unwrap();
+    let (rt2, store2) = runtime(transport.clone());
+    let p2 = paused(orch.resume(resume_body(&["call_1"]), rt2, continuation).await.unwrap());
+    assert_eq!(
+        p2.parts.iter().filter_map(|p| match p {
+            Part::Reasoning(s) => Some(s.as_str()),
+            _ => None,
+        }).collect::<Vec<_>>(),
+        vec!["thinking-B"],
+        "第二个 assistant 响应不得重发 thinking-A"
+    );
+    let continuation = store2.lock().unwrap().take_match(&["call_2".into()]).unwrap();
+    let (rt3, _) = runtime(transport.clone());
+    let completed = completed(
+        orch.resume(resume_body(&["call_1", "call_2"]), rt3, continuation).await.unwrap()
+    );
+    assert!(
+        completed.parts.iter().all(|p| !matches!(p, Part::Reasoning(_))),
+        "已交付的工具轮次思考不得在最终响应再次回放"
+    );
+    let reqs = transport.requests.lock().unwrap();
+    let request: serde_json::Value = serde_json::from_slice(&reqs[3].body).unwrap();
+    let assist: Vec<_> = request["messages"].as_array().unwrap().iter()
+        .filter(|m| m["role"] == "assistant").collect();
+    assert_eq!(assist.len(), 2);
+    assert_eq!(assist[0]["reasoning_content"], "thinking-A");
+    assert_eq!(assist[1]["reasoning_content"], "thinking-B");
+}
+
+/// 显式思考模式下，即使模型工具轮次没有新思考，也要向上游回传空字段。 /
+/// Keep empty reasoning_content in upstream tool history when thinking is requested.
+#[tokio::test]
+async fn thinking_mode_preserves_empty_reasoning_for_tool_history() {
+    let transport = fake(vec![
+        FakeTransport::text(200, "计划\nPIGNEXT"),
+        FakeTransport::tool_calls(200, &[("call_1", "Read")]),
+        FakeTransport::tool_calls(200, &[("call_2", "Read")]),
+    ]);
+    let orch = Orchestrator::new();
+    let mut first_input = input(proto::Protocol::OpenAI);
+    first_input.body["reasoning_effort"] = json!("low");
+    let (rt, store) = runtime(transport.clone());
+    let _ = paused(orch.run(first_input, rt).await.unwrap());
+    let continuation = store.lock().unwrap().take_match(&["call_1".into()]).unwrap();
+    let (rt, _) = runtime(transport.clone());
+    let _ = paused(
+        orch.resume(resume_body(&["call_1"]), rt, continuation)
+            .await.unwrap()
+    );
+
+    let reqs = transport.requests.lock().unwrap();
+    let request: serde_json::Value = serde_json::from_slice(&reqs[2].body).unwrap();
+    let assistant = &request["messages"][2];
+    assert_eq!(assistant["role"], "assistant");
+    assert_eq!(assistant["reasoning_content"], "");
+    assert_eq!(assistant["tool_calls"][0]["id"], "call_1");
+}
+
+/// 已出现真实思考的相位，后续空思考工具轮次仍保留空字段。 /
+/// Once a phase has reasoning, later empty-thinking tool turns retain the field.
+#[tokio::test]
+async fn prior_reasoning_enables_empty_tool_reasoning_without_effort_field() {
+    let transport = fake(vec![
+        FakeTransport::text(200, "计划\nPIGNEXT"),
+        FakeTransport::tool_calls_with_reasoning(200, &[("call_1", "Read")], "thinking-A"),
+        FakeTransport::tool_calls(200, &[("call_2", "Read")]),
+        FakeTransport::text(200, "完成"),
+        FakeTransport::text(200, "核验\nPIGEND"),
+    ]);
+    let orch = Orchestrator::new();
+    let (rt, store) = runtime(transport.clone());
+    let _ = paused(orch.run(input(proto::Protocol::OpenAI), rt).await.unwrap());
+    let continuation = store.lock().unwrap().take_match(&["call_1".into()]).unwrap();
+    let (rt, store) = runtime(transport.clone());
+    let _ = paused(orch.resume(resume_body(&["call_1"]), rt, continuation).await.unwrap());
+    let continuation = store.lock().unwrap().take_match(&["call_2".into()]).unwrap();
+    let (rt, _) = runtime(transport.clone());
+    let _ = completed(
+        orch.resume(resume_body(&["call_1", "call_2"]), rt, continuation)
+            .await.unwrap()
+    );
+    let reqs = transport.requests.lock().unwrap();
+    let request: serde_json::Value = serde_json::from_slice(&reqs[3].body).unwrap();
+    let assistants: Vec<_> = request["messages"].as_array().unwrap().iter()
+        .filter(|item| item["role"] == "assistant").collect();
+    assert_eq!(assistants.len(), 2);
+    assert_eq!(assistants[0]["reasoning_content"], "thinking-A");
+    assert_eq!(assistants[1]["reasoning_content"], "");
 }
 
 #[tokio::test]

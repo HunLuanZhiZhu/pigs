@@ -8,7 +8,7 @@ use crate::config::Config;
 use crate::diagnostics::{header_pairs, ExchangeLog, HttpDiagnostics};
 use crate::upstream::Upstream;
 use axum::body::Body;
-use axum::extract::{OriginalUri, RawQuery, State};
+use axum::extract::{DefaultBodyLimit, OriginalUri, RawQuery, State};
 use axum::http::{HeaderMap, Method, Response, StatusCode};
 use axum::Router;
 use bytes::Bytes;
@@ -31,7 +31,12 @@ pub struct AppState {
 }
 
 pub fn router(state: AppState) -> Router {
-    Router::new().fallback(handle).with_state(state)
+    // Agent histories can grow beyond Axum's 2 MiB Bytes-extractor default.
+    // Do not impose an HTTP body-size ceiling at the PIGS entrypoint.
+    Router::new()
+        .fallback(handle)
+        .layer(DefaultBodyLimit::disable())
+        .with_state(state)
 }
 
 /// 单入口处理所有路径和 HTTP 方法。 / Single handler for all paths and HTTP methods.

@@ -438,22 +438,45 @@ impl Orchestrator {
                     }
                 }
             }
-            let round_transcript =
-                proto::model_output_transcript_items(ctx.input.protocol, &output);
+            // 显式思考强度或本相位已有思考，均表明工具历史需要 reasoning_content。 /
+            // Explicit thinking effort or prior reasoning requires the field on tool history.
+            let thinking_mode = state
+                .root_body
+                .get("reasoning_effort")
+                .and_then(|v| v.as_str())
+                .is_some_and(|v| !matches!(v, "none" | "off" | "disabled"))
+                || state
+                    .phase_transcript
+                    .iter()
+                    .any(|item| item.get("reasoning_content").is_some())
+                || output
+                    .parts
+                    .iter()
+                    .any(|part| matches!(part, Part::Reasoning(_)));
+            let round_transcript = proto::model_output_transcript_items_with_thinking(
+                ctx.input.protocol,
+                &output,
+                thinking_mode,
+            );
             // 工具调用只存在于本次暂停响应。 / Tool calls belong only to the current paused response.
             // 只持久化其它内容，完成响应不得重发工具调用。 / Persist other parts, never consumed tool calls in completed output.
             let paused_parts = if output.tool_calls.is_empty() {
                 None
             } else {
-                let mut parts = state.parts.clone();
-                parts.extend(state.client_parts_for_round(&output));
-                Some(parts)
+                // Only the current turn belongs in a new client assistant
+                // message. Previously delivered reasoning remains in the
+                // internal transcript, but must not be replayed as new text.
+                Some(state.client_parts_for_round(&output))
             };
             state.record_round(&output.text, &output, self.usage_mode);
             state.phase_transcript.extend(round_transcript);
 
             // 工具请求暂停相位并交付原生调用。 / Tool requests pause, delivering native calls without ending the phase.
             if !output.tool_calls.is_empty() {
+                // The current parts have now been delivered to the client.
+                // Keep phase_transcript for tool continuation, but do not
+                // include these parts in a later paused/completed response.
+                state.parts.clear();
                 let pending: Vec<String> = output
                     .tool_calls
                     .iter()

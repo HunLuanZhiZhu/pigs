@@ -12,6 +12,7 @@ pub mod surgery;
 
 pub use output::{
     all_tool_result_ids, continuation_resume_items, model_output_transcript_items,
+    model_output_transcript_items_with_thinking,
     parse_json_output, parse_sse_output, trailing_tool_result_ids, trailing_tool_result_items,
     ModelOutput, Part, ToolCall,
 };
